@@ -17,6 +17,7 @@ import os
 import json
 import asyncio
 import time
+import random
 import hashlib
 import tomlkit
 import argparse
@@ -385,6 +386,12 @@ JSON格式: {{ "entities": ["e1"], "relations": [{{"subject": "s", "predicate": 
             json.dump(self.manifest, f, ensure_ascii=False, indent=2)
 
 async def main():
+    quotes = [
+        "記憶の中に居た,温もりが側にいて",
+        "幸福の切れ端を,繋いでいた。願っていた"
+    ]
+    logger.info(random.choice(quotes))  # Runtime Easter Egg
+    
     parser = argparse.ArgumentParser(description="A_Memorix 知识库自动导入工具")
     parser.add_argument("--force", action="store_true", help="强制重新导入所有文件，忽略已导入记录")
     parser.add_argument("--clear-manifest", action="store_true", help="处理前清空导入历史记录")
