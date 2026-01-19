@@ -371,6 +371,10 @@ class GraphStore:
         logger.info(f"删除 {deleted_count} 个节点")
         return deleted_count
 
+    def remove_nodes(self, nodes: List[str]) -> int:
+        """兼容性别名：删除节点"""
+        return self.delete_nodes(nodes)
+
     def delete_edges(
         self,
         edges: List[Tuple[str, str]],
@@ -423,6 +427,10 @@ class GraphStore:
         self._total_edges_deleted += deleted
         logger.info(f"删除 {deleted} 条边")
         return deleted
+
+    def remove_edges(self, edges: List[Tuple[str, str]]) -> int:
+        """兼容性别名：删除边"""
+        return self.delete_edges(edges)
 
     def get_nodes(self) -> List[str]:
         """
@@ -629,8 +637,19 @@ class GraphStore:
             count = self.add_edges(edge_pairs, weights)
             logger.info(f"连接 {count} 对相似节点（阈值={threshold}）")
             return count
-
         return 0
+
+    def clear(self) -> None:
+        """清空所有数据"""
+        self._nodes.clear()
+        self._node_to_idx.clear()
+        self._node_attrs.clear()
+        self._adjacency = None
+        self._total_nodes_added = 0
+        self._total_edges_added = 0
+        self._total_nodes_deleted = 0
+        self._total_edges_deleted = 0
+        logger.info("图存储已清空")
 
     def save(self, data_dir: Optional[Union[str, Path]] = None) -> None:
         """

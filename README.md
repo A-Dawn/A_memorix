@@ -2,12 +2,14 @@
 
 **轻量级知识图谱插件** - 基于双路检索的完全独立的记忆增强系统
 
+> 消えていかない感覚 , まだまだ足りてないみたい !
 ---
 
 ## ✨ 特性
 
 - **🧠 双路检索** - 关系图谱 + 向量语义并行检索，结合 Personalized PageRank 智能排序。
 - **📊 知识图谱可视化** - 内置 Web 可视化编辑器，支持节点/边的增删改查。
+- **📝 对话自动总结** - 自动总结历史聊天记录并提取知识，支持定时触发和人设深度整合。
 - **🎯 智能分类** - 自动识别结构化/叙事性/事实性知识，采用差异化处理策略。
 - **💾 高效存储** - SciPy 稀疏矩阵存储图结构，int8 量化向量节省 75% 空间。
 - **🔌 完全独立** - 不依赖原 LPMM 系统，拥有独立的数据格式和存储路径。
@@ -48,6 +50,7 @@ A_Memorix 提供以下一级命令（直接输入命令即可触发）：
 | `/import` | 导入知识 | `/import text 人工智能是...` |
 | `/query` | 查询知识 | `/query search 什么是AI?` |
 | `/delete` | 删除知识 | `/delete paragraph <hash>` |
+| `/summary_import` | 总结导入 | `/summary_import` |
 | `/visualize` | 启动可视化 | `/visualize` |
 | `/debug_server` | 调试服务器 | `/debug_server` |
 
@@ -72,6 +75,19 @@ A_Memorix 提供以下一级命令（直接输入命令即可触发）：
 - `--force`: 强制重新导入已处理过的文件。
 - `--clear-manifest`: 清空导入历史记录并重新扫描。
 - `--type <type>`: 强制指定内容类型（如：`structured`, `narrative`, `factual`）。
+
+### 7. 对话总结与导入配置 `[summarization]`
+
+- `enabled` (bool): 是否启用总结导入功能（默认 `true`）。
+- `model_name` (str): 总结使用的模型名称（默认 `auto`）。
+- `context_length` (int): 总结消息的上下文条数（默认 `50`）。
+- `import_times` (array): 自动总结导入的时间点列表，24小时制（默认 `["04:00"]`）。
+
+### 8. 聊天流过滤配置 `[filter]`
+
+- `enabled` (bool): 是否启用聊天流过滤（默认 `true`）。
+- `mode` (str): 过滤模式，`whitelist` (白名单) 或 `blacklist` (黑名单)（默认 `whitelist`）。
+- `chats` (array): 聊天流 ID 列表，支持配置 `stream_id` (MD5) 或 `group_id`（默认 `[]`，白名单为空时默认全通）。
 
 ### 2. 导入知识 (`/import`)
 
@@ -187,5 +203,9 @@ A_Memorix 是**完全独立**的知识管理系统，与原 LPMM 在技术实现
 ## 📜 许可证
 
 本项目采用 [AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0) 许可证。
+
+## 贡献声明
+
+本项目目前不接受任何PR，只接受issue，如有相关问题请提交issue或联系ARC
 
 **作者**: A_Dawn

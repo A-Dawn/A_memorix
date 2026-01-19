@@ -155,6 +155,20 @@ class KnowledgeSearchAction(BaseAction):
         top_k = self.action_data.get("top_k", 10)
         use_threshold = self.action_data.get("use_threshold", True)
         enable_ppr = self.action_data.get("enable_ppr", True)
+        
+        # 0. 检查是否在允许的聊天流中
+        from ...plugin import A_MemorixPlugin
+        plugin_instance = A_MemorixPlugin.get_global_instance()
+        if plugin_instance:
+             # 获取当前聊天流ID, 群组ID, 用户ID
+            stream_id = self.chat_id
+            group_id = self.group_id
+            user_id = self.user_id
+            
+            if not plugin_instance.is_chat_enabled(stream_id, group_id, user_id):
+                # 如果未启用，安静地返回（视为成功但无结果，避免打扰）
+                logger.info(f"{self.log_prefix} 聊天流已被过滤配置禁用，跳过检索")
+                return True, ""
 
         logger.info(f"{self.log_prefix} 开始知识检索: query='{query}', top_k={top_k}")
 

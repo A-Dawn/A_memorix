@@ -134,7 +134,8 @@ class AutoImporter:
         # 嵌入API
         self.embedding_manager = create_embedding_api_adapter(
             batch_size=self.plugin_config.get("embedding", {}).get("batch_size", 32),
-            default_dimension=self.plugin_config.get("embedding", {}).get("dimension", 1024),
+            default_dimension=self.plugin_config.get("embedding", {}).get("dimension", 384),
+            model_name=self.plugin_config.get("embedding", {}).get("model_name", "auto"),
         )
         
         # 检测维度
@@ -237,16 +238,53 @@ class AutoImporter:
         else:
             logger.info(f"本次共处理 {processed_count} 个文件")
 
+    async def _select_model(self) -> Any:
+        """精确选择最适合知识抽取的模型 (仅限明确配置和任务匹配)"""
+        models = llm_api.get_available_models()
+        if not models:
+            raise ValueError("没有可用的 LLM 模型配置")
+
+        # 1. 优先级最高：插件配置强制指定
+        config_model = self.plugin_config.get("advanced", {}).get("extraction_model", "auto")
+        if config_model != "auto" and config_model in models:
+            logger.info(f"  使用插件配置指定的模型: {config_model}")
+            return models[config_model]
+
+        # 2. 优先级第二：主程序任务配置匹配 (lpmm_entity_extract)
+        try:
+            from src.config.config import model_config as host_model_config
+            task_configs = getattr(host_model_config, "model_task_config", {})
+            
+            # 按优先级尝试两种相关的任务配置
+            for task_key in ["lpmm_entity_extract", "lpmm_rdf_build"]:
+                if task_key in task_configs:
+                    task_models = task_configs[task_key].get("model_list", [])
+                    for m in task_models:
+                        if m in models:
+                            logger.info(f"  通过主程序任务配置 [{task_key}] 匹配到模型: {m}")
+                            return models[m]
+        except Exception as e:
+            logger.debug(f"读取主程序任务配置失败: {e}")
+
+        # 3. 兜底策略：如果以上均未匹配，抛出错误引导用户配置
+        logger.error("❌ 未能在主程序配置中找到合适的 [lpmm_entity_extract] 任务模型")
+        logger.warning("请在 model_config.toml 的 [model_task_config.lpmm_entity_extract] 中指定模型，")
+        logger.warning("或者在插件 config.toml 的 [advanced] 中设置 extraction_model")
+        
+        # 为了兼容性，返回首个可用模型但给出强烈警告
+        first_model = list(models.keys())[0]
+        logger.warning(f"由于未匹配到专用模型，被迫使用首个可用模型: {first_model}")
+        return models[first_model]
+
     async def _process_text_to_json(self, text: str, filename: str) -> Dict:
-        """调用 LLM 处理文本 (复用之前的逻辑)"""
+        """调用 LLM 处理文本"""
         chunks = self._split_text(text)
         logger.info(f"  分块数量: {len(chunks)}")
         
         all_data = {"paragraphs": [], "entities": [], "relations": []}
         
-        models = llm_api.get_available_models()
-        model_name = "balanced" if "balanced" in models else list(models.keys())[0]
-        model_config = models[model_name]
+        # 智能选择模型配置
+        model_config = await self._select_model()
         
         for i, chunk in enumerate(chunks):
             # 添加段落

@@ -99,11 +99,26 @@ class VisualizeCommand(BaseCommand):
                     msg = "❌ 可视化服务器未启用，请在 config.toml 中设置 [web] enabled = true"
                     await self.send_text(msg)
                     return False, msg, 2
+                
+                # 检查服务器是否已启动，如果未启动则尝试启动
+                if not plugin.server:
+                    try:
+                        logger.info(f"{self.log_prefix} 可视化服务器未运行，正在尝试启动...")
+                        from ...server import MemorixServer
+                        plugin.server = MemorixServer(plugin, host=host, port=port)
+                        plugin.server.start()
+                        # 给一点启动时间
+                        import asyncio
+                        await asyncio.sleep(1)
+                    except Exception as e:
+                        logger.error(f"{self.log_prefix} 启动可视化服务器失败: {e}")
+                        msg = f"❌ 启动可视化服务器失败: {str(e)}"
+                        await self.send_text(msg)
+                        return False, msg, 2
                     
                 result_msg = (
                     f"✅ 可视化编辑器已启动\n"
                     f"🔗 访问地址: {url}\n\n"
-                    f"💡 提示: 这是一个完全交互式的编辑器，支持节点拖拽、删除和权重调整。"
                 )
                 
                 # 直接发送消息

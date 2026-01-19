@@ -23,30 +23,9 @@
         "type": "string",
         "default": "./plugins/A_memorix/data",
         "description": "知识库数据目录"
-      },
-      "max_memory_mb": {
-        "type": "integer",
-        "default": 512,
-        "description": "最大内存占用限制（MB）"
-      },
-      "enable_memory_mapping": {
-        "type": "boolean",
-        "default": true,
-        "description": "启用内存映射文件存储"
       }
     },
     "embedding": {
-      "model_preset": {
-        "type": "string",
-        "default": "light",
-        "enum": [
-          "ultra_light",
-          "light",
-          "balanced",
-          "performance"
-        ],
-        "description": "嵌入模型预设档位"
-      },
       "dimension": {
         "type": "integer",
         "default": 384,
@@ -66,6 +45,16 @@
         "type": "integer",
         "default": 32,
         "description": "批量生成嵌入的批次大小"
+      },
+      "max_concurrent": {
+        "type": "integer",
+        "default": 5,
+        "description": "嵌入API最大并发请求数"
+      },
+      "model_name": {
+        "type": "string",
+        "default": "auto",
+        "description": "指定嵌入模型名称 (对应 model_config.toml 中的 name)"
       }
     },
     "retrieval": {
@@ -79,33 +68,60 @@
         "default": 20,
         "description": "段落检索返回数量"
       },
+      "alpha": {
+        "type": "number",
+        "default": 0.5,
+        "description": "双路检索融合权重 (0:仅关系, 1:仅段落)"
+      },
+      "enable_ppr": {
+        "type": "boolean",
+        "default": true,
+        "description": "是否启用 Personalized PageRank 重排序"
+      },
       "ppr_alpha": {
         "type": "number",
         "default": 0.85,
-        "description": "Personalized PageRank 的alpha参数"
+        "description": "PPR 的 alpha 参数"
       },
-      "ppr_iterations": {
-        "type": "integer",
-        "default": 50,
-        "description": "PPR迭代次数"
-      },
-      "enable_dynamic_threshold": {
+      "enable_parallel": {
         "type": "boolean",
         "default": true,
-        "description": "启用动态阈值过滤"
+        "description": "是否启用并行检索"
+      }
+    },
+    "threshold": {
+      "min_threshold": {
+        "type": "number",
+        "default": 0.3,
+        "description": "搜索结果的最小阈值"
+      },
+      "max_threshold": {
+        "type": "number",
+        "default": 0.95,
+        "description": "搜索结果的最大阈值"
+      },
+      "percentile": {
+        "type": "number",
+        "default": 75.0,
+        "description": "动态阈值的分位数"
+      },
+      "std_multiplier": {
+        "type": "number",
+        "default": 1.5,
+        "description": "标准差倍数（用于异常值过滤）"
+      },
+      "min_results": {
+        "type": "integer",
+        "default": 3,
+        "description": "即使未达标也强制返回的最小结果数"
+      },
+      "enable_auto_adjust": {
+        "type": "boolean",
+        "default": true,
+        "description": "是否根据结果分布自动调整阈值"
       }
     },
     "graph": {
-      "enable_synonym_connection": {
-        "type": "boolean",
-        "default": true,
-        "description": "启用同义词自动连接"
-      },
-      "synonym_threshold": {
-        "type": "number",
-        "default": 0.85,
-        "description": "同义词相似度阈值"
-      },
       "sparse_matrix_format": {
         "type": "string",
         "default": "csr",
@@ -116,40 +132,24 @@
         "description": "稀疏矩阵存储格式"
       }
     },
-    "import": {
-      "chunk_size": {
-        "type": "integer",
-        "default": 1000,
-        "description": "批量导入的块大小"
-      },
-      "enable_openie": {
+    "web": {
+      "enabled": {
         "type": "boolean",
         "default": true,
-        "description": "启用OpenIE信息抽取"
+        "description": "是否启用可视化编辑服务器"
+      },
+      "port": {
+        "type": "integer",
+        "default": 8082,
+        "description": "服务器端口"
+      },
+      "host": {
+        "type": "string",
+        "default": "0.0.0.0",
+        "description": "服务器绑定地址"
       }
     },
     "advanced": {
-      "enable_multiprocessing": {
-        "type": "boolean",
-        "default": false,
-        "description": "启用多进程处理（单核环境应关闭）"
-      },
-      "num_workers": {
-        "type": "integer",
-        "default": 1,
-        "description": "工作进程数量"
-      },
-      "log_level": {
-        "type": "string",
-        "default": "INFO",
-        "enum": [
-          "DEBUG",
-          "INFO",
-          "WARNING",
-          "ERROR"
-        ],
-        "description": "日志级别"
-      },
       "enable_auto_save": {
         "type": "boolean",
         "default": true,
@@ -159,6 +159,89 @@
         "type": "integer",
         "default": 5,
         "description": "自动保存间隔（分钟）"
+      },
+      "debug": {
+        "type": "boolean",
+        "default": false,
+        "description": "启用详细调试日志"
+      },
+      "extraction_model": {
+        "type": "string",
+        "default": "auto",
+        "description": "指定知识抽取模型名称 (对应 model_config.toml 中的 name)"
+      }
+    },
+    "summarization": {
+      "enabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "是否启用总结导入功能"
+      },
+      "model_name": {
+        "type": "string",
+        "default": "auto",
+        "description": "总结使用的模型名称"
+      },
+      "context_length": {
+        "type": "integer",
+        "default": 50,
+        "description": "总结消息的上下文条数"
+      },
+      "include_personality": {
+        "type": "boolean",
+        "default": true,
+        "description": "总结提示词是否包含机器人人设"
+      },
+      "default_knowledge_type": {
+        "type": "string",
+        "default": "narrative",
+        "enum": [
+          "narrative",
+          "factual",
+          "structured"
+        ],
+        "description": "总结导入时的默认知识类型"
+      }
+    },
+    "schedule": {
+      "enabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "是否启用定时自动导入"
+      },
+      "import_times": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": [
+          "04:00"
+        ],
+        "description": "每日自动导入的时间点列表 (24小时制)"
+      }
+    },
+    "filter": {
+      "enabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "是否启用聊天流过滤"
+      },
+      "mode": {
+        "type": "string",
+        "default": "whitelist",
+        "enum": [
+          "whitelist",
+          "blacklist"
+        ],
+        "description": "过滤模式：whitelist(白名单) 或 blacklist(黑名单)"
+      },
+      "chats": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": [],
+        "description": "聊天流 ID 列表。支持填写: 1. 群号 (group_id); 2. 私聊用户ID (user_id); 3. 聊天流唯一标识 (stream_id, MD5格式)。"
       }
     }
   },

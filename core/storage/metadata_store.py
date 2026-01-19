@@ -621,6 +621,26 @@ class MetadataStore:
         cursor.execute(sql, tuple(params))
         return [self._row_to_dict(row, "relation") for row in cursor.fetchall()]
 
+    def get_paragraphs_by_source(self, source: str) -> List[Dict[str, Any]]:
+        """
+        按来源获取段落
+
+        Args:
+            source: 来源标识符
+
+        Returns:
+            段落列表
+        """
+        return self.query("SELECT * FROM paragraphs WHERE source = ?", (source,))
+
+
+    def search_paragraphs_by_content(self, content_query: str) -> List[Dict[str, Any]]:
+        """按内容模糊搜索段落"""
+        cursor = self._conn.cursor()
+        cursor.execute("""
+            SELECT * FROM paragraphs WHERE content LIKE ?
+        """, (f"%{content_query}%",))
+        return [self._row_to_dict(row, "paragraph") for row in cursor.fetchall()]
 
     def delete_paragraph(self, hash_value: str) -> bool:
         """
@@ -644,27 +664,28 @@ class MetadataStore:
 
         return deleted
 
-    def delete_entity(self, hash_value: str) -> bool:
+    def delete_entity(self, hash_or_name: str) -> bool:
         """
         删除实体（级联删除相关关联）
-
-        Args:
-            hash_value: 实体哈希
-
-        Returns:
-            是否成功删除
+        支持通过哈希值或名称删除
         """
         cursor = self._conn.cursor()
-        cursor.execute("""
-            DELETE FROM entities WHERE hash = ?
-        """, (hash_value,))
-        self._conn.commit()
-
-        deleted = cursor.rowcount > 0
-        if deleted:
-            logger.info(f"删除实体: {hash_value[:16]}...")
-
-        return deleted
+        
+        # 1. 尝试按哈希删除
+        cursor.execute("DELETE FROM entities WHERE hash = ?", (hash_or_name,))
+        if cursor.rowcount > 0:
+            self._conn.commit()
+            logger.info(f"删除实体 (Hash): {hash_or_name[:16]}...")
+            return True
+            
+        # 2. 尝试按名称删除
+        cursor.execute("DELETE FROM entities WHERE name = ?", (hash_or_name,))
+        if cursor.rowcount > 0:
+            self._conn.commit()
+            logger.info(f"删除实体 (Name): {hash_or_name}")
+            return True
+            
+        return False
 
     def delete_relation(self, hash_value: str) -> bool:
         """
@@ -819,24 +840,20 @@ class MetadataStore:
 
         return stats
 
-    def count_paragraphs(self) -> int:
+    def count_paragraphs(self, include_deleted: bool = False, only_deleted: bool = False) -> int:
         """
         获取段落数量
-
-        Returns:
-            段落数量
         """
+        # 段落表目前由于级联删除是硬删除，此处仅为接口兼容
         cursor = self._conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM paragraphs")
         return cursor.fetchone()[0]
 
-    def count_relations(self) -> int:
+    def count_relations(self, include_deleted: bool = False, only_deleted: bool = False) -> int:
         """
         获取关系数量
-
-        Returns:
-            关系数量
         """
+        # 关系表目前也是级联硬删除，此处仅为接口兼容
         cursor = self._conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM relations")
         return cursor.fetchone()[0]
@@ -851,6 +868,18 @@ class MetadataStore:
         cursor = self._conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM entities")
         return cursor.fetchone()[0]
+
+    def clear_all(self) -> None:
+        """清空所有表数据"""
+        cursor = self._conn.cursor()
+        tables = [
+            "paragraphs", "entities", "relations", 
+            "paragraph_relations", "paragraph_entities"
+        ]
+        for table in tables:
+            cursor.execute(f"DELETE FROM {table}")
+        self._conn.commit()
+        logger.info("元数据存储所有表已清空")
 
 
     def vacuum(self) -> None:

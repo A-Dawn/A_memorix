@@ -72,8 +72,9 @@ class A_MemorixPlugin(BasePlugin):
         "storage": "存储配置",
         "embedding": "嵌入模型配置",
         "retrieval": "检索配置",
+        "threshold": "阈值策略配置",
         "graph": "知识图谱配置",
-        "import": "导入配置",
+        "web": "可视化服务器配置",
         "advanced": "高级配置",
     }
 
@@ -97,26 +98,11 @@ class A_MemorixPlugin(BasePlugin):
                 default="./plugins/A_memorix/data",
                 description="数据目录（完全独立于原LPMM系统）"
             ),
-            "max_memory_mb": ConfigField(
-                type=int,
-                default=512,
-                description="最大内存占用限制（MB）"
-            ),
-            "enable_memory_mapping": ConfigField(
-                type=bool,
-                default=True,
-                description="启用内存映射文件存储"
-            ),
         },
         "embedding": {
-            "model_preset": ConfigField(
-                type=str,
-                default="light",
-                description="模型预设档位: ultra_light, light, balanced, performance"
-            ),
             "dimension": ConfigField(
                 type=int,
-                default=384,
+                default=1024,
                 description="向量维度"
             ),
             "quantization_type": ConfigField(
@@ -128,6 +114,16 @@ class A_MemorixPlugin(BasePlugin):
                 type=int,
                 default=32,
                 description="批量生成嵌入的批次大小"
+            ),
+            "max_concurrent": ConfigField(
+                type=int,
+                default=5,
+                description="嵌入API最大并发请求数"
+            ),
+            "model_name": ConfigField(
+                type=str,
+                default="auto",
+                description="指定嵌入模型名称 (对应 model_config.toml 中的 name)"
             ),
         },
         "retrieval": {
@@ -141,49 +137,64 @@ class A_MemorixPlugin(BasePlugin):
                 default=20,
                 description="段落检索返回数量"
             ),
+            "alpha": ConfigField(
+                type=float,
+                default=0.5,
+                description="双路检索融合权重 (0:仅关系, 1:仅段落)"
+            ),
+            "enable_ppr": ConfigField(
+                type=bool,
+                default=True,
+                description="是否启用 Personalized PageRank 重排序"
+            ),
             "ppr_alpha": ConfigField(
                 type=float,
                 default=0.85,
                 description="PPR的alpha参数"
             ),
-            "ppr_iterations": ConfigField(
-                type=int,
-                default=50,
-                description="PPR迭代次数"
-            ),
-            "enable_dynamic_threshold": ConfigField(
+            "enable_parallel": ConfigField(
                 type=bool,
                 default=True,
-                description="启用动态阈值过滤"
+                description="是否启用并行检索"
+            ),
+        },
+        "threshold": {
+            "min_threshold": ConfigField(
+                type=float,
+                default=0.3,
+                description="搜索结果的最小阈值"
+            ),
+            "max_threshold": ConfigField(
+                type=float,
+                default=0.95,
+                description="搜索结果的最大阈值"
+            ),
+            "percentile": ConfigField(
+                type=float,
+                default=75.0,
+                description="动态阈值的分位数"
+            ),
+            "std_multiplier": ConfigField(
+                type=float,
+                default=1.5,
+                description="标准差倍数（用于异常值过滤）"
+            ),
+            "min_results": ConfigField(
+                type=int,
+                default=3,
+                description="即使未达标也强制返回的最小结果数"
+            ),
+            "enable_auto_adjust": ConfigField(
+                type=bool,
+                default=True,
+                description="是否根据结果分布自动调整阈值"
             ),
         },
         "graph": {
-            "enable_synonym_connection": ConfigField(
-                type=bool,
-                default=True,
-                description="启用同义词自动连接"
-            ),
-            "synonym_threshold": ConfigField(
-                type=float,
-                default=0.85,
-                description="同义词相似度阈值"
-            ),
             "sparse_matrix_format": ConfigField(
                 type=str,
                 default="csr",
                 description="稀疏矩阵存储格式: csr, csc"
-            ),
-        },
-        "import": {
-            "chunk_size": ConfigField(
-                type=int,
-                default=1000,
-                description="批量导入的块大小"
-            ),
-            "enable_openie": ConfigField(
-                type=bool,
-                default=True,
-                description="启用OpenIE信息抽取"
             ),
         },
         "web": {
@@ -204,21 +215,6 @@ class A_MemorixPlugin(BasePlugin):
             ),
         },
         "advanced": {
-            "enable_multiprocessing": ConfigField(
-                type=bool,
-                default=False,
-                description="启用多进程处理（单核环境应关闭）"
-            ),
-            "num_workers": ConfigField(
-                type=int,
-                default=1,
-                description="工作进程数量"
-            ),
-            "log_level": ConfigField(
-                type=str,
-                default="INFO",
-                description="日志级别: DEBUG, INFO, WARNING, ERROR"
-            ),
             "enable_auto_save": ConfigField(
                 type=bool,
                 default=True,
@@ -233,6 +229,50 @@ class A_MemorixPlugin(BasePlugin):
                 type=bool,
                 default=False,
                 description="启用详细调试日志"
+            ),
+            "extraction_model": ConfigField(
+                type=str,
+                default="auto",
+                description="指定知识抽取模型名称 (对应 model_config.toml 中的 name)"
+            ),
+        },
+        "summarization": {
+            "enabled": ConfigField(
+                type=bool,
+                default=True,
+                description="是否启用总结导入功能"
+            ),
+            "model_name": ConfigField(
+                type=str,
+                default="auto",
+                description="总结使用的模型名称"
+            ),
+            "context_length": ConfigField(
+                type=int,
+                default=50,
+                description="总结消息的上下文条数"
+            ),
+            "include_personality": ConfigField(
+                type=bool,
+                default=True,
+                description="总结提示词是否包含机器人人设"
+            ),
+            "default_knowledge_type": ConfigField(
+                type=str,
+                default="narrative",
+                description="总结导入时的默认知识类型"
+            ),
+        },
+        "schedule": {
+            "enabled": ConfigField(
+                type=bool,
+                default=True,
+                description="是否启用定时自动导入"
+            ),
+            "import_times": ConfigField(
+                type=list,
+                default=["04:00"],
+                description="每日自动导入的时间点列表 (24小时制, 如 ['04:00', '16:00'])"
             ),
         },
     }
@@ -288,6 +328,7 @@ class A_MemorixPlugin(BasePlugin):
             VisualizeCommand,
             KnowledgeQueryTool,
             MemoryModifierTool,
+            SummaryImportAction,
         )
 
         components = []
@@ -335,6 +376,33 @@ class A_MemorixPlugin(BasePlugin):
                     associated_types=[],
                 ),
                 KnowledgeSearchAction,
+            )
+        )
+
+        # SummaryImportAction
+        components.append(
+            (
+                ActionInfo(
+                    name="summary_import",
+                    component_type="action",
+                    description="总结当前对话的历史记录并将其作为知识导入知识库",
+                    activation_type=ActionActivationType.ALWAYS,
+                    parallel_action=True,
+                    action_parameters={
+                        "context_length": {
+                            "type": "integer",
+                            "description": "总结的历史消息数量（可选）",
+                            "default": 0,
+                        }
+                    },
+                    action_require=[
+                        "vector_store",
+                        "graph_store",
+                        "metadata_store",
+                        "embedding_manager",
+                    ],
+                ),
+                SummaryImportAction,
             )
         )
 
@@ -536,6 +604,11 @@ class A_MemorixPlugin(BasePlugin):
             except Exception as e:
                 logger.error(f"启动 A_Memorix 可视化服务器失败: {e}")
 
+        # 启动定时记录总结任务
+        if self.get_config("summarization.enabled", True) and self.get_config("schedule.enabled", True):
+            import asyncio
+            asyncio.create_task(self._scheduled_import_loop())
+
     async def on_disable(self):
         """插件禁用时调用"""
         logger.info("A_Memorix 插件正在禁用...")
@@ -638,7 +711,8 @@ class A_MemorixPlugin(BasePlugin):
         self.embedding_manager = create_embedding_api_adapter(
             batch_size=self.get_config("embedding.batch_size", 32),
             max_concurrent=self.get_config("embedding.max_concurrent", 5),
-            default_dimension=self.get_config("embedding.dimension", 1024),
+            default_dimension=self.get_config("embedding.dimension", 384),
+            model_name=self.get_config("embedding.model_name", "auto"),
         )
         logger.info("嵌入 API 适配器初始化完成")
 
@@ -703,6 +777,10 @@ class A_MemorixPlugin(BasePlugin):
                 logger.info(f"图数据已加载，共 {self.graph_store.num_nodes} 个节点")
             except Exception as e:
                 logger.warning(f"加载图数据失败: {e}")
+        
+        # 启动定时任务循环
+        import asyncio
+        asyncio.create_task(self._scheduled_import_loop())
 
         logger.info(f"知识库数据目录: {data_dir}")
 
@@ -732,6 +810,148 @@ class A_MemorixPlugin(BasePlugin):
                 loop.run_until_complete(self._initialize_storage_async())
             finally:
                 loop.close()
+
+    async def _scheduled_import_loop(self):
+        """定时总结导入循环"""
+        import asyncio
+        import datetime
+        
+        logger.info("A_Memorix 定时总结导入任务已启动")
+        
+        # 记录上次检查的时间，用于跨越时间点检测
+        last_check_now = datetime.datetime.now()
+        
+        while True:
+            try:
+                # 每分钟检查一次
+                await asyncio.sleep(60)
+                
+                # 检查总开关和定时开关
+                if not self.get_config("summarization.enabled", True) or not self.get_config("schedule.enabled", True):
+                    continue
+                
+                now = datetime.datetime.now()
+                import_times = self.get_config("schedule.import_times", ["04:00"])
+                
+                for t_str in import_times:
+                    try:
+                        # 解析配置的时间点 (HH:MM)
+                        h, m = map(int, t_str.split(":"))
+                        # 构造今天的该时间点
+                        target_time = now.replace(hour=h, minute=m, second=0, microsecond=0)
+                        
+                        # 如果当前时间刚跨过目标时间点
+                        if last_check_now < target_time <= now:
+                            logger.info(f"触发 A_Memorix 定时导入任务: {t_str}")
+                            await self._perform_bulk_summary_import()
+                    except (ValueError, Exception) as e:
+                        logger.error(f"解析定时配置 '{t_str}' 出错: {e}")
+                
+                last_check_now = now
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"定时导入循环发生未知错误: {e}")
+                await asyncio.sleep(60)
+
+    def is_chat_enabled(self, stream_id: str, group_id: str = None, user_id: str = None) -> bool:
+        """检查聊天流是否启用记忆功能
+        
+        基于 filter 配置进行判断。
+        支持配置 stream_id (MD5), group_id 或 user_id。
+        """
+        filter_config = self.get_config("filter", {})
+        enabled = filter_config.get("enabled", True)
+        
+        if not enabled:
+            return True
+            
+        mode = filter_config.get("mode", "whitelist")
+        chats = filter_config.get("chats", [])
+        
+        # 确保 chats 都是字符串
+        chats = [str(c) for c in chats]
+        
+        # 检查是否匹配
+        is_matched = False
+        if stream_id and str(stream_id) in chats:
+            is_matched = True
+        elif group_id and str(group_id) in chats:
+            is_matched = True
+        elif user_id and str(user_id) in chats:
+            is_matched = True
+            
+        if mode == "whitelist":
+            # 白名单模式：
+            # 如果chats为空，为了避免误配置导致全不可用，我们默认放行（兜底逻辑）
+            if not chats:
+                return True
+            return is_matched
+        else:
+            # 黑名单模式：匹配到的被禁用
+            return not is_matched
+
+    async def _perform_bulk_summary_import(self):
+        """为所有活跃聊天执行总结导入"""
+        import asyncio
+        from .core.utils.summary_importer import SummaryImporter
+        from src.common.database.database_model import ChatStreams
+        
+        # 实例化导入器
+        importer = SummaryImporter(
+            vector_store=self.vector_store,
+            graph_store=self.graph_store,
+            metadata_store=self.metadata_store,
+            embedding_manager=self.embedding_manager,
+            plugin_config=self.config
+        )
+        
+        # 获取所有已知的聊天流 ID, Group ID 和 User ID
+        def _get_all_streams():
+            try:
+                # 获取 stream_id, group_id, user_id
+                query = ChatStreams.select(ChatStreams.stream_id, ChatStreams.group_id, ChatStreams.user_id)
+                return [{
+                    "stream_id": s.stream_id, 
+                    "group_id": s.group_id,
+                    "user_id": s.user_id
+                } for s in query]
+            except Exception as e:
+                logger.error(f"获取聊天流列表失败: {e}")
+                return []
+            
+        streams = await asyncio.to_thread(_get_all_streams)
+        
+        if not streams:
+            logger.info("未发现可总结的聊天流")
+            return
+            
+        logger.info(f"开始为 {len(streams)} 个聊天流执行批量总结检查...")
+        
+        success_count = 0
+        skipped_count = 0
+        
+        for s in streams:
+            s_id = s["stream_id"]
+            g_id = s.get("group_id")
+            u_id = s.get("user_id")
+            
+            # 过滤检查
+            if not self.is_chat_enabled(stream_id=s_id, group_id=g_id, user_id=u_id):
+                skipped_count += 1
+                continue
+                
+            try:
+                # 执行总结导入 (SummaryImporter 内部会处理无新消息的情况)
+                success, msg = await importer.import_from_stream(s_id)
+                if success:
+                    success_count += 1
+                    logger.info(f"聊天流 {s_id} 自动总结成功")
+            except Exception as e:
+                logger.error(f"处理聊天流 {s_id} 自动总结时出错: {e}")
+                
+        logger.info(f"批量总结任务完成，成功: {success_count}，跳过: {skipped_count}")
 
 
 

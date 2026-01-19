@@ -236,6 +236,10 @@ class VectorStore:
 
         return deleted
 
+    def remove(self, ids: List[str]) -> int:
+        """兼容性别名：删除向量"""
+        return self.delete(ids)
+
     def get(self, ids: List[str]) -> List[Optional[np.ndarray]]:
         """
         获取向量
@@ -322,6 +326,19 @@ class VectorStore:
             f"索引重建完成: 删除 {deleted_count} 个向量，剩余 {len(new_ids)} 个"
         )
 
+    def clear(self) -> None:
+        """清空所有数据"""
+        self._ids.clear()
+        self._id_to_idx.clear()
+        self._vectors = None
+        self._index = None
+        self._deleted_ids.clear()
+        self._buffer_ids.clear()
+        self._buffer_vectors.clear()
+        self._total_added = 0
+        self._total_deleted = 0
+        logger.info("向量存储已清空")
+
     def save(self, data_dir: Optional[Union[str, Path]] = None) -> None:
         """
         保存到磁盘
@@ -350,11 +367,36 @@ class VectorStore:
         # 保存向量（如果使用内存映射）
         if self._vectors is not None:
             vectors_path = data_dir / "vectors.npy"
-            if self.use_mmap:
-                np.save(vectors_path, self._vectors)
+            
+            # Windows 兼容性处理：如果向量数据是当前文件的只读内存映射，
+            # 尝试写入同名文件会触发 [Errno 22] Invalid argument。
+            # 仅当数据已修改（不再是 memmap）或是不同路径时才执行保存。
+            is_same_file_mmap = False
+            if isinstance(self._vectors, np.memmap):
+                try:
+                    # 检查是否指向同一个物理文件
+                    if os.path.abspath(self._vectors.filename) == os.path.abspath(str(vectors_path)):
+                        is_same_file_mmap = True
+                except Exception:
+                    pass
+            
+            if not is_same_file_mmap:
+                try:
+                    # 使用 str() 转换路径以提高跨版本兼容性
+                    if self.use_mmap:
+                        np.save(str(vectors_path), self._vectors)
+                    else:
+                        np.save(str(vectors_path), self._vectors, allow_pickle=False)
+                    logger.debug(f"保存向量: {vectors_path}")
+                except Exception as e:
+                    # 如果是因为锁定（Errno 22/13），在 Windows 上尝试优雅处理
+                    if "Errno 22" in str(e) or "Errno 13" in str(e):
+                        logger.warning(f"保存向量文件受阻 (通常由于文件处于内存映射状态): {e}。数据将保留在内存中，在关闭或下次尝试时重试。")
+                    else:
+                        logger.error(f"保存向量文件失败: {e}")
+                        raise
             else:
-                np.save(vectors_path, self._vectors, allow_pickle=False)
-            logger.debug(f"保存向量: {vectors_path}")
+                logger.debug("数据为原始内存映射且无变化，跳过 vectors.npy 写入以避开 Windows 锁定")
 
         # 保存元数据
         metadata = {
@@ -651,6 +693,11 @@ class VectorStore:
     def total_size(self) -> int:
         """总向量数量（包括已删除的）"""
         return len(self._ids)
+
+    @property
+    def num_vectors(self) -> int:
+        """兼容性别名：当前向量数量"""
+        return self.size
 
     @property
     def deleted_count(self) -> int:

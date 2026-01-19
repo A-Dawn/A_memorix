@@ -39,12 +39,14 @@ class EmbeddingAPIAdapter:
         max_concurrent: int = 5,
         default_dimension: int = 1024,
         enable_cache: bool = False,
+        model_name: str = "auto",
     ):
         """初始化嵌入 API 适配器"""
         self.batch_size = batch_size
         self.max_concurrent = max_concurrent
         self.default_dimension = default_dimension
         self.enable_cache = enable_cache
+        self.model_name = model_name
         
         # 嵌入维度（延迟初始化）
         self._dimension: Optional[int] = None
@@ -74,7 +76,11 @@ class EmbeddingAPIAdapter:
         
         try:
             # 使用测试文本获取嵌入
-            test_embedding = await get_embedding("test")
+            kwargs = {}
+            if self.model_name and self.model_name != "auto":
+                kwargs["model"] = self.model_name
+                
+            test_embedding = await get_embedding("test", **kwargs)
             
             if test_embedding and isinstance(test_embedding, list):
                 detected_dim = len(test_embedding)
@@ -197,7 +203,11 @@ class EmbeddingAPIAdapter:
             async def encode_with_semaphore(text: str, index: int):
                 async with semaphore:
                     try:
-                        embedding = await get_embedding(text)
+                        kwargs = {}
+                        if self.model_name and self.model_name != "auto":
+                            kwargs["model"] = self.model_name
+                            
+                        embedding = await get_embedding(text, **kwargs)
                         if embedding is None:
                             # API 返回 None，使用零向量
                             dim = self._dimension or self.default_dimension
@@ -309,6 +319,7 @@ def create_embedding_api_adapter(
     batch_size: int = 32,
     max_concurrent: int = 5,
     default_dimension: int = 1024,
+    model_name: str = "auto",
 ) -> EmbeddingAPIAdapter:
     """
     创建嵌入 API 适配器
@@ -317,6 +328,7 @@ def create_embedding_api_adapter(
         batch_size: 批量处理大小
         max_concurrent: 最大并发请求数
         default_dimension: 默认维度
+        model_name: 指定模型名称
     
     Returns:
         嵌入 API 适配器实例
@@ -325,4 +337,5 @@ def create_embedding_api_adapter(
         batch_size=batch_size,
         max_concurrent=max_concurrent,
         default_dimension=default_dimension,
+        model_name=model_name,
     )
