@@ -1,0 +1,178 @@
+{
+  "manifest_version": 1,
+  "name": "A_Memorix",
+  "version": "0.1.0",
+  "description": "轻量级知识库插件 - 基于双路检索的完全独立的记忆增强系统，优化低资源环境下的知识存储与检索",
+  "author": "A_Dawn",
+  "license": "AGPL_3.0",
+  "keywords": [
+    "知识库",
+    "记忆",
+    "检索",
+    "向量存储",
+    "知识图谱"
+  ],
+  "categories": [
+    "知识管理",
+    "记忆增强"
+  ],
+  "required_plugins": [],
+  "config_schema": {
+    "storage": {
+      "data_dir": {
+        "type": "string",
+        "default": "./plugins/A_memorix/data",
+        "description": "知识库数据目录"
+      },
+      "max_memory_mb": {
+        "type": "integer",
+        "default": 512,
+        "description": "最大内存占用限制（MB）"
+      },
+      "enable_memory_mapping": {
+        "type": "boolean",
+        "default": true,
+        "description": "启用内存映射文件存储"
+      }
+    },
+    "embedding": {
+      "model_preset": {
+        "type": "string",
+        "default": "light",
+        "enum": [
+          "ultra_light",
+          "light",
+          "balanced",
+          "performance"
+        ],
+        "description": "嵌入模型预设档位"
+      },
+      "dimension": {
+        "type": "integer",
+        "default": 384,
+        "description": "嵌入向量维度"
+      },
+      "quantization_type": {
+        "type": "string",
+        "default": "int8",
+        "enum": [
+          "float32",
+          "int8",
+          "pq"
+        ],
+        "description": "向量量化类型"
+      },
+      "batch_size": {
+        "type": "integer",
+        "default": 32,
+        "description": "批量生成嵌入的批次大小"
+      }
+    },
+    "retrieval": {
+      "top_k_relations": {
+        "type": "integer",
+        "default": 10,
+        "description": "关系检索返回数量"
+      },
+      "top_k_paragraphs": {
+        "type": "integer",
+        "default": 20,
+        "description": "段落检索返回数量"
+      },
+      "ppr_alpha": {
+        "type": "number",
+        "default": 0.85,
+        "description": "Personalized PageRank 的alpha参数"
+      },
+      "ppr_iterations": {
+        "type": "integer",
+        "default": 50,
+        "description": "PPR迭代次数"
+      },
+      "enable_dynamic_threshold": {
+        "type": "boolean",
+        "default": true,
+        "description": "启用动态阈值过滤"
+      }
+    },
+    "graph": {
+      "enable_synonym_connection": {
+        "type": "boolean",
+        "default": true,
+        "description": "启用同义词自动连接"
+      },
+      "synonym_threshold": {
+        "type": "number",
+        "default": 0.85,
+        "description": "同义词相似度阈值"
+      },
+      "sparse_matrix_format": {
+        "type": "string",
+        "default": "csr",
+        "enum": [
+          "csr",
+          "csc"
+        ],
+        "description": "稀疏矩阵存储格式"
+      }
+    },
+    "import": {
+      "chunk_size": {
+        "type": "integer",
+        "default": 1000,
+        "description": "批量导入的块大小"
+      },
+      "enable_openie": {
+        "type": "boolean",
+        "default": true,
+        "description": "启用OpenIE信息抽取"
+      }
+    },
+    "advanced": {
+      "enable_multiprocessing": {
+        "type": "boolean",
+        "default": false,
+        "description": "启用多进程处理（单核环境应关闭）"
+      },
+      "num_workers": {
+        "type": "integer",
+        "default": 1,
+        "description": "工作进程数量"
+      },
+      "log_level": {
+        "type": "string",
+        "default": "INFO",
+        "enum": [
+          "DEBUG",
+          "INFO",
+          "WARNING",
+          "ERROR"
+        ],
+        "description": "日志级别"
+      },
+      "enable_auto_save": {
+        "type": "boolean",
+        "default": true,
+        "description": "启用自动保存"
+      },
+      "auto_save_interval_minutes": {
+        "type": "integer",
+        "default": 5,
+        "description": "自动保存间隔（分钟）"
+      }
+    }
+  },
+  "dependencies": {
+    "required": [
+      "numpy>=1.20.0",
+      "scipy>=1.7.0",
+      "nest-asyncio>=1.5.0",
+      "faiss-cpu>=1.7.0",
+      "fastapi>=0.100.0",
+      "uvicorn>=0.20.0",
+      "pydantic>=2.0.0"
+    ],
+    "optional": []
+  },
+  "id": "A_Dawn.A_memorix"
+}

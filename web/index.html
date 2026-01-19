@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>A_Memorix 可视化编辑器</title>
+    <!-- 引入 Vis.js -->
+    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <!-- 引入 Axios (可选，也可以用 fetch) -->
+    <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            margin: 0;
+            padding: 0;
+            height: 100vh;
+            overflow: hidden;
+            background-color: #f0f2f5;
+        }
+
+        #header {
+            background-color: #fff;
+            padding: 10px 20px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            z-index: 10;
+            position: relative;
+        }
+
+        #header h1 {
+            margin: 0;
+            font-size: 1.2rem;
+            color: #333;
+            flex-shrink: 0;
+        }
+
+        #controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .search-box {
+            display: flex;
+            align-items: center;
+            background: #fff;
+            border: 1px solid #d9d9d9;
+            border-radius: 4px;
+            padding: 2px 8px;
+            margin-right: 10px;
+        }
+
+        .search-box input {
+            border: none;
+            outline: none;
+            padding: 4px;
+            width: 150px;
+        }
+
+        .search-box button {
+            background: none;
+            color: #666;
+            padding: 4px;
+        }
+
+        .search-box button:hover {
+            background: none;
+            color: #1890ff;
+        }
+
+        button {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            background-color: #1890ff;
+            color: white;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background-color: #40a9ff;
+        }
+
+        button.danger {
+            background-color: #ff4d4f;
+        }
+
+        button.danger:hover {
+            background-color: #ff7875;
+        }
+
+        button.success {
+            background-color: #52c41a;
+        }
+
+        button.success:hover {
+            background-color: #73d13d;
+        }
+
+        /* Auto-save toggle */
+        .toggle-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            background: #f5f5f5;
+            border-radius: 4px;
+            font-size: 0.9rem;
+        }
+
+        .toggle-switch {
+            position: relative;
+            width: 40px;
+            height: 20px;
+        }
+
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc;
+            transition: 0.3s;
+            border-radius: 20px;
+        }
+
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 14px;
+            width: 14px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: 0.3s;
+            border-radius: 50%;
+        }
+
+        input:checked+.toggle-slider {
+            background-color: #52c41a;
+        }
+
+        input:checked+.toggle-slider:before {
+            transform: translateX(20px);
+        }
+
+        #container {
+            width: 100%;
+            height: calc(100vh - 60px);
+            background-color: #fff;
+        }
+
+        /* 简单的 Toast 提示 */
+        #toast {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 10px 20px;
+            border-radius: 20px;
+            display: none;
+            z-index: 1000;
+        }
+
+        /* 编辑面板 */
+        #edit-panel {
+            position: absolute;
+            top: 70px;
+            right: 20px;
+            width: 300px;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            display: none;
+            z-index: 100;
+        }
+
+        #edit-panel h3 {
+            margin-top: 0;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+
+        input[type="range"] {
+            width: 100%;
+        }
+
+        .value-display {
+            float: right;
+            font-weight: normal;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="header">
+        <h1>🧠 A_Memorix 知识图谱编辑器</h1>
+        <div id="controls">
+            <div class="search-box">
+                <input type="text" id="node-search-input" placeholder="搜索节点..."
+                    onkeydown="if(event.key==='Enter') searchNode()">
+                <button onclick="searchNode()" title="搜索">🔍</button>
+            </div>
+            <button onclick="loadData()">🔄 刷新数据</button>
+            <button onclick="layout()">📐 重排布局</button>
+            <button onclick="openAddNodePanel()" style="background:#52c41a;">➕ 添加节点</button>
+            <button onclick="openAddEdgePanel()" style="background:#722ed1;">🔗 添加连接</button>
+            <button onclick="manualSave()" class="success">💾 保存</button>
+
+            <div class="toggle-container">
+                <span>⚡ 低性能模式</span>
+                <label class="toggle-switch">
+                    <input type="checkbox" id="low-perf-toggle" onchange="toggleLowPerf(this.checked)">
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+
+            <div class="toggle-container">
+                <span>自动保存</span>
+                <label class="toggle-switch">
+                    <input type="checkbox" id="auto-save-toggle" onchange="toggleAutoSave(this.checked)">
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+        </div>
+    </div>
+
+    <div id="container"></div>
+
+    <!-- 编辑面板 -->
+    <div id="edit-panel">
+        <h3 id="panel-title">编辑属性</h3>
+        <div id="edge-controls" style="display:none;">
+            <div class="form-group">
+                <label>权重 (Weight) <span id="weight-val" class="value-display">1.0</span></label>
+                <input type="range" id="weight-slider" min="-5" max="5" step="0.1" value="1.0"
+                    oninput="updateSliderVal(this.value)">
+            </div>
+            <button onclick="saveEdge()">💾 保存权重</button>
+            <button class="danger" onclick="deleteEdge()">🗑️ 删除连接</button>
+        </div>
+        <div id="node-controls" style="display:none;">
+            <p>选中节点: <b id="node-id"></b></p>
+            <div class="form-group">
+                <label>重命名为:</label>
+                <input type="text" id="rename-input" placeholder="新名称" style="width:100%;padding:6px;">
+            </div>
+            <div style="display:flex; gap:5px; flex-wrap:wrap;">
+                <button onclick="renameNode()" style="background:#faad14;color:#000;flex:1;">✏️ 重命名</button>
+                <button onclick="ignoreLeafNeighbors()" style="background:#666;flex:1;">🛡️ 忽略邻居</button>
+                <button class="danger" onclick="deleteNode()" style="flex:1;">🗑️ 删除节点</button>
+            </div>
+        </div>
+        <div style="margin-top: 10px; text-align: right;">
+            <button onclick="closePanel()" style="background:#ccc; color:#333;">取消</button>
+        </div>
+    </div>
+
+    <!-- 添加节点面板 -->
+    <div id="add-node-panel"
+        style="position:absolute;top:70px;right:20px;width:300px;background:white;padding:20px;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.15);display:none;z-index:100;">
+        <h3>➕ 添加新节点</h3>
+        <div class="form-group">
+            <label>节点名称:</label>
+            <input type="text" id="new-node-name" placeholder="输入节点名称" style="width:100%;padding:6px;">
+        </div>
+        <button onclick="addNode()" style="background:#52c41a;">✅ 确认添加</button>
+        <button onclick="closeAddNodePanel()" style="background:#ccc;color:#333;margin-left:10px;">取消</button>
+    </div>
+
+    <!-- 添加连接面板 -->
+    <div id="add-edge-panel"
+        style="position:absolute;top:70px;right:20px;width:300px;background:white;padding:20px;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.15);display:none;z-index:100;">
+        <h3>🔗 添加新连接</h3>
+        <div class="form-group">
+            <label>起始节点:</label>
+            <input type="text" id="edge-source" placeholder="源节点名称" style="width:100%;padding:6px;">
+        </div>
+        <div class="form-group">
+            <label>目标节点:</label>
+            <input type="text" id="edge-target" placeholder="目标节点名称" style="width:100%;padding:6px;">
+        </div>
+        <div class="form-group">
+            <label>权重: <span id="new-edge-weight-val" class="value-display">1.0</span></label>
+            <input type="range" id="new-edge-weight" min="0.1" max="5" step="0.1" value="1.0"
+                oninput="document.getElementById('new-edge-weight-val').innerText=this.value">
+        </div>
+        <button onclick="addEdge()" style="background:#722ed1;">✅ 确认添加</button>
+        <button onclick="closeAddEdgePanel()" style="background:#ccc;color:#333;margin-left:10px;">取消</button>
+    </div>
+
+    <div id="toast">操作成功</div>
+
+    <script>
+        let network = null;
+        let nodes = new vis.DataSet([]);
+        let edges = new vis.DataSet([]);
+        let currentSelection = null; // { type: 'node'|'edge', data: ... }
+
+        // 初始化
+        document.addEventListener('DOMContentLoaded', () => {
+            initNetwork();
+            loadData();
+            loadConfig();
+        });
+
+        function initNetwork() {
+            const container = document.getElementById('container');
+            const data = { nodes: nodes, edges: edges };
+            const options = {
+                nodes: {
+                    shape: 'dot',
+                    size: 20,
+                    font: { size: 14 }
+                },
+                edges: {
+                    arrows: 'to',
+                    smooth: { type: 'continuous' }
+                },
+                physics: {
+                    stabilization: false,
+                    barnesHut: {
+                        gravitationalConstant: -2000,
+                        springConstant: 0.04,
+                        springLength: 95
+                    }
+                },
+                interaction: {
+                    hover: true
+                }
+            };
+
+            network = new vis.Network(container, data, options);
+
+            network.on("click", function (params) {
+                if (params.edges.length > 0 && params.nodes.length === 0) {
+                    // 选中边
+                    const edgeId = params.edges[0];
+                    const edge = edges.get(edgeId);
+                    openEdgePanel(edge);
+                } else if (params.nodes.length > 0) {
+                    // 选中节点
+                    const nodeId = params.nodes[0];
+                    openNodePanel(nodeId);
+                } else {
+                    closePanel();
+                }
+            });
+        }
+
+        async function loadData() {
+            showToast("加载中...");
+            try {
+                const res = await axios.get('/api/graph');
+                const data = res.data;
+
+                nodes.clear();
+                edges.clear();
+                nodes.add(data.nodes);
+                edges.add(data.edges);
+
+                showToast("数据加载完成");
+            } catch (err) {
+                console.error(err);
+                showToast("加载失败: " + err.message);
+            }
+        }
+
+        function layout() {
+            if (network) network.stabilize();
+        }
+
+        // --- Config & Save ---
+
+        async function loadConfig() {
+            try {
+                const res = await axios.get('/api/config');
+                document.getElementById('auto-save-toggle').checked = res.data.auto_save_enabled;
+            } catch (err) {
+                console.error('加载配置失败:', err);
+            }
+        }
+
+        async function manualSave() {
+            showToast('保存中...');
+            try {
+                const res = await axios.post('/api/save');
+                showToast('✅ 保存成功: ' + res.data.saved.join(', '));
+            } catch (err) {
+                showToast('❌ 保存失败: ' + err.message);
+            }
+        }
+
+        async function toggleAutoSave(enabled) {
+            try {
+                await axios.post('/api/config/auto_save', { enabled });
+                showToast(enabled ? '自动保存已启用' : '自动保存已禁用');
+            } catch (err) {
+                showToast('设置失败: ' + err.message);
+                // 恢复开关状态
+                document.getElementById('auto-save-toggle').checked = !enabled;
+            }
+        }
+
+        // --- Panel Logic ---
+
+        function openEdgePanel(edge) {
+            currentSelection = { type: 'edge', data: edge };
+            document.getElementById('edit-panel').style.display = 'block';
+            document.getElementById('edge-controls').style.display = 'block';
+            document.getElementById('node-controls').style.display = 'none';
+
+            document.getElementById('panel-title').innerText = `编辑关系: ${edge.from} -> ${edge.to}`;
+            document.getElementById('weight-slider').value = edge.value || 1.0;
+            document.getElementById('weight-val').innerText = (edge.value || 1.0).toFixed(1);
+        }
+
+        function openNodePanel(nodeId) {
+            currentSelection = { type: 'node', data: nodeId };
+            document.getElementById('edit-panel').style.display = 'block';
+            document.getElementById('edge-controls').style.display = 'none';
+            document.getElementById('node-controls').style.display = 'block';
+
+            document.getElementById('panel-title').innerText = "编辑节点";
+            document.getElementById('node-id').innerText = nodeId;
+        }
+
+        function closePanel() {
+            document.getElementById('edit-panel').style.display = 'none';
+            currentSelection = null;
+        }
+
+        function updateSliderVal(val) {
+            document.getElementById('weight-val').innerText = val;
+        }
+
+        // --- Actions ---
+
+        async function saveEdge() {
+            if (!currentSelection || currentSelection.type !== 'edge') return;
+            const edge = currentSelection.data;
+            const newWeight = parseFloat(document.getElementById('weight-slider').value);
+
+            try {
+                // 注意: API 接受的是增量还是绝对值？
+                // 之前的 server.py 实现是用增量 (delta)。
+                // 但前端这种 slider 交互通常期望是绝对值。
+                // 这里我们改下逻辑：前端发送 "target weight"，后端算 delta。
+                // 我们的 server.py 读取当前权重并计算 delta。
+                // 所以我们只需要传 weight: newWeight 即可。
+
+                await axios.post('/api/edge/weight', {
+                    source: edge.from,
+                    target: edge.to,
+                    weight: newWeight
+                });
+
+                // 更新本地视图
+                edges.update({ ...edge, value: newWeight, label: newWeight.toFixed(2) });
+                showToast("权重已更新");
+                closePanel();
+            } catch (err) {
+                showToast("更新失败: " + err.message);
+            }
+        }
+
+        async function deleteEdge() {
+            if (!currentSelection || currentSelection.type !== 'edge') return;
+            const edge = currentSelection.data;
+            if (!confirm(`确定要删除 ${edge.from} -> ${edge.to} 吗？`)) return;
+
+            try {
+                await axios.delete('/api/edge', {
+                    data: { source: edge.from, target: edge.to }
+                });
+                edges.remove(edge.id);
+                showToast("边已删除");
+                closePanel();
+            } catch (err) {
+                showToast("删除失败: " + err.message);
+            }
+        }
+
+        async function deleteNode() {
+            if (!currentSelection || currentSelection.type !== 'node') return;
+            const nodeId = currentSelection.data;
+            if (!confirm(`确定要删除节点 "${nodeId}" 吗？这会同时删除所有相关连接！`)) return;
+
+            try {
+                await axios.delete('/api/node', {
+                    data: { node_id: nodeId }
+                });
+                nodes.remove(nodeId);
+                // 移除关联边
+                const relatedEdges = edges.get({
+                    filter: function (item) {
+                        return item.from === nodeId || item.to === nodeId;
+                    }
+                });
+                edges.remove(relatedEdges);
+
+                showToast("节点已删除");
+                closePanel();
+            } catch (err) {
+                showToast("删除失败: " + err.message);
+            }
+        }
+
+        function showToast(msg) {
+            const t = document.getElementById('toast');
+            t.innerText = msg;
+            t.style.display = 'block';
+            setTimeout(() => t.style.display = 'none', 3000);
+        }
+
+        // --- Add Node ---
+        function openAddNodePanel() {
+            closePanel();
+            closeAddEdgePanel();
+            document.getElementById('add-node-panel').style.display = 'block';
+            document.getElementById('new-node-name').value = '';
+        }
+
+        function closeAddNodePanel() {
+            document.getElementById('add-node-panel').style.display = 'none';
+        }
+
+        async function addNode() {
+            const name = document.getElementById('new-node-name').value.trim();
+            if (!name) {
+                showToast('请输入节点名称');
+                return;
+            }
+            try {
+                await axios.post('/api/node', { node_id: name });
+                nodes.add({ id: name, label: name });
+                showToast('节点添加成功');
+                closeAddNodePanel();
+            } catch (err) {
+                showToast('添加失败: ' + (err.response?.data?.detail || err.message));
+            }
+        }
+
+        // --- Add Edge ---
+        function openAddEdgePanel() {
+            closePanel();
+            closeAddNodePanel();
+            document.getElementById('add-edge-panel').style.display = 'block';
+            document.getElementById('edge-source').value = '';
+            document.getElementById('edge-target').value = '';
+            document.getElementById('new-edge-weight').value = 1.0;
+            document.getElementById('new-edge-weight-val').innerText = '1.0';
+        }
+
+        function closeAddEdgePanel() {
+            document.getElementById('add-edge-panel').style.display = 'none';
+        }
+
+        async function addEdge() {
+            const source = document.getElementById('edge-source').value.trim();
+            const target = document.getElementById('edge-target').value.trim();
+            const weight = parseFloat(document.getElementById('new-edge-weight').value);
+
+            if (!source || !target) {
+                showToast('请输入起始和目标节点');
+                return;
+            }
+            try {
+                await axios.post('/api/edge', { source, target, weight });
+                // 如果节点不存在，后端会自动添加，前端也添加
+                if (!nodes.get(source)) nodes.add({ id: source, label: source });
+                if (!nodes.get(target)) nodes.add({ id: target, label: target });
+                edges.add({ from: source, to: target, value: weight, label: weight.toFixed(2), arrows: 'to' });
+                showToast('连接添加成功');
+                closeAddEdgePanel();
+            } catch (err) {
+                showToast('添加失败: ' + (err.response?.data?.detail || err.message));
+            }
+        }
+
+        // --- Rename Node ---
+        async function renameNode() {
+            if (!currentSelection || currentSelection.type !== 'node') return;
+            const oldId = currentSelection.data;
+            const newId = document.getElementById('rename-input').value.trim();
+
+            if (!newId) {
+                showToast('请输入新名称');
+                return;
+            }
+            if (newId === oldId) {
+                showToast('新名称与旧名称相同');
+                return;
+            }
+            try {
+                await axios.put('/api/node/rename', { old_id: oldId, new_id: newId });
+                // 更新本地视图
+                // 1. 添加新节点
+                nodes.add({ id: newId, label: newId });
+                // 2. 更新所有边
+                const allEdges = edges.get();
+                allEdges.forEach(e => {
+                    if (e.from === oldId) {
+                        edges.update({ ...e, from: newId });
+                    }
+                    if (e.to === oldId) {
+                        edges.update({ ...e, to: newId });
+                    }
+                });
+                // 3. 删除旧节点
+                nodes.remove(oldId);
+                showToast('重命名成功');
+                closePanel();
+            } catch (err) {
+                showToast('重命名失败: ' + (err.response?.data?.detail || err.message));
+            }
+        }
+
+        // --- New Features ---
+
+        function searchNode() {
+            const input = document.getElementById('node-search-input');
+            const term = input.value.trim().toLowerCase();
+            if (!term) return;
+
+            const matches = nodes.get({
+                filter: (item) => item.label.toLowerCase().includes(term) || item.id.toLowerCase().includes(term)
+            });
+
+            if (matches.length > 0) {
+                const targetId = matches[0].id;
+                network.selectNodes([targetId]);
+                network.focus(targetId, {
+                    scale: 1.0,
+                    animation: {
+                        duration: 500,
+                        easingFunction: 'easeInOutQuad'
+                    }
+                });
+                openNodePanel(targetId);
+                showToast(`找到 ${matches.length} 个匹配项`);
+            } else {
+                showToast('未找到匹配节点');
+            }
+        }
+
+        function toggleLowPerf(enabled) {
+            localStorage.setItem('memorix_low_perf', enabled);
+            if (!network) return;
+
+            if (enabled) {
+                network.setOptions({
+                    physics: { enabled: false },
+                    edges: { smooth: { enabled: false } },
+                    interaction: { hideEdgesOnDrag: true, hideNodesOnDrag: false }
+                });
+                showToast('低性能模式已启用（关闭动画和物理效果）');
+            } else {
+                network.setOptions({
+                    physics: {
+                        enabled: true,
+                        stabilization: false,
+                        barnesHut: {
+                            gravitationalConstant: -2000,
+                            springConstant: 0.04,
+                            springLength: 95
+                        }
+                    },
+                    edges: { smooth: { type: 'continuous', enabled: true } },
+                    interaction: { hideEdgesOnDrag: false }
+                });
+                showToast('低性能模式已禁用');
+            }
+        }
+
+        function ignoreLeafNeighbors() {
+            if (!currentSelection || currentSelection.type !== 'node') return;
+            const nodeId = currentSelection.data;
+
+            // 获取所有与该节点相连的边
+            const connectedEdges = network.getConnectedEdges(nodeId);
+            const neighborIds = network.getConnectedNodes(nodeId);
+
+            let ignoredCount = 0;
+            neighborIds.forEach(neighborId => {
+                // 检查邻居节点的度（连接数）
+                const neighborEdges = network.getConnectedEdges(neighborId);
+                // 如果连接数只有 1，说明它只连着当前节点 (或者它是一个孤立点，但这不可能因为它是从 getConnectedNodes 来的)
+                // "没有二次相连" 即 degree == 1
+                if (neighborEdges.length === 1) {
+                    nodes.remove(neighborId);
+                    edges.remove(neighborEdges[0]);
+                    ignoredCount++;
+                }
+            });
+
+            if (ignoredCount > 0) {
+                showToast(`已忽略 ${ignoredCount} 个叶子邻居节点`);
+            } else {
+                showToast('没有可忽略的叶子邻居节点');
+            }
+        }
+
+        // 在页面加载时检查低性能模式
+        window.addEventListener('load', () => {
+            const lowPerf = localStorage.getItem('memorix_low_perf') === 'true';
+            document.getElementById('low-perf-toggle').checked = lowPerf;
+            if (lowPerf) setTimeout(() => toggleLowPerf(true), 500);
+        });
+
+    </script>
+</body>
+
+</html>
