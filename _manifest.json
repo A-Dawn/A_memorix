@@ -1,7 +1,7 @@
 {
   "manifest_version": 1,
   "name": "A_Memorix",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "轻量级知识库插件 - 基于双路检索的完全独立的记忆增强系统，优化低资源环境下的知识存储与检索",
   "author": "A_Dawn",
   "license": "AGPL_3.0",
@@ -83,6 +83,11 @@
         "default": 0.85,
         "description": "PPR 的 alpha 参数"
       },
+      "ppr_concurrency_limit": {
+        "type": "integer",
+        "default": 4,
+        "description": "PPR 计算的最大并发数（防止 CPU 过载）"
+      },
       "enable_parallel": {
         "type": "boolean",
         "default": true,
@@ -153,7 +158,7 @@
       "enable_auto_save": {
         "type": "boolean",
         "default": true,
-        "description": "启用自动保存"
+        "description": "启用自动保存（原子化统一持久化）"
       },
       "auto_save_interval_minutes": {
         "type": "integer",
