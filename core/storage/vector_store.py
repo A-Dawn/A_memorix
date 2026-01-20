@@ -20,6 +20,7 @@ except ImportError:
 
 from src.common.logger import get_logger
 from ..utils.quantization import QuantizationType
+from ..utils.io import atomic_write, atomic_save_path
 
 logger = get_logger("A_Memorix.VectorStore")
 
@@ -119,8 +120,8 @@ class VectorStore:
         if len(vectors) != len(ids):
             raise ValueError(f"向量数量与ID数量不匹配: {len(vectors)} vs {len(ids)}")
 
-        # 检查ID重复
-        duplicate_ids = set(ids) & set(self._ids)
+        # 检查ID重复 (包括主索引和缓冲区)
+        duplicate_ids = set(ids) & (set(self._ids) | set(self._buffer_ids))
         if duplicate_ids:
             raise ValueError(f"ID已存在: {duplicate_ids}")
 
@@ -361,20 +362,18 @@ class VectorStore:
         # 保存索引
         if self._index is not None:
             index_path = data_dir / "vectors.index"
-            faiss.write_index(self._index, str(index_path))
+            with atomic_save_path(index_path) as tmp_path:
+                faiss.write_index(self._index, tmp_path)
             logger.debug(f"保存索引: {index_path}")
 
         # 保存向量（如果使用内存映射）
         if self._vectors is not None:
             vectors_path = data_dir / "vectors.npy"
             
-            # Windows 兼容性处理：如果向量数据是当前文件的只读内存映射，
-            # 尝试写入同名文件会触发 [Errno 22] Invalid argument。
-            # 仅当数据已修改（不再是 memmap）或是不同路径时才执行保存。
+            # Windows 兼容性处理
             is_same_file_mmap = False
             if isinstance(self._vectors, np.memmap):
                 try:
-                    # 检查是否指向同一个物理文件
                     if os.path.abspath(self._vectors.filename) == os.path.abspath(str(vectors_path)):
                         is_same_file_mmap = True
                 except Exception:
@@ -382,16 +381,17 @@ class VectorStore:
             
             if not is_same_file_mmap:
                 try:
-                    # 使用 str() 转换路径以提高跨版本兼容性
-                    if self.use_mmap:
-                        np.save(str(vectors_path), self._vectors)
-                    else:
-                        np.save(str(vectors_path), self._vectors, allow_pickle=False)
+                    # 使用原子保存路径
+                    with atomic_save_path(vectors_path) as tmp_path:
+                         if self.use_mmap:
+                             np.save(tmp_path, self._vectors)
+                         else:
+                             np.save(tmp_path, self._vectors, allow_pickle=False)
                     logger.debug(f"保存向量: {vectors_path}")
                 except Exception as e:
                     # 如果是因为锁定（Errno 22/13），在 Windows 上尝试优雅处理
-                    if "Errno 22" in str(e) or "Errno 13" in str(e):
-                        logger.warning(f"保存向量文件受阻 (通常由于文件处于内存映射状态): {e}。数据将保留在内存中，在关闭或下次尝试时重试。")
+                    if "Errno 22" in str(e) or "Errno 13" in str(e) or "PermissionError" in str(e):
+                        logger.warning(f"保存向量文件受阻 (通常由于文件处于内存映射状态): {e}。数据将保留在内存中。")
                     else:
                         logger.error(f"保存向量文件失败: {e}")
                         raise
@@ -412,7 +412,7 @@ class VectorStore:
         }
 
         metadata_path = data_dir / "vectors_metadata.pkl"
-        with open(metadata_path, "wb") as f:
+        with atomic_write(metadata_path, "wb") as f:
             pickle.dump(metadata, f)
         logger.debug(f"保存元数据: {metadata_path}")
 
@@ -686,13 +686,13 @@ class VectorStore:
 
     @property
     def size(self) -> int:
-        """当前向量数量（不包括已删除的）"""
-        return len(self._ids) - len(self._deleted_ids)
+        """当前向量数量（不包括已删除的，包括缓冲区）"""
+        return len(self._ids) + len(self._buffer_ids) - len(self._deleted_ids)
 
     @property
     def total_size(self) -> int:
-        """总向量数量（包括已删除的）"""
-        return len(self._ids)
+        """总向量数量（包括已删除的和缓冲区）"""
+        return len(self._ids) + len(self._buffer_ids)
 
     @property
     def num_vectors(self) -> int:

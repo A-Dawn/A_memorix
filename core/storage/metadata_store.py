@@ -668,24 +668,78 @@ class MetadataStore:
         """
         删除实体（级联删除相关关联）
         支持通过哈希值或名称删除
+        
+        注意：会同时删除所有引用该实体（作为主语或宾语）的关系
         """
         cursor = self._conn.cursor()
         
-        # 1. 尝试按哈希删除
-        cursor.execute("DELETE FROM entities WHERE hash = ?", (hash_or_name,))
-        if cursor.rowcount > 0:
+        # 1. 解析实体信息 (获取 Name 和 Hash)
+        entity_name = None
+        entity_hash = None
+        
+        # 尝试作为 Hash 查询
+        cursor.execute("SELECT name, hash FROM entities WHERE hash = ?", (hash_or_name,))
+        row = cursor.fetchone()
+        if row:
+            entity_name = row[0]
+            entity_hash = row[1]
+        else:
+            # 尝试作为 Name 查询
+            cursor.execute("SELECT name, hash FROM entities WHERE name = ?", (hash_or_name,))
+            row = cursor.fetchone()
+            if row:
+                entity_name = row[0]
+                entity_hash = row[1]
+                
+        if not entity_name or not entity_hash:
+            logger.warning(f"删除实体失败，未找到实体: {hash_or_name}")
+            return False
+
+        logger.info(f"开始删除实体: {entity_name} (Hash: {entity_hash[:8]}...)")
+
+        try:
+            # 2. 查找相关关系 (Subject 或 Object 为该实体)
+            cursor.execute("""
+                SELECT hash FROM relations 
+                WHERE subject = ? OR object = ?
+            """, (entity_name, entity_name))
+            
+            relation_hashes = [r[0] for r in cursor.fetchall()]
+            
+            if relation_hashes:
+                logger.info(f"发现 {len(relation_hashes)} 个相关关系，准备级联删除")
+                
+                # 3. 删除这些关系与段落的关联
+                # SQLite 不支持直接 DELETE ... WHERE ... IN (...) 的列表参数，需要拼接占位符
+                placeholders = ','.join(['?'] * len(relation_hashes))
+                
+                cursor.execute(f"""
+                    DELETE FROM paragraph_relations 
+                    WHERE relation_hash IN ({placeholders})
+                """, relation_hashes)
+                
+                # 4. 删除关系本体
+                cursor.execute(f"""
+                    DELETE FROM relations 
+                    WHERE hash IN ({placeholders})
+                """, relation_hashes)
+                
+                logger.info("相关关系已级联删除")
+            
+            # 5. 删除实体与段落的关联
+            cursor.execute("DELETE FROM paragraph_entities WHERE entity_hash = ?", (entity_hash,))
+            
+            # 6. 删除实体本体
+            cursor.execute("DELETE FROM entities WHERE hash = ?", (entity_hash,))
+            
             self._conn.commit()
-            logger.info(f"删除实体 (Hash): {hash_or_name[:16]}...")
+            logger.info("实体删除完成")
             return True
             
-        # 2. 尝试按名称删除
-        cursor.execute("DELETE FROM entities WHERE name = ?", (hash_or_name,))
-        if cursor.rowcount > 0:
-            self._conn.commit()
-            logger.info(f"删除实体 (Name): {hash_or_name}")
-            return True
-            
-        return False
+        except Exception as e:
+            logger.error(f"删除实体时发生错误: {e}")
+            self._conn.rollback()
+            return False
 
     def delete_relation(self, hash_value: str) -> bool:
         """

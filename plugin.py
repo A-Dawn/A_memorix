@@ -20,6 +20,12 @@ from src.plugin_system import (
     register_plugin,
 )
 from src.common.logger import get_logger
+import asyncio
+import uuid
+import time
+import json
+import datetime
+from .core.utils.io import atomic_write
 
 # deleted imports
 
@@ -103,7 +109,7 @@ class A_MemorixPlugin(BasePlugin):
             "dimension": ConfigField(
                 type=int,
                 default=1024,
-                description="向量维度"
+                description="向量维度 (对于支持动态维度的模型，将尝试请求此维度)"
             ),
             "quantization_type": ConfigField(
                 type=str,
@@ -781,6 +787,10 @@ class A_MemorixPlugin(BasePlugin):
         # 启动定时任务循环
         import asyncio
         asyncio.create_task(self._scheduled_import_loop())
+        
+        # 启动自动保存循环
+        if self.get_config("advanced.enable_auto_save", True):
+            asyncio.create_task(self._auto_save_loop())
 
         logger.info(f"知识库数据目录: {data_dir}")
 
@@ -953,6 +963,73 @@ class A_MemorixPlugin(BasePlugin):
                 
         logger.info(f"批量总结任务完成，成功: {success_count}，跳过: {skipped_count}")
 
+
+
+        logger.info(f"批量总结任务完成，成功: {success_count}，跳过: {skipped_count}")
+
+    async def save_all(self):
+        """统一保存所有数据 (Unified Persistence)"""
+        if not self.vector_store or not self.graph_store:
+            return
+
+        commit_id = str(uuid.uuid4())
+        logger.info(f"开始统一保存 (Commit ID: {commit_id})...")
+        
+        try:
+            # 并行保存各组件
+            # VectorStore 和 GraphStore 的 save 方法现在已经是线程安全的(或使用原子写)
+            # 但为了减少IO阻塞，最好在线程池运行
+            await asyncio.gather(
+                asyncio.to_thread(self.vector_store.save),
+                asyncio.to_thread(self.graph_store.save)
+                # MetadataStore 是 SQLite，通常实时写入，无需显式 save
+            )
+            
+            # 更新 Manifest，标志着一次完整的持久化状态
+            await self._update_manifest(commit_id)
+            logger.info(f"统一保存完成 (Commit ID: {commit_id})")
+            
+        except Exception as e:
+            logger.error(f"统一保存失败: {e}")
+
+    async def _update_manifest(self, commit_id: str):
+        """更新持久化清单"""
+        manifest = {
+            "last_commit_id": commit_id,
+            "timestamp": time.time(),
+            "iso_timestamp": datetime.datetime.now().isoformat(),
+            "version": self.plugin_version
+        }
+        
+        data_dir = Path(self.get_config("storage.data_dir", "./plugins/A_memorix/data"))
+        manifest_path = data_dir / "persistence_manifest.json"
+        
+        try:
+            # 使用原子写入更新 Manifest
+            with atomic_write(manifest_path, "w", encoding="utf-8") as f:
+                json.dump(manifest, f, indent=2)
+        except Exception as e:
+            logger.error(f"更新 Manifest 失败: {e}")
+
+    async def _auto_save_loop(self):
+        """自动保存循环"""
+        logger.info("自动保存任务已启动")
+        try:
+            while True:
+                # 获取配置的间隔时间 (分钟)
+                interval = self.get_config("advanced.auto_save_interval_minutes", 5)
+                if interval <= 0:
+                    interval = 5
+                
+                await asyncio.sleep(interval * 60)
+                
+                if self.get_config("advanced.enable_auto_save", True):
+                    await self.save_all()
+                    
+        except asyncio.CancelledError:
+            logger.info("自动保存任务已取消")
+        except Exception as e:
+            logger.error(f"自动保存循环发生错误: {e}")
 
 
 # 插件导出

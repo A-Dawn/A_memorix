@@ -11,6 +11,8 @@ import numpy as np
 
 from src.common.logger import get_logger
 from src.chat.utils.utils import get_embedding
+from src.config.config import model_config
+from src.llm_models.model_client.base_client import client_registry
 
 logger = get_logger("A_Memorix.EmbeddingAPIAdapter")
 
@@ -25,6 +27,7 @@ class EmbeddingAPIAdapter:
     - 支持批量编码和并发控制
     - 自动检测嵌入维度
     - 错误处理和降级机制
+    - 支持手动设置请求维度
     
     参数：
         batch_size: 批量处理大小
@@ -61,6 +64,72 @@ class EmbeddingAPIAdapter:
             f"EmbeddingAPIAdapter 初始化: batch_size={batch_size}, "
             f"max_concurrent={max_concurrent}, default_dim={default_dimension}"
         )
+
+    async def _get_embedding_direct(self, text: str, dimensions: Optional[int] = None) -> Optional[List[float]]:
+        """
+        直接通过 Client 获取 Embedding，支持传递 dimensions 参数
+        
+        Args:
+            text: 输入文本
+            dimensions: 请求的维度 (仅部分模型支持，如 OpenAI text-embedding-3)
+            
+        Returns:
+            嵌入向量列表 或 None
+        """
+        try:
+            # 1. 确定模型
+            # 默认使用配置中的 embedding 任务模型
+            task_config = model_config.model_task_config.embedding
+            
+            # 如果指定了 model_name，尝试查找对应的模型信息
+            if self.model_name and self.model_name != "auto":
+                model_identifier = self.model_name
+                # 这里简化处理：我们假设 self.model_name 是 model_config 中的一个 key
+                # 或者它就是一个直接的模型标识符。
+                # 为了保持与 main program 一致，我们最好通过 task_config 来选择
+                # 但这里我们需要更底层的控制。
+                
+                # 尝试从 model_config 获取模型信息
+                try:
+                     model_info = model_config.get_model_info(model_identifier)
+                except Exception:
+                     # 如果找不到，可能它不是配置名而是直接的模型名，这在使用 LLMRequest 时通常不支持
+                     # 但我们这里尝试回退到默认 embedding 模型
+                     model_info = model_config.get_model_info(task_config.model_list[0])
+            else:
+                 # 使用 embedding 任务配置的第一个模型 (简单起见，不复现复杂的负载均衡逻辑)
+                 # 如果需要负载均衡，可以复用 LLMRequest，但 LLMRequest 不支持 kwargs。
+                 # 所以这里这是一个权衡：支持 dimensions vs 支持负载均衡。
+                 # 鉴于这通常用于特定高级模型，我们优先支持特性。
+                 model_name_to_use = task_config.model_list[0]
+                 model_info = model_config.get_model_info(model_name_to_use)
+            
+            # 2. 获取 Provider 和 Client
+            api_provider = model_config.get_provider(model_info.api_provider)
+            # 强制新建客户端以避免潜在的 event loop 问题 (参考 LLMRequest)
+            client = client_registry.get_client_class_instance(api_provider, force_new=True)
+            
+            # 3. 构造参数
+            extra_params = {}
+            if dimensions is not None:
+                extra_params["dimensions"] = dimensions
+                
+            # 4. 调用 API
+            response = await client.get_embedding(
+                model_info=model_info,
+                embedding_input=text,
+                extra_params=extra_params
+            )
+            
+            return response.embedding
+            
+        except Exception as e:
+            logger.error(f"通过直接 Client 获取 Embedding 失败: {e}")
+            # 降级尝试使用标准接口（不支持 dimensions）
+            if dimensions is None:
+                logger.warning("尝试降级到标准 get_embedding 接口...")
+                return await get_embedding(text)
+            return None
     
     async def _detect_dimension(self) -> int:
         """
@@ -74,19 +143,50 @@ class EmbeddingAPIAdapter:
         
         logger.info("正在检测嵌入模型维度...")
         
+        # 策略：优先尝试请求 default_dimension
+        # 如果模型支持（如 text-embedding-3），将返回该维度的向量
+        # 如果模型不支持（抛出异常或忽略参数），则回退到不带参数的探测
+        
+        # 1. 尝试使用 default_dimension 请求
         try:
-            # 使用测试文本获取嵌入
-            kwargs = {}
-            if self.model_name and self.model_name != "auto":
-                kwargs["model"] = self.model_name
+            target_dim = self.default_dimension
+            logger.debug(f"尝试请求指定维度: {target_dim}")
+            
+            test_embedding = await self._get_embedding_direct("test", dimensions=target_dim)
+            
+            if test_embedding and isinstance(test_embedding, list):
+                detected_dim = len(test_embedding)
                 
-            test_embedding = await get_embedding("test", **kwargs)
+                # 检查是否真的返回了请求的维度
+                if detected_dim == target_dim:
+                    logger.info(f"嵌入维度检测成功 (匹配配置): {detected_dim}")
+                    self._dimension = detected_dim
+                    self._dimension_detected = True
+                    return detected_dim
+                else:
+                    logger.warning(f"请求维度 {target_dim} 但模型返回 {detected_dim}，将使用模型返回的自然维度")
+                    self._dimension = detected_dim
+                    self._dimension_detected = True
+                    return detected_dim
+            else:
+                # 返回 None，可能是临时错误或不支持，尝试不带参数
+                logger.debug("带参数探测返回空，尝试不带参数探测...")
+                pass
+                
+        except Exception as e:
+            # 某些模型如果收到不支持的参数可能会报错
+            logger.debug(f"带维度参数探测失败: {e}，尝试不带参数探测...")
+            pass
+            
+        # 2. 回退：尝试不带 dimensions 参数探测自然维度
+        try:
+            test_embedding = await self._get_embedding_direct("test", dimensions=None)
             
             if test_embedding and isinstance(test_embedding, list):
                 detected_dim = len(test_embedding)
                 self._dimension = detected_dim
                 self._dimension_detected = True
-                logger.info(f"嵌入维度检测成功: {detected_dim}")
+                logger.info(f"嵌入维度检测成功 (自然维度): {detected_dim}")
                 return detected_dim
             else:
                 logger.warning(f"嵌入维度检测失败，使用默认值: {self.default_dimension}")
@@ -106,6 +206,7 @@ class EmbeddingAPIAdapter:
         batch_size: Optional[int] = None,
         show_progress: bool = False,
         normalize: bool = True,
+        dimensions: Optional[int] = None,
     ) -> np.ndarray:
         """
         生成文本嵌入
@@ -115,15 +216,22 @@ class EmbeddingAPIAdapter:
             batch_size: 批次大小（默认使用初始化时的值）
             show_progress: 是否显示进度条（暂未实现）
             normalize: 是否归一化（主程序 API 自动处理）
+            dimensions: 请求的嵌入维度 (可选, 仅部分模型支持)
         
         Returns:
             嵌入向量 (N x D)
         """
         start_time = time.time()
         
-        # 确保维度已检测
-        if not self._dimension_detected:
-            await self._detect_dimension()
+        # 确保维度已检测 (如果未指定 dimensions)
+        # 如果指定了 dimensions，我们信任用户，或者用它更新 self._dimension?
+        if dimensions is not None:
+             target_dim = dimensions
+        else:
+            if not self._dimension_detected:
+                await self._detect_dimension()
+            target_dim = self._dimension or self.default_dimension
+
         
         # 标准化输入
         if isinstance(texts, str):
@@ -133,7 +241,7 @@ class EmbeddingAPIAdapter:
             single_input = False
         
         if not texts:
-            return np.zeros((0, self._dimension or self.default_dimension), dtype=np.float32)
+            return np.zeros((0, target_dim), dtype=np.float32)
         
         # 使用配置的批次大小
         if batch_size is None:
@@ -141,7 +249,7 @@ class EmbeddingAPIAdapter:
         
         # 批量编码
         try:
-            embeddings = await self._encode_batch_internal(texts, batch_size)
+            embeddings = await self._encode_batch_internal(texts, batch_size, dimensions=dimensions)
             
             # 确保是2D数组
             if embeddings.ndim == 1:
@@ -169,8 +277,7 @@ class EmbeddingAPIAdapter:
             
             # 降级处理：返回零向量
             logger.warning(f"返回零向量作为降级处理")
-            dim = self._dimension or self.default_dimension
-            fallback = np.zeros((len(texts), dim), dtype=np.float32)
+            fallback = np.zeros((len(texts), target_dim), dtype=np.float32)
             
             if single_input:
                 return fallback[0]
@@ -180,6 +287,7 @@ class EmbeddingAPIAdapter:
         self,
         texts: List[str],
         batch_size: int,
+        dimensions: Optional[int] = None,
     ) -> np.ndarray:
         """
         内部批量编码实现（带并发控制）
@@ -187,6 +295,7 @@ class EmbeddingAPIAdapter:
         Args:
             texts: 文本列表
             batch_size: 批次大小
+            dimensions: 维度参数
         
         Returns:
             嵌入向量数组
@@ -203,21 +312,19 @@ class EmbeddingAPIAdapter:
             async def encode_with_semaphore(text: str, index: int):
                 async with semaphore:
                     try:
-                        kwargs = {}
-                        if self.model_name and self.model_name != "auto":
-                            kwargs["model"] = self.model_name
-                            
-                        embedding = await get_embedding(text, **kwargs)
+                        # 使用直接接口以支持 dimensions
+                        embedding = await self._get_embedding_direct(text, dimensions=dimensions)
+                        
                         if embedding is None:
                             # API 返回 None，使用零向量
-                            dim = self._dimension or self.default_dimension
+                            dim = dimensions or self._dimension or self.default_dimension
                             embedding = [0.0] * dim
                             logger.warning(f"文本 {index} 编码返回 None，使用零向量")
                         return index, np.array(embedding, dtype=np.float32)
                     except Exception as e:
                         logger.error(f"文本 {index} 编码失败: {e}")
                         # 返回零向量
-                        dim = self._dimension or self.default_dimension
+                        dim = dimensions or self._dimension or self.default_dimension
                         return index, np.zeros(dim, dtype=np.float32)
             
             # 并发执行
@@ -241,6 +348,7 @@ class EmbeddingAPIAdapter:
         batch_size: Optional[int] = None,
         num_workers: Optional[int] = None,
         show_progress: bool = False,
+        dimensions: Optional[int] = None,
     ) -> np.ndarray:
         """
         批量生成嵌入（与 encode 相同，保持接口兼容）
@@ -250,6 +358,7 @@ class EmbeddingAPIAdapter:
             batch_size: 批次大小
             num_workers: 工作线程数（映射到 max_concurrent）
             show_progress: 是否显示进度条
+            dimensions: 请求的维度
         
         Returns:
             嵌入向量 (N x D)
@@ -259,12 +368,12 @@ class EmbeddingAPIAdapter:
             old_concurrent = self.max_concurrent
             self.max_concurrent = num_workers
             try:
-                result = await self.encode(texts, batch_size, show_progress)
+                result = await self.encode(texts, batch_size, show_progress, dimensions=dimensions)
                 return result
             finally:
                 self.max_concurrent = old_concurrent
         else:
-            return await self.encode(texts, batch_size, show_progress)
+            return await self.encode(texts, batch_size, show_progress, dimensions=dimensions)
     
     def get_embedding_dimension(self) -> int:
         """
@@ -288,7 +397,7 @@ class EmbeddingAPIAdapter:
             模型信息字典
         """
         return {
-            "model_name": "main_program_embedding_api",
+            "model_name": self.model_name,
             "dimension": self._dimension or self.default_dimension,
             "dimension_detected": self._dimension_detected,
             "batch_size": self.batch_size,

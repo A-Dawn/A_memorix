@@ -16,6 +16,7 @@ from src.chat.message_receive.message import MessageRecv
 
 # 导入核心模块
 from src.plugin_system.apis import llm_api
+from src.config.config import model_config as host_model_config
 from ...core import (
     VectorStore,
     GraphStore,
@@ -170,49 +171,74 @@ class ImportCommand(BaseCommand):
 
         logger.info(f"{self.log_prefix} 文本分段: {len(paragraphs)}个段落")
 
-        # 批量导入段落并收集类型信息
+        # 尝试选择 LLM 模型
+        try:
+            model_config_to_use = await self._select_model()
+            use_llm = True
+        except Exception as e:
+            logger.warning(f"{self.log_prefix} 未找到可用模型或选择失败: {e}，将回退到基础模式")
+            use_llm = False
+            model_config_to_use = None
+
         success_count = 0
+        entities_count = 0
+        relations_count = 0
         type_counts = {}
-        should_extract = False
-        
+
         for paragraph in paragraphs:
+            # 1. 尝试 LLM 提取
+            llm_result = {}
+            if use_llm:
+                try:
+                    llm_result = await self._llm_extract(paragraph, model_config_to_use)
+                except Exception as e:
+                    logger.warning(f"{self.log_prefix} LLM 提取失败: {e}")
+
+            # 2. 导入段落
             try:
                 hash_value, detected_type = await self._add_paragraph(paragraph)
                 success_count += 1
                 
-                # 统计类型
                 type_name = detected_type.value
                 type_counts[type_name] = type_counts.get(type_name, 0) + 1
-                
-                # 判断是否需要提取关系（任意一个段落需要就提取）
-                if should_extract_relations(detected_type):
-                    should_extract = True
-                    
             except Exception as e:
                 logger.warning(f"{self.log_prefix} 段落导入失败: {e}")
+                continue
+
+            # 3. 导入 LLM 提取的实体
+            if llm_result.get("entities"):
+                extracted_entities = llm_result["entities"]
+                if extracted_entities:
+                    self.graph_store.add_nodes(extracted_entities)
+                    entities_count += len(extracted_entities)
+            
+            # 4. 导入 LLM 提取的关系
+            if llm_result.get("relations"):
+                for rel in llm_result["relations"]:
+                    s, p, o = rel.get("subject"), rel.get("predicate"), rel.get("object")
+                    if all([s, p, o]):
+                        try:
+                            await self._add_relation(s, p, o, source_paragraph=paragraph)
+                            relations_count += 1
+                        except Exception as e:
+                            logger.debug(f"{self.log_prefix} 关系添加失败: {e}")
+
+            # 5. 回退逻辑：如果 LLM 为空且类型适合，尝试正则
+            if not llm_result and should_extract_relations(detected_type):
+                 e_c, r_c = await self._extract_knowledge_regex([paragraph])
+                 entities_count += e_c
+                 relations_count += r_c
+
 
         elapsed = time.time() - start_time
 
-        # 条件性提取实体和关系（仅当知识类型适合时）
-        entities_count = 0
-        relations_count = 0
-        
-        if should_extract:
-            entities_count, relations_count = await self._extract_knowledge(paragraphs)
-            if self.debug_enabled:
-                logger.info(f"{self.log_prefix} [DEBUG] 执行了关系提取")
-        else:
-            if self.debug_enabled:
-                logger.info(f"{self.log_prefix} [DEBUG] 跳过关系提取（知识类型不适合）")
-
         # 构建结果消息
         result_lines = [
-            "✅ 文本导入完成",
+            "✅ 文本导入完成 (智能增强)",
             f"📊 统计信息:",
             f"  - 段落: {success_count}/{len(paragraphs)}",
         ]
         
-        # 添加类型统计
         if type_counts:
             result_lines.append(f"  - 类型分布:")
             for type_name, count in type_counts.items():
@@ -615,13 +641,74 @@ class ImportCommand(BaseCommand):
 
         return entities_count, relations_count
 
+    async def _select_model(self) -> Any:
+        """精确选择最适合知识抽取的模型 (仅限明确配置和任务匹配)"""
+        models = llm_api.get_available_models()
+        if not models:
+            raise ValueError("没有可用的 LLM 模型配置")
+
+        # 1. 优先级最高：插件配置强制指定
+        config_model = self.plugin_config.get("advanced", {}).get("extraction_model", "auto")
+        if config_model != "auto" and config_model in models:
+            logger.info(f"{self.log_prefix} 使用插件配置指定的模型: {config_model}")
+            return models[config_model]
+
+        # 2. 优先级第二：主程序任务配置匹配 (lpmm_entity_extract)
+        try:
+            task_configs = getattr(host_model_config, "model_task_config", {})
+            
+            # 按优先级尝试两种相关的任务配置
+            for task_key in ["lpmm_entity_extract", "lpmm_rdf_build"]:
+                if task_key in task_configs:
+                    task_models = task_configs[task_key].get("model_list", [])
+                    for m in task_models:
+                        if m in models:
+                            logger.info(f"{self.log_prefix} 通过主程序任务配置 [{task_key}] 匹配到模型: {m}")
+                            return models[m]
+        except Exception as e:
+            logger.debug(f"{self.log_prefix} 读取主程序任务配置失败: {e}")
+
+        # 3. 兜底策略：如果以上均未匹配，返回首个可用模型
+        first_model = list(models.keys())[0]
+        return models[first_model]
+
+    async def _llm_extract(self, chunk: str, model_config: Any) -> Dict:
+        """调用 LLM 提取知识"""
+        prompt = f"""请分析以下文本，提取其中的实体（Entities）和关系（Relations）。
+仅提取关键信息。
+JSON格式: {{ "entities": ["e1"], "relations": [{{"subject": "s", "predicate": "p", "object": "o"}}] }}
+文本:
+{chunk[:2000]}
+"""
+        success, response, _, _ = await llm_api.generate_with_model(
+            prompt=prompt,
+            model_config=model_config,
+            request_type="A_Memorix.KnowledgeExtraction"
+        )
+        if success:
+            try:
+                # 简单清理
+                txt = response.strip()
+                if "```" in txt:
+                    txt = txt.split("```json")[-1].split("```")[0].strip()
+                    if txt.startswith("json"): txt = txt[4:].strip()
+                return json.loads(txt)
+            except:
+                pass
+        return {}
+
     async def _extract_knowledge_regex(self, paragraphs: List[str]) -> Tuple[int, int]:
         """使用正则提取知识（备用方案）"""
         entities_count = 0
         relations_count = 0
         for para in paragraphs:
-            entities = re.findall(r"[A-Z][a-z]+|[\"']([^\"]+)[\"']", para)
-            unique_entities = list(set(entities))
+            # 简单提取: 大写单词 或 引号内容
+            # 使用非捕获组或分步提取以避免 findall 的空元组问题
+            entities = re.findall(r"[A-Z][a-z]+", para)
+            quoted = re.findall(r"[\"']([^\"']+)[\"']", para)
+            entities.extend(quoted)
+            
+            unique_entities = list(set([e for e in entities if e.strip()]))
             if unique_entities:
                 self.graph_store.add_nodes(unique_entities)
                 entities_count += len(unique_entities)

@@ -26,6 +26,7 @@ except ImportError:
 import contextlib
 from src.common.logger import get_logger
 from ..utils.hash import compute_hash
+from ..utils.io import atomic_write
 
 logger = get_logger("A_Memorix.GraphStore")
 
@@ -670,7 +671,8 @@ class GraphStore:
         # 保存邻接矩阵
         if self._adjacency is not None:
             matrix_path = data_dir / "graph_adjacency.npz"
-            save_npz(str(matrix_path), self._adjacency)
+            with atomic_write(matrix_path, "wb") as f:
+                save_npz(f, self._adjacency)
             logger.debug(f"保存邻接矩阵: {matrix_path}")
 
         # 保存元数据
@@ -686,7 +688,7 @@ class GraphStore:
         }
 
         metadata_path = data_dir / "graph_metadata.pkl"
-        with open(metadata_path, "wb") as f:
+        with atomic_write(metadata_path, "wb") as f:
             pickle.dump(metadata, f)
         logger.debug(f"保存元数据: {metadata_path}")
 

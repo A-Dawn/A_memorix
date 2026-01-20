@@ -163,6 +163,9 @@ class DualPathRetriever:
         # 缓存 Aho-Corasick 匹配器
         self._ac_matcher: Optional[AhoCorasick] = None
         self._ac_nodes_count = 0
+        
+        # 并发控制
+        self._ppr_semaphore = asyncio.Semaphore(4)
 
     async def retrieve(
         self,
@@ -322,7 +325,7 @@ class DualPathRetriever:
 
         # PageRank重排序
         if self.config.enable_ppr:
-            fused_results = self._rerank_with_ppr(
+            fused_results = await self._rerank_with_ppr(
                 fused_results,
                 query,
             )
@@ -552,13 +555,13 @@ class DualPathRetriever:
 
         return deduplicated_results
 
-    def _rerank_with_ppr(
+    async def _rerank_with_ppr(
         self,
         results: List[RetrievalResult],
         query: str,
     ) -> List[RetrievalResult]:
         """
-        使用PageRank重排序结果
+        使用PageRank重排序结果 (异步 + 线程池)
 
         Args:
             results: 检索结果
@@ -574,11 +577,13 @@ class DualPathRetriever:
             logger.debug("未识别到实体，跳过PPR重排序")
             return results
 
-        # 计算PPR分数
-        ppr_scores = self._ppr.compute(
-            personalization=entities,
-            normalize=True,
-        )
+        # 计算PPR分数 (放入线程池运行，避免阻塞主循环)
+        async with self._ppr_semaphore:
+            ppr_scores = await asyncio.to_thread(
+                self._ppr.compute,
+                personalization=entities,
+                normalize=True,
+            )
 
         # 调整结果分数
         for result in results:
