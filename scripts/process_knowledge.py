@@ -215,20 +215,35 @@ class AutoImporter:
             json_path = PROCESSED_DIR / f"{file_path.stem}.json"
             with open(json_path, "w", encoding="utf-8") as f:
                 json.dump(json_data, f, ensure_ascii=False, indent=2)
-                
-            # 2. 导入到数据库
-            await self._import_to_db(json_data)
-            
-            # 3. 更新 Manifest
-            self.manifest[filename] = {
-                "hash": file_hash,
-                "timestamp": time.time(),
-                "imported": True
-            }
-            self._save_manifest()
-            
-            logger.info(f"✅ 文件 {filename} 处理并导入完成")
-            processed_count += 1
+
+            # 2. 导入到数据库（带错误处理）
+            try:
+                await self._import_to_db(json_data)
+
+                # 3. 更新 Manifest（仅导入成功时）
+                self.manifest[filename] = {
+                    "hash": file_hash,
+                    "timestamp": time.time(),
+                    "imported": True
+                }
+                self._save_manifest()
+
+                logger.info(f"✅ 文件 {filename} 处理并导入完成")
+                processed_count += 1
+
+            except Exception as e:
+                logger.error(f"❌ 导入 {filename} 失败: {e}")
+                import traceback
+                traceback.print_exc()
+
+                # 标记为导入失败
+                self.manifest[filename] = {
+                    "hash": file_hash,
+                    "timestamp": time.time(),
+                    "imported": False,
+                    "error": str(e)
+                }
+                self._save_manifest()
             
             # 保存数据库状态
             self.vector_store.save()
@@ -240,42 +255,31 @@ class AutoImporter:
             logger.info(f"本次共处理 {processed_count} 个文件")
 
     async def _select_model(self) -> Any:
-        """精确选择最适合知识抽取的模型 (仅限明确配置和任务匹配)"""
+        """精确选择最适合知识抽取的模型 (返回 TaskConfig)"""
         models = llm_api.get_available_models()
         if not models:
             raise ValueError("没有可用的 LLM 模型配置")
 
-        # 1. 优先级最高：插件配置强制指定
+        # 1. 优先级最高：插件配置强制指定（支持任务名称）
         config_model = self.plugin_config.get("advanced", {}).get("extraction_model", "auto")
+
+        # 如果指定了任务名称（如 "lpmm_entity_extract"），直接使用
         if config_model != "auto" and config_model in models:
-            logger.info(f"  使用插件配置指定的模型: {config_model}")
+            logger.info(f"  使用插件配置指定的任务: {config_model}")
             return models[config_model]
 
-        # 2. 优先级第二：主程序任务配置匹配 (lpmm_entity_extract)
-        try:
-            from src.config.config import model_config as host_model_config
-            task_configs = getattr(host_model_config, "model_task_config", {})
-            
-            # 按优先级尝试两种相关的任务配置
-            for task_key in ["lpmm_entity_extract", "lpmm_rdf_build"]:
-                if task_key in task_configs:
-                    task_models = task_configs[task_key].get("model_list", [])
-                    for m in task_models:
-                        if m in models:
-                            logger.info(f"  通过主程序任务配置 [{task_key}] 匹配到模型: {m}")
-                            return models[m]
-        except Exception as e:
-            logger.debug(f"读取主程序任务配置失败: {e}")
+        # 2. 优先级第二：默认使用 lpmm_entity_extract 任务
+        for task_key in ["lpmm_entity_extract", "lpmm_rdf_build", "embedding"]:
+            if task_key in models:
+                logger.info(f"  使用主程序任务配置: {task_key}")
+                task_cfg = models[task_key]
+                logger.info(f"    模型列表: {task_cfg.model_list}")
+                return models[task_key]
 
-        # 3. 兜底策略：如果以上均未匹配，抛出错误引导用户配置
-        logger.error("❌ 未能在主程序配置中找到合适的 [lpmm_entity_extract] 任务模型")
-        logger.warning("请在 model_config.toml 的 [model_task_config.lpmm_entity_extract] 中指定模型，")
-        logger.warning("或者在插件 config.toml 的 [advanced] 中设置 extraction_model")
-        
-        # 为了兼容性，返回首个可用模型但给出强烈警告
-        first_model = list(models.keys())[0]
-        logger.warning(f"由于未匹配到专用模型，被迫使用首个可用模型: {first_model}")
-        return models[first_model]
+        # 3. 兜底策略：使用第一个可用任务
+        first_task = list(models.keys())[0]
+        logger.warning(f"⚠️ 未找到实体抽取专用任务，使用任务: {first_task}")
+        return models[first_task]
 
     async def _process_text_to_json(self, text: str, filename: str) -> Dict:
         """调用 LLM 处理文本"""
@@ -300,10 +304,20 @@ class AutoImporter:
                 all_data["relations"].extend(result["relations"])
                 
             logger.info(f"  已处理块 {i+1}/{len(chunks)}")
-            await asyncio.sleep(0.5)
-            
-        # 去重
-        all_data["entities"] = list(set(all_data["entities"]))
+            await asyncio.sleep(0.2)
+
+        # 去重实体（支持字符串和字典格式）
+        def dedupe_entities(entities):
+            seen = set()
+            unique = []
+            for e in entities:
+                key = e if isinstance(e, str) else json.dumps(e, sort_keys=True, ensure_ascii=False)
+                if key not in seen:
+                    seen.add(key)
+                    unique.append(e)
+            return unique
+
+        all_data["entities"] = dedupe_entities(all_data["entities"])
         return all_data
 
     async def _extract_info(self, chunk: str, model_config: Any) -> Dict:
