@@ -10,7 +10,7 @@
 - **🧠 双路检索** - 关系图谱 + 向量语义并行检索，结合 Personalized PageRank 智能排序。
 - **📊 知识图谱可视化** - 内置 Web 可视化编辑器，支持节点/边的增删改查。
 - **📝 对话自动总结** - 自动总结历史聊天记录并提取知识，支持定时触发和人设深度整合。
-- **🎯 智能分类** - 自动识别结构化/叙事性/事实性知识，采用差异化处理策略。
+- **🎯 智能分类** - 兼容并自动识别结构化/叙事性/事实性知识，采用差异化处理策略。
 - **💾 高效存储** - SciPy 稀疏矩阵存储图结构，int8 量化向量节省 75% 空间。
 - **🔌 完全独立** - 不依赖原 LPMM 系统，拥有独立的数据格式和存储路径。
 - **🤖 LLM 集成** - 提供 Tool 和 Action 组件，支持 LLM 自主调用知识库。
@@ -41,20 +41,9 @@ pip install -r requirements.txt
 
 ## 🚀 快速开始
 
-### 命令行交互（不建议）
+A_Memorix 提供多种方式管理知识库，建议优先选择 **自动化脚本** 进行初始化，配合 **可视化编辑器** 进行日常维护。
 
-A_Memorix 提供以下一级命令（直接输入命令即可触发）：
-
-| 命令 | 说明 | 示例 |
-|------|------|------|
-| `/import` | 导入知识 | `/import text 人工智能是...` |
-| `/query` | 查询知识 | `/query search 什么是AI?` |
-| `/delete` | 删除知识 | `/delete paragraph <hash>` |
-| `/summary_import` | 总结导入 | `/summary_import` |
-| `/visualize` | 启动可视化 | `/visualize` |
-| `/debug_server` | 调试服务器 | `/debug_server` |
-
-### 1. 自动批量导入 (`process_knowledge.py`)
+### 1. 自动化批量导入 (`process_knowledge.py`)
 
 适用于从大量历史文档快速构建知识库。脚本会自动调用 LLM 提取实体和关系。
 
@@ -66,7 +55,7 @@ A_Memorix 提供以下一级命令（直接输入命令即可触发）：
 
 **操作步骤：**
 1. 将 `.txt` 格式的原始文档放入 `plugins/A_memorix/data/raw/` 目录。
-2. 在主程序根目录下运行：
+2. 运行脚本（请确定你运行脚本的环境已经安装了依赖）：
    ```bash
    python plugins/A_memorix/scripts/process_knowledge.py
    ```
@@ -74,91 +63,67 @@ A_Memorix 提供以下一级命令（直接输入命令即可触发）：
 **支持参数：**
 - `--force`: 强制重新导入已处理过的文件。
 - `--clear-manifest`: 清空导入历史记录并重新扫描。
-- `--type <type>`: 强制指定内容类型（如：`structured`, `narrative`, `factual`）。
+- `--type <type>`: 指定内容类型（`structured`, `narrative`, `factual`）。
 
-### 7. 对话总结与导入配置 `[summarization]`
+### 2. 指令交互
 
-- `enabled` (bool): 是否启用总结导入功能（默认 `true`）。
-- `model_name` (str): 总结使用的模型名称（默认 `auto`）。
-- `context_length` (int): 总结消息的上下文条数（默认 `50`）。
-- `import_times` (array): 自动总结导入的时间点列表，24小时制（默认 `["04:00"]`）。
+在聊天窗口中直接输入以下一级命令进行操作：
 
-### 8. 聊天流过滤配置 `[filter]`
+| 命令 | 模式 | 说明 | 示例 |
+|------|------|------|------|
+| `/import` | `text`, `paragraph`, `relation`, `file`, `json` | 导入知识 | `/import text 人工智能是...` |
+| `/query` | `search(s)`, `entity(e)`, `relation(r)`, `stats` | 查询知识 | `/query s 什么是AI?` |
+| `/delete` | `paragraph`, `entity`, `clear` | 删除知识 | `/delete paragraph <hash>` |
+| `/visualize` | - | 启动可视化 Web 面板 | `/visualize` |
 
-- `enabled` (bool): 是否启用聊天流过滤（默认 `true`）。
-- `mode` (str): 过滤模式，`whitelist` (白名单) 或 `blacklist` (黑名单)（默认 `whitelist`）。
-- `chats` (array): 聊天流 ID 列表，支持配置 `stream_id` (MD5) 或 `group_id`（默认 `[]`，白名单为空时默认全通）。
+#### 📂 导入知识 (`/import`)
+- **文本（自动提取）**：`/import text 知识内容...`
+- **单个段落**：`/import paragraph 段落内容...`
+- **关系 (主|谓|宾)**：`/import relation Apple|founded|Steve Jobs`
+- **文件 (.txt, .md, .json)**：`/import file ./my_notes.txt`
+- **JSON 结构化**：`/import json {"paragraphs": [...], "entities": [...], "relations": [...]}`
 
-### 2. 导入知识 (`/import`)
+#### 🔍 查询知识 (`/query`)
+- **全文检索**：`/query search <query>` (缩写: `/query s`)
+- **实体查询**：`/query entity <name>` (缩写: `/query e`)
+- **关系查询**：`/query relation <spec>` (缩写: `/query r`)
+- **统计信息**：`/query stats`
 
-支持多种导入模式（默认为 `text`）：
+#### 🗑️ 删除与维护
+- **按 Hash 删除段落**：`/delete paragraph <hash>`
+- **删除特定实体**：`/delete entity <name>`
+- **清空数据库**：`/delete clear` (慎用！)
 
-```bash
-# 导入文本（自动分段并提取实体关系）
-/import text 北京是中国的首都，拥有3000多年建城史。
+### 3. 可视化编辑 (推荐)
 
-# 导入单个段落
-/import paragraph 机器学习是人工智能的一个重要子领域。
+运行 `/visualize` 命令后，访问 `http://localhost:8082` 即可进入图形化编辑器。支持：
+- 节点/关联的实时增删改查。
+- 知识网络拓扑结构展示。
 
-# 导入关系 (格式: 主|谓|宾)
-/import relation Apple|founded|Steve Jobs
+### 4. 核心配置说明 (`config.toml`)
 
-# 从文件导入 (.txt, .md, .json)
-/import file ./my_notes.txt
+你可以通过修改 `config.toml` 来定制插件行为。
 
-**文件格式要求：**
-- **TXT/MD**：普通文本，建议按段落分块（空行分隔）。
-- **JSON**：需符合以下结构（支持可选字段）：
-  ```json
-  {
-    "paragraphs": ["段落内容1", "段落内容2"],
-    "entities": ["实体1", "实体2"],
-    "relations": [
-      {"subject": "主体", "predicate": "谓词", "object": "客体"}
-    ]
-  }
-  ```
-```
+#### 🛡️ 聊天流过滤 `[filter]`
+控制哪些聊天流可以访问/写入知识库：
+- `enabled`: 是否启用过滤。
+- `mode`: `whitelist` (仅允许列表内) 或 `blacklist` (禁止列表内)。
+- `chats`: 列表，包含 `group_id`, `user_id` 或 `stream_id`。
 
-### 2. 查询知识 (`/query`)
+#### 🧠 对话自动总结 `[summarization]`
+- `enabled`: 是否允许对话自动转知识。
+- `include_personality`: 总结时是否参考机器人人格。
+- `default_knowledge_type`: 默认导入类型（`narrative`, `factual`, `structured`）。
 
-支持多种查询模式（默认为 `search`）：
+#### 🕒 定时导入 `[schedule]`
+- `enabled`: 是否启用定时任务。
+- `import_times`: 自动执行时间点，如 `["04:00", "16:00"]`。
 
-```bash
-# 双路检索（段落 + 关系）
-/query search 北京的历史
+#### ⚙️ 检索与排序 `[retrieval]`
+- `enable_ppr`: 是否启用 Personalized PageRank 智能排序。
+- `alpha`: 段落与关系的融合权重 (0-1)。
+- `min_threshold`: 结果过滤的最小相似度分数。
 
-# 查询特定实体
-/query entity 北京
-
-# 查询统计信息
-/query stats
-
-# 查看详细帮助
-/query help
-```
-
-### 3. 删除知识 (`/delete`)
-
-```bash
-# 按 hash 删除段落
-/delete paragraph a1b2c3d4...
-
-# 删除特定实体
-/delete entity 北京
-
-# 清空整个知识库（需谨慎！）
-/delete clear
-```
-
-### 4. 可视化编辑（建议！）
-
-```bash
-# 启动可视化 Web 服务器
-/visualize
-```
-
-服务器启动后访问 `http://localhost:8082` 即可图形化操作。
 
 ---
 
