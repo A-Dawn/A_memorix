@@ -179,3 +179,29 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# Data & Storage (Privacy & Runtime)
+data/
+logs/
+
+# Deprecated / Cleanup (Avoid uploading junk)
+deprecated/
+
+# OS / System
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# IDE settings
+.idea/
+.vscode/
+
+# Temporary Verification Scripts
+verify_*.py

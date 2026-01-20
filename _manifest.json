@@ -1,0 +1,266 @@
+{
+  "manifest_version": 1,
+  "name": "A_Memorix",
+  "version": "0.1.1",
+  "description": "轻量级知识库插件 - 基于双路检索的完全独立的记忆增强系统，优化低资源环境下的知识存储与检索",
+  "author": "A_Dawn",
+  "license": "AGPL_3.0",
+  "keywords": [
+    "知识库",
+    "记忆",
+    "检索",
+    "向量存储",
+    "知识图谱"
+  ],
+  "categories": [
+    "知识管理",
+    "记忆增强"
+  ],
+  "required_plugins": [],
+  "config_schema": {
+    "storage": {
+      "data_dir": {
+        "type": "string",
+        "default": "./plugins/A_memorix/data",
+        "description": "知识库数据目录"
+      }
+    },
+    "embedding": {
+      "dimension": {
+        "type": "integer",
+        "default": 384,
+        "description": "嵌入向量维度"
+      },
+      "quantization_type": {
+        "type": "string",
+        "default": "int8",
+        "enum": [
+          "float32",
+          "int8",
+          "pq"
+        ],
+        "description": "向量量化类型"
+      },
+      "batch_size": {
+        "type": "integer",
+        "default": 32,
+        "description": "批量生成嵌入的批次大小"
+      },
+      "max_concurrent": {
+        "type": "integer",
+        "default": 5,
+        "description": "嵌入API最大并发请求数"
+      },
+      "model_name": {
+        "type": "string",
+        "default": "auto",
+        "description": "指定嵌入模型名称 (对应 model_config.toml 中的 name)"
+      }
+    },
+    "retrieval": {
+      "top_k_relations": {
+        "type": "integer",
+        "default": 10,
+        "description": "关系检索返回数量"
+      },
+      "top_k_paragraphs": {
+        "type": "integer",
+        "default": 20,
+        "description": "段落检索返回数量"
+      },
+      "alpha": {
+        "type": "number",
+        "default": 0.5,
+        "description": "双路检索融合权重 (0:仅关系, 1:仅段落)"
+      },
+      "enable_ppr": {
+        "type": "boolean",
+        "default": true,
+        "description": "是否启用 Personalized PageRank 重排序"
+      },
+      "ppr_alpha": {
+        "type": "number",
+        "default": 0.85,
+        "description": "PPR 的 alpha 参数"
+      },
+      "ppr_concurrency_limit": {
+        "type": "integer",
+        "default": 4,
+        "description": "PPR 计算的最大并发数（防止 CPU 过载）"
+      },
+      "enable_parallel": {
+        "type": "boolean",
+        "default": true,
+        "description": "是否启用并行检索"
+      }
+    },
+    "threshold": {
+      "min_threshold": {
+        "type": "number",
+        "default": 0.3,
+        "description": "搜索结果的最小阈值"
+      },
+      "max_threshold": {
+        "type": "number",
+        "default": 0.95,
+        "description": "搜索结果的最大阈值"
+      },
+      "percentile": {
+        "type": "number",
+        "default": 75.0,
+        "description": "动态阈值的分位数"
+      },
+      "std_multiplier": {
+        "type": "number",
+        "default": 1.5,
+        "description": "标准差倍数（用于异常值过滤）"
+      },
+      "min_results": {
+        "type": "integer",
+        "default": 3,
+        "description": "即使未达标也强制返回的最小结果数"
+      },
+      "enable_auto_adjust": {
+        "type": "boolean",
+        "default": true,
+        "description": "是否根据结果分布自动调整阈值"
+      }
+    },
+    "graph": {
+      "sparse_matrix_format": {
+        "type": "string",
+        "default": "csr",
+        "enum": [
+          "csr",
+          "csc"
+        ],
+        "description": "稀疏矩阵存储格式"
+      }
+    },
+    "web": {
+      "enabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "是否启用可视化编辑服务器"
+      },
+      "port": {
+        "type": "integer",
+        "default": 8082,
+        "description": "服务器端口"
+      },
+      "host": {
+        "type": "string",
+        "default": "0.0.0.0",
+        "description": "服务器绑定地址"
+      }
+    },
+    "advanced": {
+      "enable_auto_save": {
+        "type": "boolean",
+        "default": true,
+        "description": "启用自动保存（原子化统一持久化）"
+      },
+      "auto_save_interval_minutes": {
+        "type": "integer",
+        "default": 5,
+        "description": "自动保存间隔（分钟）"
+      },
+      "debug": {
+        "type": "boolean",
+        "default": false,
+        "description": "启用详细调试日志"
+      },
+      "extraction_model": {
+        "type": "string",
+        "default": "auto",
+        "description": "指定知识抽取模型名称 (对应 model_config.toml 中的 name)"
+      }
+    },
+    "summarization": {
+      "enabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "是否启用总结导入功能"
+      },
+      "model_name": {
+        "type": "string",
+        "default": "auto",
+        "description": "总结使用的模型名称"
+      },
+      "context_length": {
+        "type": "integer",
+        "default": 50,
+        "description": "总结消息的上下文条数"
+      },
+      "include_personality": {
+        "type": "boolean",
+        "default": true,
+        "description": "总结提示词是否包含机器人人设"
+      },
+      "default_knowledge_type": {
+        "type": "string",
+        "default": "narrative",
+        "enum": [
+          "narrative",
+          "factual",
+          "structured"
+        ],
+        "description": "总结导入时的默认知识类型"
+      }
+    },
+    "schedule": {
+      "enabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "是否启用定时自动导入"
+      },
+      "import_times": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": [
+          "04:00"
+        ],
+        "description": "每日自动导入的时间点列表 (24小时制)"
+      }
+    },
+    "filter": {
+      "enabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "是否启用聊天流过滤"
+      },
+      "mode": {
+        "type": "string",
+        "default": "whitelist",
+        "enum": [
+          "whitelist",
+          "blacklist"
+        ],
+        "description": "过滤模式：whitelist(白名单) 或 blacklist(黑名单)"
+      },
+      "chats": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": [],
+        "description": "聊天流 ID 列表。支持填写: 1. 群号 (group_id); 2. 私聊用户ID (user_id); 3. 聊天流唯一标识 (stream_id, MD5格式)。"
+      }
+    }
+  },
+  "dependencies": {
+    "required": [
+      "numpy>=1.20.0",
+      "scipy>=1.7.0",
+      "nest-asyncio>=1.5.0",
+      "faiss-cpu>=1.7.0",
+      "fastapi>=0.100.0",
+      "uvicorn>=0.20.0",
+      "pydantic>=2.0.0"
+    ],
+    "optional": []
+  },
+  "id": "A_Dawn.A_memorix"
+}
