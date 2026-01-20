@@ -3,10 +3,6 @@
   "name": "A_Memorix",
   "version": "0.1.1",
   "description": "轻量级知识库插件 - 基于双路检索的完全独立的记忆增强系统，优化低资源环境下的知识存储与检索",
-<<<<<<< Updated upstream
-  "author": "A_Dawn",
-  "license": "AGPL_3.0",
-=======
   "author": {
     "name": "A_Dawn"
   },
@@ -15,7 +11,6 @@
   "host_application": {
     "min_version": "0.12.1"
   },
->>>>>>> Stashed changes
   "keywords": [
     "知识库",
     "记忆",
@@ -24,13 +19,8 @@
     "知识图谱"
   ],
   "categories": [
-<<<<<<< Updated upstream
-    "知识管理",
-    "记忆增强"
-=======
     "Utility Tools",
     "Data Analysis & Insights"
->>>>>>> Stashed changes
   ],
   "required_plugins": [],
   "config_schema": {
