@@ -205,3 +205,4 @@ ehthumbs.db
 
 # Temporary Verification Scripts
 verify_*.py
+config.toml
