@@ -64,10 +64,10 @@ class A_MemorixPlugin(BasePlugin):
 
     # 插件基本信息（PluginBase要求的抽象属性）
     plugin_name = "A_Memorix"
-    plugin_version = "0.1.0"
+    plugin_version = "0.1.3"
     plugin_description = "轻量级知识库插件 - 完全独立的记忆增强系统"
     plugin_author = "A_Dawn"
-    enable_plugin = False  # 默认禁用，需要在config.toml中启用
+    enable_plugin = False  
     dependencies: list[str] = []
     python_dependencies: list[str] = ["numpy", "scipy", "nest-asyncio", "faiss-cpu", "fastapi", "uvicorn", "pydantic"]  # 插件所需Python依赖
     config_file_name: str = "config.toml"
@@ -89,7 +89,7 @@ class A_MemorixPlugin(BasePlugin):
         "plugin": {
             "config_version": ConfigField(
                 type=str,
-                default="1.0.0",
+                default="1.0.1",
                 description="配置文件版本"
             ),
             "enabled": ConfigField(
@@ -158,6 +158,11 @@ class A_MemorixPlugin(BasePlugin):
                 default=0.85,
                 description="PPR的alpha参数"
             ),
+            "ppr_concurrency_limit": ConfigField(
+                type=int,
+                default=4,
+                description="PPR计算的最大并发数"
+            ),
             "enable_parallel": ConfigField(
                 type=bool,
                 default=True,
@@ -224,7 +229,7 @@ class A_MemorixPlugin(BasePlugin):
             "enable_auto_save": ConfigField(
                 type=bool,
                 default=True,
-                description="启用自动保存"
+                description="启用自动保存（原子化统一持久化）"
             ),
             "auto_save_interval_minutes": ConfigField(
                 type=int,
@@ -279,6 +284,23 @@ class A_MemorixPlugin(BasePlugin):
                 type=list,
                 default=["04:00"],
                 description="每日自动导入的时间点列表 (24小时制, 如 ['04:00', '16:00'])"
+            ),
+        },
+        "filter": {
+            "enabled": ConfigField(
+                type=bool,
+                default=True,
+                description="是否启用聊天流过滤"
+            ),
+            "mode": ConfigField(
+                type=str,
+                default="whitelist",
+                description="过滤模式：whitelist(白名单) 或 blacklist(黑名单)"
+            ),
+            "chats": ConfigField(
+                type=list,
+                default=[],
+                description="聊天流 ID 列表。支持填写: 1. 群号 (group_id); 2. 私聊用户ID (user_id); 3. 聊天流唯一标识 (stream_id, MD5格式)。"
             ),
         },
     }
