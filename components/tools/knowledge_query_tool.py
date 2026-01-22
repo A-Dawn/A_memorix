@@ -155,8 +155,10 @@ class KnowledgeQueryTool(BaseTool):
                 alpha=self.get_config("retrieval.alpha", 0.5),
                 enable_ppr=self.get_config("retrieval.enable_ppr", True),
                 ppr_alpha=self.get_config("retrieval.ppr_alpha", 0.85),
+                ppr_concurrency_limit=self.get_config("retrieval.ppr_concurrency_limit", 4),
                 enable_parallel=self.get_config("retrieval.enable_parallel", True),
                 retrieval_strategy=RetrievalStrategy.DUAL_PATH,
+                debug=self.debug_enabled,
             )
 
             # 创建检索器
@@ -316,14 +318,43 @@ class KnowledgeQueryTool(BaseTool):
 
         elapsed = time.time() - start_time
 
-        # 格式化结果
+        # 3. Smart Fallback if results are weak
+        # 如果最高分 < 0.6，尝试提取实体并进行 Path Search
+        max_score = 0.0
+        if results:
+            max_score = results[0].score
+
+        fallback_triggered = False
+        path_results = []
+        
+        # 可配置阈值 (TODO: 移至 Config)
+        SMART_FALLBACK_THRESHOLD = 0.6
+        
+        if max_score < SMART_FALLBACK_THRESHOLD:
+            # 尝试提取实体
+            entities = self._extract_entities_from_query(query)
+            if len(entities) == 2:
+                if self.debug_enabled:
+                    logger.info(f"{self.log_prefix} [Smart Fallback] Triggering Path Search for {entities}")
+                
+                path_data = self._path_search(query)
+                if path_data and path_data.get("results"):
+                    # 转换 path results 为 search result 格式
+                    for p in path_data["results"]:
+                        # 构造一个伪 RetrievalResult 类似的结构
+                        path_results.append({
+                            "type": "relation_path",
+                            "score": 0.95, # 给赋予较高置信度，因为它基于图
+                            "content": f"[Indirect Relation] {p['description']}",
+                            "metadata": {"source": "graph_path", "nodes": p['nodes']}
+                        })
+                    fallback_triggered = True
+
+        # 4. 合并结果 (Path Results 优先)
+        # Convert original results to dict format first
         formatted_results = []
         try:
-            for i, result in enumerate(results):
-                # DEBUG: Check result type
-                if self.debug_enabled:
-                    logger.info(f"{self.log_prefix} Result {i} type: {type(result)}")
-                    
+            for result in results:
                 formatted_results.append({
                     "type": result.result_type,
                     "score": float(result.score),
@@ -332,21 +363,33 @@ class KnowledgeQueryTool(BaseTool):
                 })
         except Exception as e:
             logger.error(f"{self.log_prefix} Error formatting results: {e}")
-            raise
 
-        # 生成 content 摘要
+        # 如果触发了 Fallback，将 Path 结果加到前面
+        if fallback_triggered:
+            formatted_results = path_results + formatted_results
+
+        # 5. Deduplication (Safe Mode)
+        # 去重，但保留至少 1 条 (如果原结果不为空)
+        original_count = len(formatted_results)
+        formatted_results = self._deduplicate_results(formatted_results)
+        
+        if self.debug_enabled:
+            logger.info(f"{self.log_prefix} Deduplication: {original_count} -> {len(formatted_results)}")
+
+        # 6. 生成 content 摘要 (Clean Output)
         if formatted_results:
-            summary_lines = [f"找到 {len(formatted_results)} 条结果："]
-            for i, res in enumerate(formatted_results[:5]):
+            summary_lines = [f"找到 {len(formatted_results)} 条相关信息："]
+            for i, res in enumerate(formatted_results[:5]): # Top 5 for context
                 type_icon = "📄" if res['type'] == 'paragraph' else "🔗"
-                try:
-                    summary_lines.append(f"{i+1}. {type_icon} {res.get('content', 'N/A')} ({res.get('score', 0.0):.2f})")
-                except Exception as e:
-                     logger.error(f"{self.log_prefix} Error generating summary for index {i}: {e}")
-                     # Defensively continue
-                     summary_lines.append(f"{i+1}. {type_icon} [Error accessing content] ({res.get('score', 0.0):.2f})")
-                     
+                if res['type'] == 'relation_path': type_icon = "🛤️"
+                
+                content_text = res.get('content', 'N/A')
+                # Remove score from LLM output to avoid bias
+                # But keep it in logs/debug
+                summary_lines.append(f"{i+1}. {type_icon} {content_text}")
+                
             content = "\n".join(summary_lines)
+            logger.info(f"{self.log_prefix} Returning {len(formatted_results)} results to LLM context")
         else:
             content = "未找到相关结果。"
 
@@ -354,11 +397,69 @@ class KnowledgeQueryTool(BaseTool):
             "success": True,
             "query_type": "search",
             "query": query,
-            "results": formatted_results,
+            "results": formatted_results, # 包含分数的完整数据返回给程序
             "count": len(formatted_results),
             "elapsed_ms": elapsed * 1000,
-            "content": content,
+            "content": content, # 给 LLM 看的摘要 (无分数)
         }
+
+    def _deduplicate_results(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        对结果进行去重
+        - 基于内容哈希/相似度
+        - 保留分数最高的
+        - 安全修正: 保证不因为去重导致结果为空
+        """
+        if not results:
+            return []
+            
+        unique_results = []
+        seen_hashes = set()
+        seen_contents = set() # 为了处理不同 Hash 但内容极相似的情况 (简单前缀/包含检查)
+        
+        # 1. Path Results 总是保留 (只要不完全重复)
+        # 2. Others based on content
+        
+        for res in results:
+            # Simple content normalization
+            content = res.get("content", "").strip()
+            if not content:
+                continue
+                
+            # Check exact hash (if available) or content hash
+            res_md = res.get("metadata", {})
+            h = res_md.get("hash") or str(hash(content))
+            
+            if h in seen_hashes:
+                continue
+                
+            # Soft dedup: check if content is substring of already seen (or vice versa)
+            # This is O(N^2) but N is small (TopK=10-20)
+            is_dup = False
+            for seen in seen_contents:
+                # 如果极其相似 (比如只是前缀不同)，视为重复
+                # 这里简单从严：如果 A 包含 B，保留 A (通常 A 信息量大) ?
+                # 或者保留分数高的。
+                # 简单策略: 如果 content 几乎一样 (Levenshtein costly)，这里用包含关系
+                if content in seen or seen in content:
+                    # 如果当前分数显著更高 (>0.1 diff)，则保留当前(这很难，因为我们是在 append)
+                    # 假设 results 已经按 score 排序
+                    is_dup = True
+                    break
+            
+            if is_dup:
+                continue
+                
+            seen_hashes.add(h)
+            seen_contents.add(content)
+            unique_results.append(res)
+            
+        # 安全修正: 如果去重后空了 (极不可能，因为第一条肯定进)，或者去得太狠
+        # 这里只要 original results 有东西，unique_results 至少会有 1 条
+        if not unique_results and results:
+             unique_results.append(results[0])
+             
+        return unique_results
 
     async def _query_entity(self, entity_name: str) -> Dict[str, Any]:
         """查询实体信息
@@ -434,63 +535,102 @@ class KnowledgeQueryTool(BaseTool):
         Returns:
             查询结果字典
         """
-        if not relation_spec:
+        # 获取配置
+        enable_fallback = self.get_config("retrieval.relation_semantic_fallback", True)
+        fallback_min_score = self.get_config("retrieval.relation_fallback_min_score", 0.3)
+        
+        # Path Search 配置
+        enable_path_search = self.get_config("retrieval.relation_enable_path_search", True)
+        path_trigger_threshold = self.get_config("retrieval.relation_path_trigger_threshold", 0.4)
 
-            return {
-                "success": False,
-                "error": "关系规格不能为空",
-                "content": "⚠️ 关系规格不能为空",
-                "results": [],
-            }
+        # 1. 结构化检测
+        # 如果包含明确的分隔符，视为结构化查询
+        is_structured = "|" in relation_spec or "->" in relation_spec
 
-        # 解析关系规格
+        # 2. 自然语言优先处理
+        # 如果不是明确的结构化查询，且启用了回退（意味着支持语义模式），则直接使用语义检索
+        if not is_structured and enable_fallback:
+            return await self._semantic_search_relation(relation_spec, fallback_min_score)
+
+        # 3. 结构化查询处理 (精确匹配)
+        subject, predicate, obj = None, None, None
+
         if "|" in relation_spec:
             parts = relation_spec.split("|")
-            if len(parts) < 2:
-                return {
-                    "success": False,
-                    "error": "关系格式错误",
-                    "content": "❌ 关系格式错误",
-                    "results": [],
-                }
-            subject = parts[0].strip()
-            predicate = parts[1].strip()
-            obj = parts[2].strip() if len(parts) > 2 else None
-        else:
-            parts = relation_spec.split(maxsplit=1)
-            if len(parts) < 2:
-                return {
-                    "success": False,
-                    "error": "关系格式错误",
-                    "content": "❌ 关系格式错误",
-                    "results": [],
-                }
-            subject = parts[0].strip()
-            predicate = parts[1].strip()
-            obj = None
+            if len(parts) >= 2:
+                subject = parts[0].strip()
+                predicate = parts[1].strip()
+                obj = parts[2].strip() if len(parts) > 2 else None
+        elif "->" in relation_spec:
+             parts = relation_spec.split("->")
+             if len(parts) >= 2:
+                subject = parts[0].strip()
+                predicate = parts[1].strip() # 简化处理，假设 -> 就是谓语的一部分或者分隔
+                obj = parts[1].strip() # 这里 split 只有两部分，中间作为谓语处理有点模糊，暂且维持原逻辑或作为 binary
+                # 实际上原逻辑没处理 ->, 这里仅做简单兼容，或者退回到 split()
+                # 考虑到兼容性，这里仅以此作为"结构化"标志，解析还是尝试空格
+                pass
 
-        # 查询关系
+        if not subject: # 尝试空格解析 (Legacy)
+            parts = relation_spec.split(maxsplit=1)
+            if len(parts) >= 2:
+                subject = parts[0].strip()
+                predicate = parts[1].strip()
+                obj = None
+            else:
+                 # 无法解析为结构化，且没走 NL 路径 (说明 enable_fallback=False)
+                 return {
+                    "success": False,
+                    "error": "关系格式错误 (请使用 S|P|O 或开启语义回退)",
+                    "content": "❌ 关系格式错误: 请使用 'Subject|Predicate|Object' 格式",
+                    "results": [],
+                }
+
+        # 执行精确查询
         relations = self.metadata_store.get_relations(
             subject=subject if subject else None,
             predicate=predicate if predicate else None,
             object=obj if obj else None,
         )
 
-        # 格式化关系
+        # 4. 结构化查询失败的回退
+        # 如果精确匹配无结果，且启用了回退，尝试语义检索
+        if not relations and enable_fallback:
+             # 使用原始查询字符串进行语义检索
+             semantic_result = await self._semantic_search_relation(relation_spec, fallback_min_score)
+             
+             # 检查是否触发 Path Search
+             # 触发条件: 启用且 (无结果 或 最高分低于阈值)
+             hits_count = semantic_result.get("count", 0)
+             max_score = 0.0
+             if hits_count > 0 and semantic_result.get("results"):
+                 max_score = semantic_result["results"][0].get("similarity", 0.0)
+                 
+             if enable_path_search and (hits_count == 0 or max_score < path_trigger_threshold):
+                 if self.debug_enabled:
+                     logger.info(f"{self.log_prefix} 触发路径搜索 (Hits={hits_count}, MaxScore={max_score:.2f})")
+                     
+                 path_result = self._path_search(relation_spec)
+                 if path_result:
+                     return path_result
+             
+             return semantic_result
+
+        # 格式化精确匹配结果
         formatted_relations = []
         for rel in relations:
             formatted_relations.append({
                 "hash": rel["hash"],
                 "subject": rel["subject"],
                 "predicate": rel["predicate"],
-                "object": rel["object"],  # 数据库列名就是 'object'
+                "object": rel["object"],
                 "confidence": rel.get("confidence", 1.0),
+                "is_semantic": False,
             })
-
 
         # 生成 content 摘要
         if formatted_relations:
-            lines = [f"找到 {len(formatted_relations)} 条关系："]
+            lines = [f"找到 {len(formatted_relations)} 条精确匹配关系："]
             for i, rel in enumerate(formatted_relations[:10]):
                 lines.append(f"{i+1}. {rel['subject']} {rel['predicate']} {rel['object']}")
             content = "\n".join(lines)
@@ -505,6 +645,230 @@ class KnowledgeQueryTool(BaseTool):
             "count": len(formatted_relations),
             "content": content,
         }
+
+    async def _semantic_search_relation(
+        self,
+        query: str,
+        min_score: float,
+    ) -> Dict[str, Any]:
+        """执行语义关系检索
+
+        Args:
+            query: 查询文本
+            min_score: 最小相似度阈值
+
+        Returns:
+            查询结果
+        """
+        if not self.retriever:
+             return {
+                "success": False,
+                "error": "检索器未初始化",
+                "content": "❌ 检索器未初始化",
+                "results": [],
+            }
+
+        # 执行检索 (策略: REL_ONLY, TopK: 5)
+        # 护栏 B: TopK 小一点
+        results = await self.retriever.retrieve(
+            query,
+            top_k=5,
+            strategy=RetrievalStrategy.REL_ONLY
+        )
+
+        formatted_results = []
+        seen_relations = set()
+
+        for res in results:
+            # 护栏 B: 阈值过滤
+            if res.score < min_score:
+                continue
+            
+            # 护栏 D: 类型过滤 (retrieve REL_ONLY 应该只返回 relation，但防御性检查)
+            if res.result_type != "relation":
+                continue
+
+            # 获取元数据
+            meta = res.metadata
+            subj = meta.get("subject", "?")
+            pred = meta.get("predicate", "?")
+            obj = meta.get("object", "?")
+            
+            # 护栏 D: 去重
+            rel_key = (subj, pred, obj)
+            if rel_key in seen_relations:
+                continue
+            seen_relations.add(rel_key)
+
+            formatted_results.append({
+                "hash": res.hash_value,
+                "subject": subj,
+                "predicate": pred,
+                "object": obj,
+                "confidence": meta.get("confidence", 1.0),
+                "similarity": res.score,
+                "is_semantic": True, # 标记为语义结果
+            })
+
+        # 护栏 C: 明确标注
+        if formatted_results:
+            lines = [f"找到 {len(formatted_results)} 条 [语义候选] 关系："]
+            for i, rel in enumerate(formatted_results):
+                lines.append(
+                    f"{i+1}. {rel['subject']} {rel['predicate']} {rel['object']} "
+                    f"(相似度: {rel['similarity']:.2f})"
+                )
+            
+            lines.append("")
+            lines.append("💡 若需精确过滤，请使用 'Subject|Predicate|Object' 格式")
+            content = "\n".join(lines)
+        else:
+            content = (
+                f"未找到相关的关系 (语义相似度均低于 {min_score})。\n"
+                "💡 请尝试更具体的关系描述，或使用 'S|P|O' 格式进行精确查询。"
+            )
+
+        return {
+            "success": True,
+            "query_type": "relation",
+            "search_mode": "semantic",
+            "query": query,
+            "results": formatted_results,
+            "count": len(formatted_results),
+            "content": content,
+        }
+
+    def _path_search(self, query: str) -> Optional[Dict[str, Any]]:
+        """执行路径搜索 (多跳关系)"""
+        # 1. 提取实体
+        entities = self._extract_entities_from_query(query)
+        if len(entities) != 2:
+            if self.debug_enabled:
+                logger.debug(f"{self.log_prefix} PathSearch Abort: Requires exactly 2 entities, found {len(entities)}: {entities}")
+            return None
+            
+        start_node, end_node = entities[0], entities[1]
+        
+        # 2. 查找路径
+        paths = self.graph_store.find_paths(
+            start_node, 
+            end_node, 
+            max_depth=3, # Configurable?
+            max_paths=5
+        )
+        
+        if not paths:
+            return None
+            
+        # 3. 丰富路径信息 (查找边上的关系谓语)
+        formatted_paths = []
+        edge_cache = {} # (u, v) -> relation_str
+        
+        for path_nodes in paths:
+            path_desc = []
+            valid_path = True
+            
+            for i in range(len(path_nodes) - 1):
+                u, v = path_nodes[i], path_nodes[i+1]
+                
+                # Check cache
+                cache_key = tuple(sorted((u, v))) # Undirected cache key
+                if cache_key in edge_cache:
+                    rel_info = edge_cache[cache_key]
+                else:
+                    # Query metadata for relation u->v or v->u
+                    # 优先找 u->v
+                    rels = self.metadata_store.get_relations(subject=u, object=v)
+                    direction = "->"
+                    if not rels:
+                        # 尝试 v->u
+                        rels = self.metadata_store.get_relations(subject=v, object=u)
+                        direction = "<-"
+                    
+                    if rels:
+                        # Pick best confidence or first
+                        best_rel = max(rels, key=lambda x: x.get("confidence", 1.0))
+                        pred = best_rel.get("predicate", "related")
+                        rel_info = (pred, direction, u, v) if direction == "->" else (pred, direction, v, u)
+                    else:
+                        rel_info = ("?", "->", u, v) # Should not happen if graph consistent
+                        
+                    edge_cache[cache_key] = rel_info
+                
+                pred, direction, src, tgt = rel_info
+                if direction == "->":
+                    step_str = f"-[{pred}]->"
+                else:
+                    step_str = f"<-[{pred}]-"
+                path_desc.append(step_str)
+            
+            # Reconstruct full string: Node1 -[pred]-> Node2 ...
+            full_path_str = path_nodes[0]
+            for i, step in enumerate(path_desc):
+                full_path_str += f" {step} {path_nodes[i+1]}"
+            
+            formatted_paths.append({
+                "nodes": path_nodes,
+                "description": full_path_str
+            })
+
+        # Generate content
+        lines = [f"Found {len(formatted_paths)} indirect connection paths between '{start_node}' and '{end_node}':"]
+        for i, p in enumerate(formatted_paths):
+            lines.append(f"{i+1}. {p['description']}")
+            
+        content = "\n".join(lines)
+        
+        return {
+            "success": True,
+            "query_type": "relation",
+            "search_mode": "path",
+            "query": query,
+            "results": formatted_paths,
+            "count": len(formatted_paths),
+            "content": content
+        }
+
+    def _extract_entities_from_query(self, query: str) -> List[str]:
+        """从查询中提取已知的图节点实体 (简易启发式)"""
+        if not self.graph_store:
+            return []
+            
+        # 1. 简单的 N-gram 匹配 (N=1..4)
+        tokens = query.replace("?", " ").replace("!", " ").replace(".", " ").split()
+        found_entities = set()
+        
+        # 优化: 仅检查 query 中的 potential matches
+        # 由于无法遍历所有 node，我们生成 query 的所有子串 check existence
+        # O(L^2) where L is query length (small)
+        
+        n = len(tokens)
+        # Max n-gram size: 4 or length of query
+        max_n = min(4, n)
+        
+        # Greedy search: prioritize longer matches
+        skip_indices = set()
+        
+        for size in range(max_n, 0, -1):
+            for i in range(n - size + 1):
+                # Check if this span is already covered
+                if any(idx in skip_indices for idx in range(i, i+size)):
+                    continue
+                    
+                span = " ".join(tokens[i : i+size])
+                # Check original case first, then exact match only (kv store usually case sensitive-ish)
+                # But user query might be lower/upper.
+                # Use ignore_case=True to support "system" matches "System"
+                matched_node = self.graph_store.find_node(span, ignore_case=True)
+                if matched_node:
+                    found_entities.add(matched_node)
+                    # Mark indices as covered
+                    for idx in range(i, i+size):
+                        skip_indices.add(idx)
+                else:
+                    pass
+                    
+        return list(found_entities)
 
     def _get_stats(self) -> Dict[str, Any]:
         """获取统计信息

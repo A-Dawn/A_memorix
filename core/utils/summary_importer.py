@@ -42,13 +42,13 @@ SUMMARY_PROMPT_TEMPLATE = """
 请严格以 JSON 格式输出，格式如下：
 {{
   "summary": "总结文本内容",
-  "entities": ["实体1", "实体2"],
+  "entities": ["张三", "李四"],
   "relations": [
-    {{"subject": "主体", "predicate": "关系", "object": "客体"}}
+    {{"subject": "张三", "predicate": "认识", "object": "李四"}}
   ]
 }}
 
-注意：总结应具有叙事性，能够作为长程记忆的一部分。
+注意：总结应具有叙事性，能够作为长程记忆的一部分。直接使用实体的实际名称，不要使用 e1/e2 等代号。
 """
 
 class SummaryImporter:

@@ -82,6 +82,7 @@ class MetadataStore:
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA cache_size=-64000")  # 64MB缓存
         self._conn.execute("PRAGMA temp_store=MEMORY")
+        self._conn.execute("PRAGMA foreign_keys = ON") # 开启外键约束支持级联删除
 
         logger.info(f"连接到数据库: {db_path}")
 
@@ -292,53 +293,103 @@ class MetadataStore:
             logger.warning(f"段落已存在: {hash_value[:16]}...")
             return hash_value
 
+    def _canonicalize_name(self, name: str) -> str:
+        """
+        规范化名称 (统一小写并去除首尾空格)
+        
+        Args:
+            name: 原始名称
+            
+        Returns:
+            规范化后的名称
+        """
+        if not name:
+            return ""
+        return name.strip().lower()
+
     def add_entity(
         self,
         name: str,
         vector_index: Optional[int] = None,
+        source_paragraph: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         添加实体
-
+        
         Args:
             name: 实体名称
             vector_index: 向量索引
+            source_paragraph: 来源段落哈希 (如果提供，将建立关联)
             metadata: 额外元数据
-
+            
         Returns:
             实体哈希值
         """
-        name_normalized = name.strip().lower()
+        # 1. 规范化名称
+        name_normalized = self._canonicalize_name(name)
+        if not name_normalized:
+            raise ValueError("Entity name cannot be empty")
+            
         hash_value = compute_hash(name_normalized)
-
         now = datetime.now().timestamp()
 
         cursor = self._conn.cursor()
+        
+        # 2. 插入实体 (INSERT OR IGNORE)
+        # 注意：这里我们保留原有的 name 字段存储，可以是 display name，
+        # 但 hash 必须由 canonical name 生成。
+        # 如果实体已存在，我们其实不一定要更新 name (保留第一次的 display name 往往更好)
+        # 或者我们也可以选择不作为唯一键冲突，而是逻辑判断。
+        # 考虑到 entities.hash 是主键，entities.name 是 UNIQUE。
+        # 如果 name 大小写不同但 hash 相同 (冲突)，或者 name 不同但 canonical name 相同?
+        # 由于 hash 是由 canonical name 算出来的，所以 hash 相同意味着 canonical name 相同。
+        # 如果 db 中已存在的 name 是 "Apple"，新来的 name 是 "apple"，它们 canonical name 都是 "apple"，hash 一样。
+        # 此时 INSERT OR IGNORE 会忽略。
+        
         try:
             cursor.execute("""
-                INSERT INTO entities
+                INSERT OR IGNORE INTO entities
                 (hash, name, vector_index, appearance_count, created_at, metadata)
                 VALUES (?, ?, ?, 1, ?, ?)
             """, (
                 hash_value,
-                name,
+                name,  # 存储原始名称 (Display Name)
                 vector_index,
                 now,
                 pickle.dumps(metadata or {}),
             ))
+            
+            # 检查是否插入成功 (rowcount > 0)
+            if cursor.rowcount == 0:
+                # 实体已存在，更新计数
+                cursor.execute("""
+                    UPDATE entities
+                    SET appearance_count = appearance_count + 1
+                    WHERE hash = ?
+                """, (hash_value,))
+                logger.debug(f"实体已存在，增加计数: {name} ({hash_value[:8]})")
+            else:
+                logger.debug(f"添加实体: {name} ({hash_value[:8]})")
+                
             self._conn.commit()
-            logger.debug(f"添加实体: {name}")
+            
+            # 3. 建立来源关联
+            if source_paragraph:
+                self.link_paragraph_entity(source_paragraph, hash_value)
+                
             return hash_value
-        except sqlite3.IntegrityError:
-            # 实体已存在，增加出现次数
-            cursor.execute("""
-                UPDATE entities
-                SET appearance_count = appearance_count + 1
-                WHERE hash = ?
-            """, (hash_value,))
-            self._conn.commit()
-            logger.debug(f"实体已存在，增加计数: {name}")
+            
+        except sqlite3.IntegrityError as e:
+            # 这种情况通常不应该发生，因为用了 INSERT OR IGNORE 且 hash 是主键
+            # 除非 name 字段有 UNIQUE 约束且 hash 不同 (不太可能，除非 hash 碰撞)
+            # 或者 name 相同但 hash 不同 (也不可能)
+            # 唯一可能是：canonical name 不同，但原始 name 相同? (也不可能，因为 canonical 是确定的)
+            # 还有一种情况：name 字段有 UNIQUE 约束。
+            # 比如 DB 里已有 "Apple" (hash A)，现在插入 "apple" (hash A)。 hash 冲突，IGNORE。
+            # 比如 DB 里已有 "Apple" (hash A)，现在插入 "Apple " (hash A)。IGNORE。
+            # 比如 DB 里已有 "Apple" (hash A)，现在插入 "Banana" (hash B)。OK。
+            logger.warning(f"添加实体失败 (IntegrityError): {name} - {e}")
             return hash_value
 
     def add_relation(
@@ -353,7 +404,7 @@ class MetadataStore:
     ) -> str:
         """
         添加关系
-
+        
         Args:
             subject: 主语
             predicate: 谓语
@@ -362,37 +413,62 @@ class MetadataStore:
             confidence: 置信度
             source_paragraph: 来源段落哈希
             metadata: 额外元数据
-
+            
         Returns:
             关系哈希值
         """
-        relation_tuple = str((subject, predicate, obj))
-        hash_value = compute_hash(relation_tuple)
+        # 1. 规范化输入
+        s_canon = self._canonicalize_name(subject)
+        p_canon = self._canonicalize_name(predicate)
+        o_canon = self._canonicalize_name(obj)
+        
+        if not all([s_canon, p_canon, o_canon]):
+             raise ValueError("Relation components cannot be empty")
+
+        # 2. 计算组合哈希
+        # 公式: md5(s|p|o)
+        relation_key = f"{s_canon}|{p_canon}|{o_canon}"
+        hash_value = compute_hash(relation_key)
 
         now = datetime.now().timestamp()
-
+        
+        # 记录原始 display name 到 metadata (如果需要的话，或者直接存到 DB 字段)
+        # 这里我们直接存入 subject, predicate, object 字段，
+        # 注意：如果 DB 里已存在该关系 (hash 相同)，则不会更新这些字段，保留第一次的拼写。
+        
         cursor = self._conn.cursor()
         try:
             cursor.execute("""
-                INSERT INTO relations
+                INSERT OR IGNORE INTO relations
                 (hash, subject, predicate, object, vector_index, confidence, created_at, source_paragraph, metadata)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 hash_value,
-                subject,
+                subject,  # 原始拼写
                 predicate,
                 obj,
                 vector_index,
                 confidence,
                 now,
-                source_paragraph,
+                source_paragraph, # 这里的 source_paragraph 仅作为 "首次发现地" 记录，也可留空
                 pickle.dumps(metadata or {}),
             ))
             self._conn.commit()
-            logger.debug(f"添加关系: {subject} -{predicate}-> {obj}")
+            
+            if cursor.rowcount > 0:
+                logger.debug(f"添加关系: {subject} -{predicate}-> {obj}")
+            else:
+                logger.debug(f"关系已存在: {subject} -{predicate}-> {obj}")
+
+            # 3. 建立来源关联 (幂等)
+            # 无论关系是新创建的还是已存在的，只要提供了 source_paragraph，都要建立连接
+            if source_paragraph:
+                self.link_paragraph_relation(source_paragraph, hash_value)
+                
             return hash_value
-        except sqlite3.IntegrityError:
-            logger.debug(f"关系已存在: {subject} -{predicate}-> {obj}")
+            
+        except sqlite3.IntegrityError as e:
+            logger.warning(f"添加关系异常: {e}")
             return hash_value
 
     def link_paragraph_relation(
@@ -401,19 +477,13 @@ class MetadataStore:
         relation_hash: str,
     ) -> bool:
         """
-        关联段落和关系
-
-        Args:
-            paragraph_hash: 段落哈希
-            relation_hash: 关系哈希
-
-        Returns:
-            是否成功添加
+        关联段落和关系 (幂等)
         """
         cursor = self._conn.cursor()
         try:
+            # 使用 INSERT OR IGNORE 避免重复报错
             cursor.execute("""
-                INSERT INTO paragraph_relations
+                INSERT OR IGNORE INTO paragraph_relations
                 (paragraph_hash, relation_hash)
                 VALUES (?, ?)
             """, (paragraph_hash, relation_hash))
@@ -429,34 +499,29 @@ class MetadataStore:
         mention_count: int = 1,
     ) -> bool:
         """
-        关联段落和实体
-
-        Args:
-            paragraph_hash: 段落哈希
-            entity_hash: 实体哈希
-            mention_count: 提及次数
-
-        Returns:
-            是否成功添加
+        关联段落和实体 (幂等)
         """
         cursor = self._conn.cursor()
         try:
+            # 首先尝试插入
             cursor.execute("""
-                INSERT INTO paragraph_entities
+                INSERT OR IGNORE INTO paragraph_entities
                 (paragraph_hash, entity_hash, mention_count)
                 VALUES (?, ?, ?)
             """, (paragraph_hash, entity_hash, mention_count))
+            
+            if cursor.rowcount == 0:
+                # 如果已存在 (IGNORE生效)，则更新计数
+                cursor.execute("""
+                    UPDATE paragraph_entities
+                    SET mention_count = mention_count + ?
+                    WHERE paragraph_hash = ? AND entity_hash = ?
+                """, (mention_count, paragraph_hash, entity_hash))
+            
             self._conn.commit()
             return True
         except sqlite3.IntegrityError:
-            # 关联已存在，增加计数
-            cursor.execute("""
-                UPDATE paragraph_entities
-                SET mention_count = mention_count + ?
-                WHERE paragraph_hash = ? AND entity_hash = ?
-            """, (mention_count, paragraph_hash, entity_hash))
-            self._conn.commit()
-            return True
+            return False
 
     def get_paragraph(self, hash_value: str) -> Optional[Dict[str, Any]]:
         """
@@ -559,22 +624,29 @@ class MetadataStore:
 
     def get_paragraphs_by_entity(self, entity_name: str) -> List[Dict[str, Any]]:
         """
-        获取包含指定实体的所有段落
-
+        获取包含指定实体的所有段落 (自动处理规范化)
+        
         Args:
-            entity_name: 实体名称
-
+            entity_name: 实体名称 (支持任意大小写)
+            
         Returns:
             段落列表
         """
+        # 1. 计算规范化 Hash
+        name_canon = self._canonicalize_name(entity_name)
+        if not name_canon:
+            return []
+            
+        entity_hash = compute_hash(name_canon)
+        
         cursor = self._conn.cursor()
+        # 2. 直接使用 Hash 查询中间表，完全避开 Name 匹配
         cursor.execute("""
             SELECT p.*
             FROM paragraphs p
             JOIN paragraph_entities pe ON p.hash = pe.paragraph_hash
-            JOIN entities e ON pe.entity_hash = e.hash
-            WHERE e.name = ?
-        """, (entity_name,))
+            WHERE pe.entity_hash = ?
+        """, (entity_hash,))
 
         return [self._row_to_dict(row, "paragraph") for row in cursor.fetchall()]
 
@@ -585,41 +657,58 @@ class MetadataStore:
         object: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
-        查询关系（支持部分匹配）
-
+        查询关系（大小写不敏感）
+        
         Args:
             subject: 主语（可选）
             predicate: 谓语（可选）
             object: 宾语（可选）
-
+            
         Returns:
             关系列表
         """
-        cursor = self._conn.cursor()
-        
         # 构建查询条件
         conditions = []
         params = []
         
         if subject:
-            conditions.append("subject = ?")
-            params.append(subject)
-        
+            conditions.append("LOWER(subject) = ?")
+            params.append(self._canonicalize_name(subject))
         if predicate:
-            conditions.append("predicate = ?")
-            params.append(predicate)
-        
+            conditions.append("LOWER(predicate) = ?")
+            params.append(self._canonicalize_name(predicate))
         if object:
-            conditions.append("object = ?")
-            params.append(object)
-        
-        # 构建SQL
+            conditions.append("LOWER(object) = ?")
+            params.append(self._canonicalize_name(object))
+            
         sql = "SELECT * FROM relations"
         if conditions:
             sql += " WHERE " + " AND ".join(conditions)
-        
+            
+        cursor = self._conn.cursor()
         cursor.execute(sql, tuple(params))
+        
         return [self._row_to_dict(row, "relation") for row in cursor.fetchall()]
+
+    def get_paragraphs_by_relation(self, relation_hash: str) -> List[Dict[str, Any]]:
+        """
+        获取支持指定关系的所有段落
+
+        Args:
+            relation_hash: 关系哈希
+
+        Returns:
+            段落列表
+        """
+        cursor = self._conn.cursor()
+        cursor.execute("""
+            SELECT p.*
+            FROM paragraphs p
+            JOIN paragraph_relations pr ON p.hash = pr.paragraph_hash
+            WHERE pr.relation_hash = ?
+        """, (relation_hash,))
+
+        return [self._row_to_dict(row, "paragraph") for row in cursor.fetchall()]
 
     def get_paragraphs_by_source(self, source: str) -> List[Dict[str, Any]]:
         """
@@ -922,6 +1011,73 @@ class MetadataStore:
         cursor = self._conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM entities")
         return cursor.fetchone()[0]
+
+    def delete_paragraph_atomic(self, paragraph_hash: str) -> Dict[str, Any]:
+        """
+        两阶段删除段落：DB 事务内计算 + 提交后执行清理
+
+        Args:
+            paragraph_hash: 段落哈希
+
+        Returns:
+            cleanup_plan: 包含需要后续从 Vector/GraphStore 中移除的 ID 列表
+        """
+        cleanup_plan = {
+            "paragraph_hash": paragraph_hash,
+            "vector_id_to_remove": None,
+            "edges_to_remove": []  # list of (src, tgt) tuples
+        }
+
+        cursor = self._conn.cursor()
+        try:
+            # === Phase 1: DB Transaction (可回滚) ===
+            # 使用 IMMEDIATE 模式，一旦开启事务立即锁定 DB (防止其他写操作插队导致幻读)
+            cursor.execute("BEGIN IMMEDIATE")
+
+            # 1. [快照] 获取候选关系
+            cursor.execute("SELECT relation_hash FROM paragraph_relations WHERE paragraph_hash = ?", (paragraph_hash,))
+            candidate_relations = [row[0] for row in cursor.fetchall()]
+
+            # 2. [快照] 确认该段落存在并记录 ID 用于向量删除
+            cursor.execute("SELECT hash FROM paragraphs WHERE hash = ?", (paragraph_hash,))
+            if cursor.fetchone():
+                cleanup_plan["vector_id_to_remove"] = paragraph_hash
+
+            # 3. [主删除] 删除段落 (触发 CASCADE 删 paragraph_relations)
+            cursor.execute("DELETE FROM paragraphs WHERE hash = ?", (paragraph_hash,))
+
+            # 4. [计算孤儿]
+            orphaned_hashes = []
+            for rel_hash in candidate_relations:
+                count = cursor.execute(
+                    "SELECT count(*) FROM paragraph_relations WHERE relation_hash = ?",
+                    (rel_hash,)
+                ).fetchone()[0]
+
+                if count == 0:
+                    # 是孤儿：记录边信息以便后续删 Graph
+                    cursor.execute("SELECT subject, object FROM relations WHERE hash = ?", (rel_hash,))
+                    rel_info = cursor.fetchone()
+                    if rel_info:
+                        cleanup_plan["edges_to_remove"].append((rel_info[0], rel_info[1]))
+
+                    orphaned_hashes.append(rel_hash)
+
+            # 5. [DB清理] 删除孤儿关系记录
+            if orphaned_hashes:
+                placeholders = ','.join(['?'] * len(orphaned_hashes))
+                cursor.execute(f"DELETE FROM relations WHERE hash IN ({placeholders})", orphaned_hashes)
+
+            self._conn.commit()
+            if cleanup_plan["vector_id_to_remove"]:
+                logger.debug(f"原子删除段落成功: {paragraph_hash}, 计划清理 {len(orphaned_hashes)} 个孤儿关系")
+            return cleanup_plan
+
+        except Exception as e:
+            self._conn.rollback()
+            logger.error(f"DB Transaction failed: {e}")
+            raise e
+
 
     def clear_all(self) -> None:
         """清空所有表数据"""

@@ -209,7 +209,9 @@ class ImportCommand(BaseCommand):
             if llm_result.get("entities"):
                 extracted_entities = llm_result["entities"]
                 if extracted_entities:
-                    self.graph_store.add_nodes(extracted_entities)
+                    for entity in extracted_entities:
+                        # 传递 source_paragraph 以建立关联
+                        await self._add_entity_with_vector(entity, source_paragraph=hash_value)
                     entities_count += len(extracted_entities)
             
             # 4. 导入 LLM 提取的关系
@@ -218,16 +220,16 @@ class ImportCommand(BaseCommand):
                     s, p, o = rel.get("subject"), rel.get("predicate"), rel.get("object")
                     if all([s, p, o]):
                         try:
-                            await self._add_relation(s, p, o, source_paragraph=paragraph)
+                            await self._add_relation(s, p, o, source_paragraph=hash_value)
                             relations_count += 1
                         except Exception as e:
                             logger.debug(f"{self.log_prefix} 关系添加失败: {e}")
 
             # 5. 回退逻辑：如果 LLM 为空且类型适合，尝试正则
             if not llm_result and should_extract_relations(detected_type):
-                 e_c, r_c = await self._extract_knowledge_regex([paragraph])
-                 entities_count += e_c
-                 relations_count += r_c
+                e_c, r_c = await self._extract_knowledge_regex([paragraph], source_hash=hash_value)
+                entities_count += e_c
+                relations_count += r_c
 
 
         elapsed = time.time() - start_time
@@ -364,7 +366,8 @@ class ImportCommand(BaseCommand):
             # 导入实体
             entities = data.get("entities", [])
             if entities:
-                self.graph_store.add_nodes(entities)
+                for entity in entities:
+                    await self._add_entity_with_vector(entity)
                 e_count += len(entities)
             
             # 导入关系
@@ -487,8 +490,9 @@ class ImportCommand(BaseCommand):
         Returns:
             关系hash值
         """
-        # 添加实体到图
-        self.graph_store.add_nodes([subject, obj])
+        # 添加实体到图 (并向量化)
+        await self._add_entity_with_vector(subject)
+        await self._add_entity_with_vector(obj)
 
         # 添加关系到metadata store
         hash_value = self.metadata_store.add_relation(
@@ -496,7 +500,7 @@ class ImportCommand(BaseCommand):
             predicate=predicate,
             obj=obj,  # 参数名是 obj 而不是 object
             confidence=confidence,
-            source_paragraph=source_paragraph,
+            source_paragraph=source_paragraph, # 这里应该是 hash
         )
 
         # 添加关系到图
@@ -615,7 +619,24 @@ class ImportCommand(BaseCommand):
                         # 添加实体
                         entities = data.get("entities", [])
                         if entities:
-                            self.graph_store.add_nodes(entities)
+                            for entity in entities:
+                                # 这里的 para 是 content，我们其实应该传 hash，但 _extract_knowledge 接口只接收 paragraphs list
+                                # 由于 _extract_knowledge 的设计问题，它没有很好的上下文 hash。
+                                # 但注意到该方法主要用于测试或简单调用，主流程是 _import_text，那里是分开处理的。
+                                # _import_text 调用的是 _llm_extract 返回数据，然后自己在外面循环添加。
+                                # 这个 _extract_knowledge 方法似乎是独立的辅助方法？
+                                # 看起来 _import_text 并没有直接调用 _extract_knowledge，而是调用的 _llm_extract 和 _add_paragraph 分开处理。
+                                # 只有当 ImportCommand 被外部调用用来 "只提取不存段落" 时才会用到这个？
+                                # 或者 _extract_knowledge_regex 被用到了。
+                                # 经过检查，_import_text 在 228行调用了 _extract_knowledge_regex。
+                                # 但该方法没有被 _import_text 调用。
+                                # 为了保持一致性，还是加上 source_paragraph=para (虽然这其实是 content 不是 hash，可能导致外键错误)
+                                # 等等，metadata_store.add_entity 的 source_paragraph 参数期望的是 hash。
+                                # 如果传入 content，会违反外键约束 (如果有的话) 或者存入无效 hash。
+                                # 鉴于 _extract_knowledge 不在主流程 _import_text 中使用 (它是分开的)，
+                                # 且它甚至没有 parameter hash 的上下文。
+                                # 我们先留空，或者传入空字符串。
+                                await self._add_entity_with_vector(entity)
                             entities_count += len(entities)
 
                         # 添加关系
@@ -697,7 +718,7 @@ JSON格式: {{ "entities": ["e1"], "relations": [{{"subject": "s", "predicate": 
                 pass
         return {}
 
-    async def _extract_knowledge_regex(self, paragraphs: List[str]) -> Tuple[int, int]:
+    async def _extract_knowledge_regex(self, paragraphs: List[str], source_hash: Optional[str] = None) -> Tuple[int, int]:
         """使用正则提取知识（备用方案）"""
         entities_count = 0
         relations_count = 0
@@ -710,16 +731,64 @@ JSON格式: {{ "entities": ["e1"], "relations": [{{"subject": "s", "predicate": 
             
             unique_entities = list(set([e for e in entities if e.strip()]))
             if unique_entities:
-                self.graph_store.add_nodes(unique_entities)
+                for entity in unique_entities:
+                    # 传递 source_hash
+                    await self._add_entity_with_vector(entity, source_paragraph=source_hash or "")
                 entities_count += len(unique_entities)
             relations = re.findall(r"([A-Z][a-z]+)\s+(is|was|are|were)\s+([A-Z][a-z]+)", para)
             for subject, predicate, obj in relations:
                 try:
-                    await self._add_relation(subject, predicate, obj, source_paragraph=para)
+                    await self._add_relation(subject, predicate, obj, source_paragraph=source_hash or "")
                     relations_count += 1
                 except:
                     pass
         return entities_count, relations_count
+
+    async def _add_entity_with_vector(
+        self,
+        name: str,
+        source_paragraph: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """添加实体并在向量库中生成索引
+        
+        Args:
+            name: 实体名称
+            source_paragraph: 来源段落哈希 (可选)
+            metadata: 额外元数据
+            
+        Returns:
+            实体hash值
+        """
+        # 1. 存入元数据和图存储
+        hash_value = self.metadata_store.add_entity(
+            name, 
+            source_paragraph=source_paragraph,
+            metadata=metadata
+        )
+        self.graph_store.add_nodes([name])
+
+        # 2. 生成向量并存入向量库
+        try:
+            # 检查是否已存在于向量库 (通过 get 检查有效性)
+            existing_vectors = self.vector_store.get([hash_value])
+            if not existing_vectors or existing_vectors[0] is None:
+                embedding = await self.embedding_manager.encode(name)
+                # 尝试添加。如果ID已存在（例如被标记删除），add会抛出ValueError
+                try:
+                    self.vector_store.add(
+                        vectors=embedding.reshape(1, -1),
+                        ids=[hash_value],
+                    )
+                    logger.debug(f"{self.log_prefix} Added vector for entity: {name}")
+                except ValueError:
+                    # ID存在但add失败，可能是被软删除了，或者并发导致
+                    # 暂时忽略，避免崩溃
+                    logger.warning(f"{self.log_prefix} Entity vector {name} (hash={hash_value}) already exists or conflict.")
+        except Exception as e:
+            logger.warning(f"{self.log_prefix} Failed to vectorize entity {name}: {e}")
+
+        return hash_value
 
     def _get_help_message(self) -> str:
         """获取帮助消息

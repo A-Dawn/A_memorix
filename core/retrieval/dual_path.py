@@ -76,18 +76,22 @@ class DualPathRetrieverConfig:
             - 0.5: 平均融合
         enable_ppr: 是否启用PageRank重排序
         ppr_alpha: PageRank的alpha参数
+        ppr_concurrency_limit: PPR计算的最大并发数
         enable_parallel: 是否并行检索
         retrieval_strategy: 检索策略
+        debug: 是否启用调试模式（打印搜索结果原文）
     """
-
+ 
     top_k_paragraphs: int = 20
     top_k_relations: int = 10
     top_k_final: int = 10
     alpha: float = 0.5  # 融合权重
     enable_ppr: bool = True
     ppr_alpha: float = 0.85
+    ppr_concurrency_limit: int = 4
     enable_parallel: bool = True
     retrieval_strategy: RetrievalStrategy = RetrievalStrategy.DUAL_PATH
+    debug: bool = False
 
     def __post_init__(self):
         """验证配置"""
@@ -152,6 +156,7 @@ class DualPathRetriever:
             graph_store=graph_store,
             config=ppr_config,
         )
+        self._ppr_semaphore = asyncio.Semaphore(self.config.ppr_concurrency_limit)
 
         logger.info(
             f"DualPathRetriever 初始化: "
@@ -198,6 +203,13 @@ class DualPathRetriever:
             results = await self._retrieve_dual_path(query, top_k)
 
         logger.info(f"检索完成: 返回 {len(results)} 条结果")
+
+        # 调试模式：打印结果原文
+        if self.config.debug:
+            logger.info(f"[DEBUG] 检索结果内容原文:")
+            for i, res in enumerate(results):
+                logger.info(f"  {i+1}. [{res.result_type}] (Score: {res.score:.4f}) {res.content}")
+
         return results
 
     async def _retrieve_paragraphs_only(
@@ -248,7 +260,12 @@ class DualPathRetriever:
         top_k: int,
     ) -> List[RetrievalResult]:
         """
-        仅检索关系（异步方法）
+        仅检索关系 (通过实体枢纽 Entity-Pivot)
+        
+        策略:
+        1. 检索向量库中的 Top-K 实体 (Entity)
+        2. 通过图结构/元数据扩展出与实体关联的关系 (Relation)
+        3. 以实体相似度作为基础分返回关系
 
         Args:
             query: 查询文本
@@ -260,36 +277,55 @@ class DualPathRetriever:
         # 生成查询嵌入（异步调用）
         query_emb = await self.embedding_manager.encode(query)
 
-        # 检索关系
-        rel_ids, rel_scores = self.vector_store.search(
+        # 1. 检索向量 (混合了段落和实体，所以扩大检索范围以召回足够多实体)
+        ids, scores = self.vector_store.search(
             query_emb,
-            k=top_k * 2,
+            k=top_k * 3, 
         )
 
-        # 获取关系内容
         results = []
-        for hash_value, score in zip(rel_ids, rel_scores):
-            relation = self.metadata_store.get_relation(hash_value)
-            if relation is None:
-                continue
+        seen_relations = set()
 
-            # 格式化关系文本
-            content = f"{relation['subject']} {relation['predicate']} {relation['object']}"
+        for hash_value, score in zip(ids, scores):
+            # 2. 检查是否为实体
+            entity = self.metadata_store.get_entity(hash_value)
+            
+            if entity:
+                # 是实体！扩展搜索其关联的关系
+                entity_name = entity["name"]
+                
+                # 获取作为 主语 或 宾语 的所有关系
+                related_rels = []
+                related_rels.extend(self.metadata_store.get_relations(subject=entity_name))
+                related_rels.extend(self.metadata_store.get_relations(object=entity_name))
+                
+                for rel in related_rels:
+                    if rel["hash"] in seen_relations:
+                        continue
+                        
+                    seen_relations.add(rel["hash"])
+                    
+                    content = f"{rel['subject']} {rel['predicate']} {rel['object']}"
+                    
+                    # 构造结果 (复用实体的向量相似度作为基础分)
+                    # TODO: 未来可以考虑结合 关系文本 vs Query 的重排序
+                    results.append(RetrievalResult(
+                        hash_value=rel["hash"],
+                        content=content,
+                        score=float(score),
+                        result_type="relation",
+                        source="relation_search (via entity)",
+                        metadata={
+                            "subject": rel["subject"],
+                            "predicate": rel["predicate"],
+                            "object": rel["object"],
+                            "confidence": rel.get("confidence", 1.0),
+                            "pivot_entity": entity_name  # 记录是通过哪个实体找到的
+                        },
+                    ))
 
-            results.append(RetrievalResult(
-                hash_value=hash_value,
-                content=content,
-                score=float(score),
-                result_type="relation",
-                source="relation_search",
-                metadata={
-                    "subject": relation["subject"],
-                    "predicate": relation["predicate"],
-                    "object": relation["object"],
-                    "confidence": relation.get("confidence", 1.0),
-                },
-            ))
-
+        # 根据分数降序排序并截取
+        results.sort(key=lambda x: x.score, reverse=True)
         return results[:top_k]
 
     async def _retrieve_dual_path(

@@ -249,6 +249,10 @@
             </div>
         </div>
     </div>
+    </div>
+
+    <!-- 自动补全列表 -->
+    <datalist id="node-list-suggestions"></datalist>
 
     <div id="container"></div>
 
@@ -274,6 +278,34 @@
                 <button onclick="renameNode()" style="background:#faad14;color:#000;flex:1;">✏️ 重命名</button>
                 <button onclick="ignoreLeafNeighbors()" style="background:#666;flex:1;">🛡️ 忽略邻居</button>
                 <button class="danger" onclick="deleteNode()" style="flex:1;">🗑️ 删除节点</button>
+            </div>
+
+            <!-- 新增：快速添加关系按钮 -->
+            <button onclick="toggleQuickAdd()" style="width:100%; margin-top:10px; background:#1890ff; color:white;">🔗
+                添加关系</button>
+
+            <!-- 新增：快速添加关系表单 -->
+            <div id="quick-add-form"
+                style="display:none; margin-top:10px; padding:10px; background:#f5f5f5; border-radius:4px;">
+                <div style="margin-bottom:5px;">
+                    <input type="text" id="quick-target" placeholder="目标节点名称" list="node-list-suggestions"
+                        style="width:100%; margin-bottom:5px; padding:6px; box-sizing:border-box;">
+                    <input type="text" id="quick-predicate" placeholder="关系 (如: 喜欢)"
+                        style="width:100%; margin-bottom:5px; padding:6px; box-sizing:border-box;">
+                    <button onclick="submitQuickRelation()"
+                        style="width:100%; background:#52c41a; color:white; padding:6px;">✅ 确认</button>
+                </div>
+            </div>
+        </div>
+
+
+        <!-- 核心来源管理 -->
+        <div id="source-list-container"
+            style="margin-top:20px; border-top:1px solid #eee; padding-top:10px; display:none;">
+            <h4 style="margin:5px 0 10px;">📚 知识来源 (Paragraphs)</h4>
+            <div id="source-list"
+                style="max-height:150px; overflow-y:auto; font-size:0.85rem; background:#f9f9f9; border-radius:4px;">
+                <!-- 来源列表 -->
             </div>
         </div>
         <div style="margin-top: 10px; text-align: right;">
@@ -304,6 +336,11 @@
         <div class="form-group">
             <label>目标节点:</label>
             <input type="text" id="edge-target" placeholder="目标节点名称" style="width:100%;padding:6px;">
+        </div>
+        <!-- 新增：关系谓语输入 -->
+        <div class="form-group">
+            <label>关系类型 (可选):</label>
+            <input type="text" id="edge-predicate" placeholder="例如: likes, located in" style="width:100%;padding:6px;">
         </div>
         <div class="form-group">
             <label>权重: <span id="new-edge-weight-val" class="value-display">1.0</span></label>
@@ -340,15 +377,21 @@
                 },
                 edges: {
                     arrows: 'to',
-                    smooth: { type: 'continuous' }
+                    smooth: { type: 'continuous' },
+                    font: {
+                        size: 12,
+                        background: 'rgba(255, 255, 255, 0.7)'
+                    }
                 },
                 physics: {
                     stabilization: false,
                     barnesHut: {
-                        gravitationalConstant: -2000,
+                        gravitationalConstant: -8000,
                         springConstant: 0.04,
-                        springLength: 95
-                    }
+                        springLength: 200,
+                        avoidOverlap: 0.5
+                    },
+                    minVelocity: 0.75
                 },
                 interaction: {
                     hover: true
@@ -383,6 +426,17 @@
                 edges.clear();
                 nodes.add(data.nodes);
                 edges.add(data.edges);
+
+                // 更新 datalist (用于自动补全)
+                const datalist = document.getElementById('node-list-suggestions');
+                if (datalist) {
+                    datalist.innerHTML = '';
+                    data.nodes.forEach(n => {
+                        const opt = document.createElement('option');
+                        opt.value = n.id;
+                        datalist.appendChild(opt);
+                    });
+                }
 
                 showToast("数据加载完成");
             } catch (err) {
@@ -438,6 +492,10 @@
             document.getElementById('panel-title').innerText = `编辑关系: ${edge.from} -> ${edge.to}`;
             document.getElementById('weight-slider').value = edge.value || 1.0;
             document.getElementById('weight-val').innerText = (edge.value || 1.0).toFixed(1);
+
+            // 加载来源
+            document.getElementById('source-list-container').style.display = 'block';
+            fetchSources({ edge_source: edge.from, edge_target: edge.to });
         }
 
         function openNodePanel(nodeId) {
@@ -448,6 +506,82 @@
 
             document.getElementById('panel-title').innerText = "编辑节点";
             document.getElementById('node-id').innerText = nodeId;
+
+            // --- 新增：显示关联关系 ---
+            renderNodeRelations(nodeId);
+
+            // 加载来源
+            document.getElementById('source-list-container').style.display = 'block';
+            fetchSources({ node_id: nodeId });
+        }
+
+        function renderNodeRelations(nodeId) {
+            // 查找所有连接到此节点的边
+            const connectedEdges = edges.get({
+                filter: function (item) {
+                    return item.from === nodeId || item.to === nodeId;
+                }
+            });
+
+            // 如果没有之前的容器，先创建一个
+            let relContainer = document.getElementById('node-relations-container');
+            if (!relContainer) {
+                relContainer = document.createElement('div');
+                relContainer.id = 'node-relations-container';
+                relContainer.style.marginTop = '20px';
+                relContainer.style.borderTop = '1px solid #eee';
+                relContainer.style.paddingTop = '10px';
+                // 插入到 source-list-container 之前
+                const sourceContainer = document.getElementById('source-list-container');
+                sourceContainer.parentNode.insertBefore(relContainer, sourceContainer);
+            }
+
+            if (connectedEdges.length === 0) {
+                relContainer.innerHTML = '<h4 style="margin:5px 0;">🔗 关联关系</h4><div style="color:#999;font-size:0.9rem;">无连接</div>';
+                return;
+            }
+
+            let html = '<h4 style="margin:5px 0 10px;">🔗 关联关系</h4><div style="max-height:150px;overflow-y:auto;font-size:0.9rem;">';
+
+            connectedEdges.forEach(edge => {
+                const isOutgoing = edge.from === nodeId;
+                const otherNode = isOutgoing ? edge.to : edge.from;
+                const directionIcon = isOutgoing ? '➔' : '←';
+                const color = isOutgoing ? '#1890ff' : '#eb2f96'; // 蓝色出，粉色入
+                const weightVal = edge.value || 1.0;
+
+                // 使用 label (谓语) 或 默认显示 "related"
+                // 服务器现在会发送 predicates 数组和 label 字符串
+                const relText = (edge.label && edge.label !== weightVal.toFixed(2)) ? edge.label : 'related';
+
+                html += `
+                    <div style="padding: 4px 0; border-bottom: 1px dotted #eee; display:flex; align-items:center; justify-content:space-between;">
+                        <span style="color:${color}; font-weight:bold; margin-right:5px; font-size:1.1em;">${directionIcon}</span>
+                        <div style="flex:1; display:flex; flex-direction:column;">
+                            <span style="font-size:0.85rem; color:#666;">${relText}</span>
+                            <span style="cursor:pointer; font-weight:500;" onclick="focusNode('${otherNode}')" title="跳转到节点">${otherNode}</span>
+                        </div>
+                        <span style="color:#999; font-size:0.75rem; margin-left:5px;">w:${weightVal.toFixed(1)}</span>
+                        <button onclick="editEdgeFromList('${edge.id}')" style="margin-left:5px; padding:2px 5px; font-size:0.7rem; background:#f0f0f0; color:#333; border:1px solid #ccc;">✎</button>
+                    </div>
+                `;
+            });
+            html += '</div>';
+            relContainer.innerHTML = html;
+        }
+
+        function focusNode(targetNodeId) {
+            network.selectNodes([targetNodeId]);
+            network.focus(targetNodeId, {
+                scale: 1.0,
+                animation: { duration: 500, easingFunction: 'easeInOutQuad' }
+            });
+            openNodePanel(targetNodeId);
+        }
+
+        function editEdgeFromList(edgeId) {
+            const edge = edges.get(edgeId);
+            if (edge) openEdgePanel(edge);
         }
 
         function closePanel() {
@@ -573,6 +707,7 @@
             document.getElementById('add-edge-panel').style.display = 'block';
             document.getElementById('edge-source').value = '';
             document.getElementById('edge-target').value = '';
+            document.getElementById('edge-predicate').value = ''; // 重置谓语
             document.getElementById('new-edge-weight').value = 1.0;
             document.getElementById('new-edge-weight-val').innerText = '1.0';
         }
@@ -585,22 +720,138 @@
             const source = document.getElementById('edge-source').value.trim();
             const target = document.getElementById('edge-target').value.trim();
             const weight = parseFloat(document.getElementById('new-edge-weight').value);
+            const predicate = document.getElementById('edge-predicate').value.trim();
 
             if (!source || !target) {
                 showToast('请输入起始和目标节点');
                 return;
             }
             try {
-                await axios.post('/api/edge', { source, target, weight });
+                await axios.post('/api/edge', { source, target, weight, predicate });
                 // 如果节点不存在，后端会自动添加，前端也添加
                 if (!nodes.get(source)) nodes.add({ id: source, label: source });
                 if (!nodes.get(target)) nodes.add({ id: target, label: target });
-                edges.add({ from: source, to: target, value: weight, label: weight.toFixed(2), arrows: 'to' });
+                // 刷新全图以获取正确的 label (谓语)
+                loadData();
                 showToast('连接添加成功');
                 closeAddEdgePanel();
             } catch (err) {
                 showToast('添加失败: ' + (err.response?.data?.detail || err.message));
             }
+        }
+
+        // --- Quick Add Relation (Side Panel) ---
+        function toggleQuickAdd() {
+            const form = document.getElementById('quick-add-form');
+            form.style.display = form.style.display === 'none' ? 'block' : 'none';
+        }
+
+        function submitQuickRelation() {
+            // currentSelection.data holds the current node ID for 'node' type
+            const currentNodeId = (currentSelection && currentSelection.type === 'node') ? currentSelection.data : null;
+            if (!currentNodeId) return;
+
+            const target = document.getElementById('quick-target').value.trim();
+            const predicate = document.getElementById('quick-predicate').value.trim();
+
+            if (!target) {
+                showToast("请输入目标节点名称");
+                return;
+            }
+
+            // 调用 API
+            axios.post('/api/edge', {
+                source: currentNodeId,
+                target: target,
+                weight: 1.0,
+                predicate: predicate
+            })
+                .then(res => {
+                    showToast(`已添加: ${currentNodeId} -[${predicate}]-> ${target}`);
+                    loadData(); // 刷新全图
+
+                    // 重置表单
+                    document.getElementById('quick-target').value = '';
+                    document.getElementById('quick-predicate').value = '';
+                    document.getElementById('quick-add-form').style.display = 'none';
+                })
+                .catch(err => {
+                    showToast('添加失败: ' + (err.response?.data?.detail || err.message));
+                });
+        }
+
+        // --- Source Management ---
+
+        async function fetchSources(params) {
+            const listEl = document.getElementById('source-list');
+            listEl.innerHTML = '<div style="color:#999;padding:10px;">加载中...</div>';
+            try {
+                const res = await axios.post('/api/source/list', params);
+                renderSourceList(res.data.sources);
+            } catch (err) {
+                console.error(err);
+                listEl.innerHTML = `<div style="color:red;padding:10px;">加载失败: ${err.message}</div>`;
+            }
+        }
+
+        function renderSourceList(sources) {
+            const listEl = document.getElementById('source-list');
+            if (!sources || sources.length === 0) {
+                listEl.innerHTML = '<div style="color:#999;padding:10px;">无对应来源段落</div>';
+                return;
+            }
+
+            let html = '';
+            sources.forEach(s => {
+                const shortContent = s.content.length > 60 ? s.content.substring(0, 60) + '...' : s.content;
+                html += `
+                    <div style="padding:8px; border-bottom:1px solid #eee; display:flex; justify-content:space-between; align-items:start;">
+                        <div style="flex:1; margin-right:10px;">
+                            <div style="color:#333; margin-bottom:4px;">${escapeHtml(shortContent)}</div>
+                            <div style="color:#999; font-size:0.75rem;">ID: ${s.hash.substring(0, 6)}...</div>
+                        </div>
+                        <button onclick="deleteSource('${s.hash}')" style="padding:2px 6px; font-size:0.75rem; background:#ff4d4f;">删</button>
+                    </div>
+                `;
+            });
+            listEl.innerHTML = html;
+        }
+
+        async function deleteSource(hash) {
+            if (!confirm("⚠️ 警告：确定要删除此来源段落吗？\n\n这将同时：\n1. 从向量库中彻底抹除该记忆\n2. 级联删除仅由该段落提供的图谱关系")) {
+                return;
+            }
+
+            try {
+                const res = await axios.delete('/api/source', { data: { paragraph_hash: hash } });
+                showToast("来源已删除");
+
+                // 刷新来源列表
+                if (currentSelection) {
+                    if (currentSelection.type === 'node') fetchSources({ node_id: currentSelection.data });
+                    else if (currentSelection.type === 'edge') {
+                        const edge = currentSelection.data;
+                        fetchSources({ edge_source: edge.from, edge_target: edge.to });
+                    }
+                }
+
+                // 刷新图谱数据 (因为可能删除了边)
+                loadData();
+
+            } catch (err) {
+                showToast("删除失败: " + (err.response?.data?.detail || err.message));
+            }
+        }
+
+        function escapeHtml(text) {
+            const map = {
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#039;'
+            };
+            return text.replace(/[&<>"']/g, function (m) { return map[m]; });
         }
 
         // --- Rename Node ---
