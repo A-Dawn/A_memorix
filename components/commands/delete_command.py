@@ -10,176 +10,16 @@ from pathlib import Path
 
 from src.common.logger import get_logger
 from src.plugin_system.base.base_command import BaseCommand
-from src.chat.message_receive.message import MessageRecv
+from ...core.utils.hash import compute_hash
 
-# 导入核心模块
-from ...core import VectorStore, GraphStore, MetadataStore
-
-logger = get_logger("A_Memorix.DeleteCommand")
-
+# ... (existing imports)
 
 class DeleteCommand(BaseCommand):
-    """删除知识Command
-
-    功能：
-    - 删除段落（软删除）
-    - 删除实体
-    - 删除关系
-    - 批量删除
-    - 清空知识库
-    """
-
-    # Command基本信息
-    command_name = "delete"
-    command_description = "删除知识库内容，支持段落、实体和关系的删除"
-    command_pattern = r"^\/delete(?:\s+(?P<mode>\w+))?(?:\s+(?P<content>.+))?$"
-
-    def __init__(self, message: MessageRecv, plugin_config: Optional[dict] = None):
-        """初始化删除Command"""
-        super().__init__(message, plugin_config)
-
-        # 获取存储实例 (优先从配置获取，兜底从插件实例获取)
-        self.vector_store: Optional[VectorStore] = self.plugin_config.get("vector_store")
-        self.graph_store: Optional[GraphStore] = self.plugin_config.get("graph_store")
-        self.metadata_store: Optional[MetadataStore] = self.plugin_config.get("metadata_store")
-
-        # 兜底逻辑：如果配置中没有存储实例，尝试直接从插件系统获取
-        # 使用 is not None 检查，因为空对象可能布尔值为 False
-        if not all([
-            self.vector_store is not None,
-            self.graph_store is not None,
-            self.metadata_store is not None
-        ]):
-            from ...plugin import A_MemorixPlugin
-            instances = A_MemorixPlugin.get_storage_instances()
-            if instances:
-                self.vector_store = self.vector_store or instances.get("vector_store")
-                self.graph_store = self.graph_store or instances.get("graph_store")
-                self.metadata_store = self.metadata_store or instances.get("metadata_store")
-
-        # 设置日志前缀
-        if self.message and self.message.chat_stream:
-            self.log_prefix = f"[DeleteCommand-{self.message.chat_stream.stream_id}]"
-        else:
-            self.log_prefix = "[DeleteCommand]"
-
-    async def execute(self) -> Tuple[bool, Optional[str], int]:
-        """执行删除命令
-
-        Returns:
-            Tuple[bool, Optional[str], int]: (是否成功, 回复消息, 拦截级别)
-        """
-        # 检查存储是否初始化 (使用 is not None 而非布尔值，因为空对象可能为 False)
-        if not all([
-            self.vector_store is not None,
-            self.graph_store is not None,
-            self.metadata_store is not None
-        ]):
-            error_msg = "❌ 知识库未初始化"
-            return False, error_msg, 0
-
-        # 获取匹配的参数
-        mode = self.matched_groups.get("mode", "help")
-        content = self.matched_groups.get("content", "")
-
-        # 如果没有内容，显示帮助
-        if not content and mode not in ["clear", "stats", "help"]:
-            help_msg = self._get_help_message()
-            return True, help_msg, 0
-
-        logger.info(f"{self.log_prefix} 执行删除: mode={mode}, content='{content}'")
-
-        try:
-            # 根据模式执行删除
-            if mode == "paragraph" or mode == "p":
-                success, result = await self._delete_paragraph(content)
-            elif mode == "entity" or mode == "e":
-                success, result = await self._delete_entity(content)
-            elif mode == "relation" or mode == "r":
-                success, result = await self._delete_relation(content)
-            elif mode == "clear":
-                # 清空需要确认
-                success, result = await self._clear_knowledge_base()
-            elif mode == "stats":
-                success, result = self._get_deletion_stats()
-            elif mode == "help":
-                success, result = True, self._get_help_message()
-            else:
-                success, result = False, f"❌ 未知的删除模式: {mode}"
-
-            return success, result, 0
-
-        except Exception as e:
-            error_msg = f"❌ 删除失败: {str(e)}"
-            logger.error(f"{self.log_prefix} {error_msg}")
-            return False, error_msg, 0
-
-    async def _delete_paragraph(self, hash_or_content: str) -> Tuple[bool, str]:
-        """删除段落
-
-        Args:
-            hash_or_content: 段落hash或内容
-
-        Returns:
-            Tuple[bool, str]: (是否成功, 结果消息)
-        """
-        start_time = time.time()
-
-        # 尝试作为hash查找
-        paragraph = self.metadata_store.get_paragraph(hash_or_content)
-
-        if not paragraph:
-            # 尝试作为内容查找
-            paragraphs = self.metadata_store.search_paragraphs_by_content(hash_or_content)
-
-            if not paragraphs:
-                return False, f"❌ 未找到段落: {hash_or_content[:50]}..."
-
-            if len(paragraphs) > 1:
-                # 多个匹配，列出选项
-                lines = [
-                    f"⚠️ 找到 {len(paragraphs)} 个匹配的段落:",
-                    "",
-                ]
-                for i, para in enumerate(paragraphs[:5], 1):
-                    content = para["content"][:60] + "..." if len(para["content"]) > 60 else para["content"]
-                    hash_val = para["hash"][:16] + "..."
-                    lines.append(f"  {i}. [{hash_val}] {content}")
-
-                if len(paragraphs) > 5:
-                    lines.append(f"  ... 还有 {len(paragraphs) - 5} 个")
-
-                lines.append("")
-                lines.append("💡 请使用完整的hash值精确删除")
-
-                return True, "\n".join(lines)
-
-            # 使用第一个匹配
-            paragraph = paragraphs[0]
-
-        hash_value = paragraph["hash"]
-
-        # 删除段落（会级联删除相关关系和实体关联）
-        success = self.metadata_store.delete_paragraph(hash_value)
-
-        if success:
-            # 从向量存储中删除
-            self.vector_store.remove([hash_value])
-
-            elapsed = time.time() - start_time
-            result_lines = [
-                "✅ 段落删除完成",
-                f"📝 Hash: {hash_value[:16]}...",
-                f"📄 内容: {paragraph['content'][:50]}...",
-                f"⏱️ 耗时: {elapsed*1000:.1f}ms",
-            ]
-            return True, "\n".join(result_lines)
-        else:
-            return False, f"❌ 段落删除失败: {hash_value[:16]}..."
+# ... (existing code)
 
     async def _delete_entity(self, entity_name: str) -> Tuple[bool, str]:
         """删除实体
-
+        
         Args:
             entity_name: 实体名称
 
@@ -187,6 +27,9 @@ class DeleteCommand(BaseCommand):
             Tuple[bool, str]: (是否成功, 结果消息)
         """
         start_time = time.time()
+
+        # 规范化实体名称
+        entity_name = entity_name.strip().lower()
 
         # 检查实体是否存在
         if not self.graph_store.has_node(entity_name):
@@ -196,8 +39,17 @@ class DeleteCommand(BaseCommand):
         neighbors = self.graph_store.get_neighbors(entity_name)
         edge_count = len(neighbors)
 
-        # 获取相关段落
+        # 获取相关段落 (已自动处理 canonical lookup)
         related_paragraphs = self.metadata_store.get_paragraphs_by_entity(entity_name)
+        
+        # 计算hash并从向量库删除 (确保一致性)
+        try:
+            # 逻辑需与 MetadataStore.add_entity 保持一致
+            # entity_name 已经是 canonicalized
+            entity_hash = compute_hash(entity_name)
+            self.vector_store.remove([entity_hash])
+        except Exception as e:
+            logger.warning(f"{self.log_prefix} 删除实体向量失败 {entity_name}: {e}")
 
         # 删除实体
         success = self.graph_store.remove_nodes([entity_name])
@@ -257,12 +109,27 @@ class DeleteCommand(BaseCommand):
                     return False, "❌ 关系格式错误，应使用: subject predicate object"
                 subject, predicate, obj = parts
 
-            # 查找关系
-            relations = self.metadata_store.get_relations(
-                subject=subject.strip(),
-                predicate=predicate.strip(),
-                object=obj.strip(),
-            )
+            # 查找关系 (此时需要规范化参数以匹配数据库中的存储)
+            # 注意: MetadataStore.get_relations 目前执行的是部分匹配 (LIKE)
+            # 如果我们要精确删除，最好自己算 Hash 然后 get_relation_by_hash
+            # 或者修改 get_relations 支持精确匹配?
+            # 为了稳妥，我们计算 canonical hash 然后直接查
+            
+            s_canon = subject.strip().lower()
+            p_canon = predicate.strip().lower()
+            o_canon = obj.strip().lower()
+            
+            relation_key = f"{s_canon}|{p_canon}|{o_canon}"
+            hash_value = compute_hash(relation_key)
+            
+            relation = self.metadata_store.get_relation(hash_value)
+            
+            if not relation:
+                 # 也许用户只是想模糊删除? 但 /delete relation 在语义上应该是删除具体某一个
+                 return False, f"❌ 未找到关系 (或 Hash 不匹配): {subject} {predicate} {obj}"
+
+            # 兼容旧逻辑变量名
+            relations = [relation] 
 
             if not relations:
                 return False, f"❌ 未找到关系: {subject} {predicate} {obj}"

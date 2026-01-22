@@ -73,7 +73,15 @@ class KnowledgeSearchAction(BaseAction):
         # 初始化检索器
         self.retriever: Optional[DualPathRetriever] = None
         self._initialize_retriever()
-
+ 
+    @property
+    def debug_enabled(self) -> bool:
+        """检查是否启用了调试模式"""
+        advanced = self.plugin_config.get("advanced", {})
+        if isinstance(advanced, dict):
+            return advanced.get("debug", False)
+        return self.plugin_config.get("debug", False)
+ 
     def _initialize_retriever(self) -> None:
         """初始化检索器"""
         try:
@@ -118,8 +126,10 @@ class KnowledgeSearchAction(BaseAction):
                 alpha=self.get_config("retrieval.alpha", 0.5),
                 enable_ppr=self.get_config("retrieval.enable_ppr", True),
                 ppr_alpha=self.get_config("retrieval.ppr_alpha", 0.85),
+                ppr_concurrency_limit=self.get_config("retrieval.ppr_concurrency_limit", 4),
                 enable_parallel=self.get_config("retrieval.enable_parallel", True),
                 retrieval_strategy=RetrievalStrategy.DUAL_PATH,
+                debug=self.debug_enabled,
             )
 
             # 创建检索器

@@ -64,10 +64,10 @@ class A_MemorixPlugin(BasePlugin):
 
     # 插件基本信息（PluginBase要求的抽象属性）
     plugin_name = "A_Memorix"
-    plugin_version = "0.1.3"
+    plugin_version = "0.2.0"
     plugin_description = "轻量级知识库插件 - 完全独立的记忆增强系统"
     plugin_author = "A_Dawn"
-    enable_plugin = False  
+    enable_plugin = False  # 默认禁用，需要在config.toml中启用
     dependencies: list[str] = []
     python_dependencies: list[str] = ["numpy", "scipy", "nest-asyncio", "faiss-cpu", "fastapi", "uvicorn", "pydantic"]  # 插件所需Python依赖
     config_file_name: str = "config.toml"
@@ -89,7 +89,7 @@ class A_MemorixPlugin(BasePlugin):
         "plugin": {
             "config_version": ConfigField(
                 type=str,
-                default="1.0.1",
+                default="2.0.0",
                 description="配置文件版本"
             ),
             "enabled": ConfigField(
@@ -101,8 +101,8 @@ class A_MemorixPlugin(BasePlugin):
         "storage": {
             "data_dir": ConfigField(
                 type=str,
-                default="./plugins/A_memorix/data",
-                description="数据目录（完全独立于原LPMM系统）"
+                default="./data",  # Changed to relative path default
+                description="数据目录（默认为插件目录下的 data）"
             ),
         },
         "embedding": {
@@ -167,6 +167,16 @@ class A_MemorixPlugin(BasePlugin):
                 type=bool,
                 default=True,
                 description="是否启用并行检索"
+            ),
+            "relation_semantic_fallback": ConfigField(
+                type=bool,
+                default=True,
+                description="是否启用关系查询的语义回退（支持自然语言查询）"
+            ),
+            "relation_fallback_min_score": ConfigField(
+                type=float,
+                default=0.3,
+                description="关系语义回退的最小相似度阈值"
             ),
         },
         "threshold": {
@@ -300,7 +310,7 @@ class A_MemorixPlugin(BasePlugin):
             "chats": ConfigField(
                 type=list,
                 default=[],
-                description="聊天流 ID 列表。支持填写: 1. 群号 (group_id); 2. 私聊用户ID (user_id); 3. 聊天流唯一标识 (stream_id, MD5格式)。"
+                description="聊天流 ID 列表。支持填写: 1. 群号 (group_id, 如: 123456); 2. 私聊用户ID (user_id, 如: 10001); 3. 聊天流唯一标识 (stream_id, MD5格式)。"
             ),
         },
     }
@@ -678,6 +688,11 @@ class A_MemorixPlugin(BasePlugin):
 
         logger.info(f"A_Memorix 配置已注入存储实例: {list(storage_instances.keys())}")
 
+    @staticmethod
+    def get_global_instance() -> Optional['A_MemorixPlugin']:
+        """获取全局插件实例（供组件使用）"""
+        return _get_global_instance()
+
     @classmethod
     def get_storage_instances(cls) -> Dict[str, Any]:
         """获取存储实例（供组件兜底使用）"""
@@ -729,8 +744,17 @@ class A_MemorixPlugin(BasePlugin):
     async def _initialize_storage_async(self):
         """异步初始化存储组件（用于嵌入维度检测）"""
         # 从config.toml获取配置
-        data_dir_str = self.get_config("storage.data_dir", "./plugins/A_memorix/data")
-        data_dir = Path(data_dir_str)
+        data_dir_str = self.get_config("storage.data_dir", "./data")
+        
+        # 处理相对路径：如果是相对路径，则相对于插件目录
+        if data_dir_str.startswith("."):
+            # 获取当前文件(plugin.py)所在目录
+            plugin_dir = Path(__file__).resolve().parent
+            data_dir = (plugin_dir / data_dir_str).resolve()
+        else:
+            data_dir = Path(data_dir_str)
+            
+        logger.info(f"A_Memorix 数据存储路径: {data_dir}")
 
         # 创建数据目录
         data_dir.mkdir(parents=True, exist_ok=True)
@@ -768,7 +792,8 @@ class A_MemorixPlugin(BasePlugin):
             quantization_type=quantization_type,
             data_dir=data_dir / "vectors",
         )
-        logger.info(f"向量存储初始化完成（维度: {detected_dimension}）")
+        self.vector_store.min_train_threshold = self.get_config("embedding.min_train_threshold", 40)
+        logger.info(f"向量存储初始化完成（维度: {detected_dimension}, 训练阈值: {self.vector_store.min_train_threshold}）")
 
         # 获取稀疏矩阵格式
         matrix_format_str = self.get_config("graph.sparse_matrix_format", "csr")
@@ -890,8 +915,12 @@ class A_MemorixPlugin(BasePlugin):
     def is_chat_enabled(self, stream_id: str, group_id: str = None, user_id: str = None) -> bool:
         """检查聊天流是否启用记忆功能
         
-        基于 filter 配置进行判断。
-        支持配置 stream_id (MD5), group_id 或 user_id。
+        基于 filter 配置进行判断。支持以下格式:
+        1. 纯 ID (如 "123456"): 匹配 stream_id, group_id 或 user_id (兼容模式)
+        2. 带前缀 ID:
+           - "group:123456": 仅匹配群号
+           - "user:10001" 或 "private:10001": 仅匹配用户 ID
+           - "stream:abcd...": 仅匹配聊天流 MD5
         """
         filter_config = self.get_config("filter", {})
         enabled = filter_config.get("enabled", True)
@@ -902,23 +931,39 @@ class A_MemorixPlugin(BasePlugin):
         mode = filter_config.get("mode", "whitelist")
         chats = filter_config.get("chats", [])
         
-        # 确保 chats 都是字符串
-        chats = [str(c) for c in chats]
+        if not chats:
+            # 如果配置为空，白名单模式下兜底放行
+            return mode == "whitelist"
+            
+        # 统一转为字符串并清理空格
+        stream_id = str(stream_id) if stream_id else ""
+        group_id = str(group_id) if group_id else ""
+        user_id = str(user_id) if user_id else ""
         
-        # 检查是否匹配
         is_matched = False
-        if stream_id and str(stream_id) in chats:
-            is_matched = True
-        elif group_id and str(group_id) in chats:
-            is_matched = True
-        elif user_id and str(user_id) in chats:
-            is_matched = True
+        for pattern in chats:
+            pattern = str(pattern).strip()
+            if not pattern:
+                continue
+                
+            if ":" in pattern:
+                prefix, value = pattern.split(":", 1)
+                prefix = prefix.lower()
+                if prefix == "group" and value == group_id:
+                    is_matched = True
+                elif prefix in ["user", "private"] and value == user_id:
+                    is_matched = True
+                elif prefix == "stream" and value == stream_id:
+                    is_matched = True
+            else:
+                # 兼容模式：匹配任意字段
+                if pattern in [stream_id, group_id, user_id]:
+                    is_matched = True
+                    
+            if is_matched:
+                break
             
         if mode == "whitelist":
-            # 白名单模式：
-            # 如果chats为空，为了避免误配置导致全不可用，我们默认放行（兜底逻辑）
-            if not chats:
-                return True
             return is_matched
         else:
             # 黑名单模式：匹配到的被禁用

@@ -1,14 +1,17 @@
 """
 向量存储模块
 
-基于Faiss的高效向量存储与检索，支持int8量化和内存映射。
+基于Faiss的高效向量存储与检索，支持SQ8量化、Append-Only磁盘存储和内存映射。
 """
 
 import os
 import pickle
+import hashlib
 import shutil
 from pathlib import Path
-from typing import Optional, Union, Tuple, List, Dict, Any
+from typing import Optional, Union, Tuple, List, Dict, Set
+import random
+import threading  # Added threading import
 
 import numpy as np
 
@@ -27,123 +30,257 @@ logger = get_logger("A_Memorix.VectorStore")
 
 class VectorStore:
     """
-    向量存储类
+    向量存储类 (SQ8 + Append-Only Disk)
 
-    功能：
-    - Faiss索引（IndexFlatIP / IndexIVFFlat）
-    - int8标量量化（可选）
-    - 内存映射存储
-    - 标记删除 + 定期重建
-    - 增量缓冲区
-    - 持久化
-
-    参数：
-        dimension: 向量维度
-        quantization_type: 量化类型（float32/int8）
-        index_type: Faiss索引类型（flat/ivf）
-        data_dir: 数据目录
-        use_mmap: 是否使用内存映射
-        buffer_size: 缓冲区大小
+    特性：
+    - 索引: IndexIDMap2(IndexScalarQuantizer(QT_8bit))
+    - 存储: float16 on-disk binary (vectors.bin)
+    - 内存: 仅索引常驻 RAM (<512MB for 100k vectors)
+    - ID: SHA1-based stable int64 IDs
+    - 一致性: 强制 L2 Normalization (IP == Cosine)
     """
+
+    # 默认训练触发阈值 (40 样本，过大可能导致小数据集不生效，过小可能量化退化)
+    DEFAULT_MIN_TRAIN = 40
+    # 强制训练样本量
+    TRAIN_SIZE = 10000
+    # 储水池采样上限 (流式处理前 50k 数据)
+    RESERVOIR_CAPACITY = 10000
+    RESERVOIR_SAMPLE_SCOPE = 50000
 
     def __init__(
         self,
         dimension: int,
         quantization_type: QuantizationType = QuantizationType.INT8,
-        index_type: str = "flat",
+        index_type: str = "sq8",
         data_dir: Optional[Union[str, Path]] = None,
         use_mmap: bool = True,
-        buffer_size: int = 1000,
+        buffer_size: int = 1024,
     ):
-        """
-        初始化向量存储
-
-        Args:
-            dimension: 向量维度
-            quantization_type: 量化类型
-            index_type: 索引类型（flat/ivf）
-            data_dir: 数据目录
-            use_mmap: 是否使用内存映射
-            buffer_size: 缓冲区大小
-        """
         if not HAS_FAISS:
             raise ImportError("Faiss 未安装，请安装: pip install faiss-cpu")
 
         self.dimension = dimension
-        self.quantization_type = quantization_type
-        self.index_type = index_type.lower()
         self.data_dir = Path(data_dir) if data_dir else None
-        self.use_mmap = use_mmap
+        self.quantization_type = QuantizationType.INT8 
+        self.index_type = "sq8" 
         self.buffer_size = buffer_size
 
-        # 内部状态
-        self._index: Optional[faiss.Index] = None
-        self._vectors: Optional[np.ndarray] = None
-        self._ids: List[str] = []
-        self._id_to_idx: Dict[str, int] = {}
-        self._deleted_ids: set = set()
-        self._buffer_ids: List[str] = []
-        self._buffer_vectors: List[np.ndarray] = []
+        self._index: Optional[faiss.IndexIDMap2] = None
+        self._init_index()
 
-        # 量化参数
-        self._quant_min: Optional[float] = None
-        self._quant_max: Optional[float] = None
+        self._is_trained = False
+        self._vector_norm = "l2"
+        
+        # Fallback Index (Flat) - 用于在 SQ8 训练完成前提供检索能力
+        # 必须使用 IndexIDMap2 以保证 ID 与主索引一致
+        self._fallback_index: Optional[faiss.IndexIDMap2] = None
+        self._init_fallback_index()
+        
+        self._known_hashes: Set[str] = set()
+        self._deleted_ids: Set[int] = set()
+        
+        self._reservoir_buffer: List[np.ndarray] = []
+        self._seen_count_for_reservoir = 0
 
-        # 统计信息
+        self._write_buffer_vecs: List[np.ndarray] = []
+        self._write_buffer_ids: List[int] = []
+
         self._total_added = 0
         self._total_deleted = 0
+        self._bin_count = 0 
+        
+        # Thread safety lock
+        self._lock = threading.RLock()
 
-        logger.info(
-            f"VectorStore 初始化: dim={dimension}, quant={quantization_type.value}, "
-            f"index={index_type}"
+        logger.info(f"VectorStore Init: dim={dimension}, SQ8 Mode, Append-Only Storage")
+
+    def _init_index(self):
+        """初始化空的 Faiss 索引"""
+        quantizer = faiss.IndexScalarQuantizer(
+            self.dimension, 
+            faiss.ScalarQuantizer.QT_8bit, 
+            faiss.METRIC_INNER_PRODUCT
         )
+        self._index = faiss.IndexIDMap2(quantizer)
+        self._is_trained = False
+
+    def _init_fallback_index(self):
+        """初始化 Flat 回退索引"""
+        flat_index = faiss.IndexFlatIP(self.dimension)
+        self._fallback_index = faiss.IndexIDMap2(flat_index)
+        logger.debug("Fallback index (Flat) initialized.")
+
+    @staticmethod
+    def _generate_id(key: str) -> int:
+        """生成稳定的 int64 ID (SHA1 截断)"""
+        h = hashlib.sha1(key.encode("utf-8")).digest()
+        val = int.from_bytes(h[:8], byteorder="big", signed=False)
+        return val & 0x7FFFFFFFFFFFFFFF
+
+    @property
+    def _bin_path(self) -> Path:
+        return self.data_dir / "vectors.bin"
+    
+    @property
+    def _ids_bin_path(self) -> Path:
+        return self.data_dir / "vectors_ids.bin"
+
+    @property
+    def _int_to_str_map(self) -> Dict[int, str]:
+        """Lazy build volatile map from known hashes"""
+        # Note: This is read-heavy and cached, might need lock if _known_hashes updates concurrently
+        # But add/delete are now locked, so checking len mismatch is somewhat safe-ish for quick dirty cache
+        if not hasattr(self, "_cached_map") or len(self._cached_map) != len(self._known_hashes):
+            with self._lock: # Protect cache rebuild
+                 self._cached_map = {self._generate_id(k): k for k in self._known_hashes}
+        return self._cached_map
 
     def add(self, vectors: np.ndarray, ids: List[str]) -> int:
-        """
-        添加向量
+        with self._lock:
+            if vectors.shape[1] != self.dimension:
+                raise ValueError(f"Dimension mismatch: {vectors.shape[1]} vs {self.dimension}")
 
-        Args:
-            vectors: 向量数组 (N x D)
-            ids: 向量ID列表
+            vectors = np.ascontiguousarray(vectors, dtype=np.float32)
+            faiss.normalize_L2(vectors)
 
-        Returns:
-            成功添加的向量数量
+            processed_vecs = []
+            processed_int_ids = []
+            
+            for i, str_id in enumerate(ids):
+                if str_id in self._known_hashes:
+                    continue
+                
+                int_id = self._generate_id(str_id)
+                self._known_hashes.add(str_id)
+                
+                processed_vecs.append(vectors[i])
+                processed_int_ids.append(int_id)
 
-        Raises:
-            ValueError: 向量维度不匹配或ID重复
-        """
-        if vectors.shape[1] != self.dimension:
-            raise ValueError(
-                f"向量维度不匹配: 期望 {self.dimension}, 实际 {vectors.shape[1]}"
-            )
+            if not processed_vecs:
+                return 0
 
-        if len(vectors) != len(ids):
-            raise ValueError(f"向量数量与ID数量不匹配: {len(vectors)} vs {len(ids)}")
+            batch_vecs = np.array(processed_vecs, dtype=np.float32)
+            batch_ids = np.array(processed_int_ids, dtype=np.int64)
 
-        # 检查ID重复 (包括主索引和缓冲区)
-        duplicate_ids = set(ids) & (set(self._ids) | set(self._buffer_ids))
-        if duplicate_ids:
-            raise ValueError(f"ID已存在: {duplicate_ids}")
+            self._write_buffer_vecs.append(batch_vecs)
+            self._write_buffer_ids.extend(processed_int_ids)
 
-        # 量化向量
-        if self.quantization_type == QuantizationType.INT8:
-            vectors, params = self._quantize_with_params(vectors)
-            # 保存量化参数（首次添加时）
-            if self._quant_min is None:
-                self._quant_min = params["min"]
-                self._quant_max = params["max"]
+            if len(self._write_buffer_ids) >= self.buffer_size:
+                self._flush_write_buffer()
 
-        # 添加到缓冲区
-        self._buffer_ids.extend(ids)
-        self._buffer_vectors.append(vectors)
+            if not self._is_trained:
+                # 双写到回退索引
+                self._fallback_index.add_with_ids(batch_vecs, batch_ids)
+                
+                self._update_reservoir(batch_vecs)
+                # 这里的 TRAIN_SIZE 取默认 10k，或者根据当前数据量动态判断
+                if len(self._reservoir_buffer) >= 10000:
+                    logger.info(f"训练样本达到上限，开始训练...")
+                    self._train_and_replay()
 
-        # 检查是否需要flush
-        if len(self._buffer_ids) >= self.buffer_size:
-            self._flush_buffer()
+            self._total_added += len(batch_ids)
+            return len(batch_ids)
+    
+    def _flush_write_buffer(self):
+        # Assumes caller holds lock or is internal
+        if not self._write_buffer_vecs:
+            return
 
-        self._total_added += len(ids)
-        logger.debug(f"添加 {len(ids)} 个向量到缓冲区")
-        return len(ids)
+        batch_vecs = np.concatenate(self._write_buffer_vecs, axis=0)
+        batch_ids = np.array(self._write_buffer_ids, dtype=np.int64)
+
+        vecs_fp16 = batch_vecs.astype(np.float16)
+        
+        with open(self._bin_path, "ab") as f:
+            f.write(vecs_fp16.tobytes())
+        
+        ids_bytes = batch_ids.astype('>i8').tobytes()
+        with open(self._ids_bin_path, "ab") as f:
+            f.write(ids_bytes)
+            
+        self._bin_count += len(batch_ids)
+
+        if self._is_trained and self._index.is_trained:
+            self._index.add_with_ids(batch_vecs, batch_ids)
+        else:
+            # 即使在 flush 时，如果未训练，也要同步到 fallback
+            self._fallback_index.add_with_ids(batch_vecs, batch_ids)
+
+        self._write_buffer_vecs.clear()
+        self._write_buffer_ids.clear()
+
+    def _update_reservoir(self, vectors: np.ndarray):
+        for vec in vectors:
+            self._seen_count_for_reservoir += 1
+            if len(self._reservoir_buffer) < self.RESERVOIR_CAPACITY:
+                self._reservoir_buffer.append(vec)
+            else:
+                if self._seen_count_for_reservoir <= self.RESERVOIR_SAMPLE_SCOPE:
+                    r = random.randint(0, self._seen_count_for_reservoir - 1)
+                    if r < self.RESERVOIR_CAPACITY:
+                        self._reservoir_buffer[r] = vec
+
+    def _train_and_replay(self):
+        # Assumes caller holds lock
+        if not self._reservoir_buffer:
+            logger.warning("No training data available.")
+            return
+
+        train_data = np.array(self._reservoir_buffer, dtype=np.float32)
+        logger.info(f"Training Index with {len(train_data)} samples...")
+        
+        try:
+            self._index.train(train_data)
+        except Exception as e:
+            logger.error(f"SQ8 Training failed: {e}. Staying in fallback mode.")
+            return
+
+        self._is_trained = True
+        self._reservoir_buffer = []
+
+        logger.info("Replaying data from disk to populate index...")
+        try:
+            replay_count = self._replay_vectors_to_index()
+            # 只有当 replay 成功且数据量一致时，才释放回退索引
+            if self._index.ntotal >= self._bin_count:
+                logger.info(f"Replay successful ({self._index.ntotal}/{self._bin_count}). Releasing fallback index.")
+                self._fallback_index.reset()
+            else:
+                logger.warning(f"Replay count mismatch: {self._index.ntotal} vs {self._bin_count}. Keeping fallback index.")
+        except Exception as e:
+            logger.error(f"Replay failed: {e}. Keeping fallback index as backup.")
+
+    def _replay_vectors_to_index(self) -> int:
+        """从 vectors.bin 读取并添加到 index"""
+        if not self._bin_path.exists() or not self._ids_bin_path.exists():
+            return 0
+
+        vec_item_size = self.dimension * 2
+        id_item_size = 8
+        chunk_size = 10000 
+        
+        with open(self._bin_path, "rb") as f_vec, open(self._ids_bin_path, "rb") as f_id:
+            while True:
+                vec_data = f_vec.read(chunk_size * vec_item_size)
+                id_data = f_id.read(chunk_size * id_item_size)
+                
+                if not vec_data:
+                    break
+                
+                batch_fp16 = np.frombuffer(vec_data, dtype=np.float16).reshape(-1, self.dimension)
+                batch_fp32 = batch_fp16.astype(np.float32)
+                faiss.normalize_L2(batch_fp32)
+                
+                batch_ids = np.frombuffer(id_data, dtype='>i8').astype(np.int64)
+                
+                valid_mask = [id_ not in self._deleted_ids for id_ in batch_ids]
+                if not all(valid_mask):
+                    batch_fp32 = batch_fp32[valid_mask]
+                    batch_ids = batch_ids[valid_mask]
+                
+                if len(batch_ids) > 0:
+                    self._index.add_with_ids(batch_fp32, batch_ids)
 
     def search(
         self,
@@ -151,572 +288,341 @@ class VectorStore:
         k: int = 10,
         filter_deleted: bool = True,
     ) -> Tuple[List[str], List[float]]:
-        """
-        搜索最相似的向量
-
-        Args:
-            query: 查询向量 (D,) 或 (N x D)
-            k: 返回结果数量
-            filter_deleted: 是否过滤已删除的向量
-
-        Returns:
-            (ID列表, 分数列表)
-        """
-        # 检查是否有数据（索引或缓冲区）
-        has_index = self._index is not None and self._index.ntotal > 0
-        has_buffer = len(self._buffer_ids) > 0
         
-        if not has_index and not has_buffer:
-            logger.warning("索引和缓冲区均为空，无法搜索")
+        # 核心逻辑：主索引未就绪时，检查回退索引
+        # 使用 Double-Checked Locking 模式确保线程安全
+        if not self._is_trained or self._index.ntotal == 0:
+            with self._lock:
+                # 再次检查，防止多线程竞争导致的重复初始化
+                if not self._is_trained or self._index.ntotal == 0:
+                    self._flush_write_buffer()
+                    
+                    # 判断回退索引是否需要从磁盘自举 (重启动作)
+                    if self._bin_count > 0 and self._fallback_index.ntotal == 0:
+                        logger.info(f"Detecting data on disk ({self._bin_count}) but index not ready. Bootstrapping fallback index...")
+                        self._bootstrap_fallback_from_disk()
+                    
+                    # 尝试根据阈值强制训练
+                    min_train = getattr(self, "min_train_threshold", self.DEFAULT_MIN_TRAIN)
+                    if self._bin_count > 0 and self._bin_count >= min(min_train, self._bin_count) and not self._is_trained:
+                         # 只有达到 40 个或更多时才尝试训练，否则继续使用 Flat
+                         if self._bin_count >= min_train:
+                            self._force_train_small_data()
+            
+        # 最终搜索源选择 (Read is safe assuming _index ptr swap is atomic in Python, but structure mutation is protected)
+        search_index = self._index if (self._is_trained and self._index.ntotal > 0) else self._fallback_index
+        
+        if search_index.ntotal == 0:
+            logger.warning("Indices are empty. No data to search.")
             return [], []
 
-        # 确保查询是2D数组
         if query.ndim == 1:
             query = query.reshape(1, -1)
-
-        # 量化查询（如果需要）
-        if self.quantization_type == QuantizationType.INT8:
-            query, _ = self._quantize_with_params(query)
-
-        # 搜索数量（考虑过滤）
-        search_k = k * 3 if filter_deleted else k
-
-        # 1. 在主索引中搜索
-        distances = np.array([])
-        indices = np.array([])
+            
+        query = np.ascontiguousarray(query, dtype=np.float32)
+        faiss.normalize_L2(query)
         
-        if has_index:
-            try:
-                distances, indices = self._index.search(query.astype(np.float32), search_k)
-                distances = distances[0]
-                indices = indices[0]
-            except Exception as e:
-                logger.error(f"主索引搜索失败: {e}")
+        # 执行检索
+        dists, ids = search_index.search(query, k * 2)
+        
+        # Faiss search 返回的是 (1, K) 的数组，取第一行
+        dists = dists[0]
+        ids = ids[0]
+        
+        results = []
+        for id_val, score in zip(ids, dists):
+            if id_val == -1: continue
+            if filter_deleted and id_val in self._deleted_ids:
+                continue
+            
+            str_id = self._int_to_str_map.get(id_val)
+            if str_id:
+                results.append((str_id, float(score)))
 
-        # 2. 在缓冲区中搜索（线性）
-        # 即使主索引搜索失败，也尝试搜索缓冲区
-        buffer_distances, buffer_indices = self._search_buffer(query, k)
-
-        # 3. 合并结果
-        results = self._merge_search_results(
-            distances, indices, buffer_distances, buffer_indices, k
-        )
-
-        # 过滤已删除的
-        if filter_deleted:
-            results = [(id_, score) for id_, score in results if id_ not in self._deleted_ids]
-
-        # 分离ID和分数
+        # Sort and trim just in case filtering reduced count
+        results.sort(key=lambda x: x[1], reverse=True)
+        results = results[:k]
+        
         if not results:
             return [], []
+            
+        return [r[0] for r in results], [r[1] for r in results]
 
-        ids, scores = zip(*results)
-        return list(ids), list(scores)
+    def _bootstrap_fallback_from_disk(self):
+        """重启后自举：从磁盘 vectors.bin 加载数据到 fallback 索引"""
+        # Internal method, lock should be held by caller
+        if not self._bin_path.exists() or not self._ids_bin_path.exists():
+            return
+
+        logger.info("Replaying all disk vectors to fallback index...")
+        vec_item_size = self.dimension * 2
+        id_item_size = 8
+        chunk_size = 10000 
+        
+        with open(self._bin_path, "rb") as f_vec, open(self._ids_bin_path, "rb") as f_id:
+            while True:
+                vec_data = f_vec.read(chunk_size * vec_item_size)
+                id_data = f_id.read(chunk_size * id_item_size)
+                if not vec_data: break
+                
+                batch_fp16 = np.frombuffer(vec_data, dtype=np.float16).reshape(-1, self.dimension)
+                batch_fp32 = batch_fp16.astype(np.float32)
+                faiss.normalize_L2(batch_fp32)
+                batch_ids = np.frombuffer(id_data, dtype='>i8').astype(np.int64)
+                
+                valid_mask = [id_ not in self._deleted_ids for id_ in batch_ids]
+                if any(valid_mask):
+                    self._fallback_index.add_with_ids(batch_fp32[valid_mask], batch_ids[valid_mask])
+        
+        logger.info(f"Fallback index self-bootstrapped with {self._fallback_index.ntotal} items.")
+
+    def _force_train_small_data(self):
+        # Internal method, lock should be held by caller
+        logger.info("Forcing training on small dataset...")
+        self._reservoir_buffer = [] 
+        
+        chunk_size = 10000
+        vec_item_size = self.dimension * 2
+        
+        with open(self._bin_path, "rb") as f:
+            while len(self._reservoir_buffer) < self.TRAIN_SIZE:
+                data = f.read(chunk_size * vec_item_size)
+                if not data: break
+                fp16 = np.frombuffer(data, dtype=np.float16).reshape(-1, self.dimension)
+                fp32 = fp16.astype(np.float32)
+                faiss.normalize_L2(fp32)
+                
+                for vec in fp32:
+                    self._reservoir_buffer.append(vec)
+                    if len(self._reservoir_buffer) >= self.TRAIN_SIZE:
+                        break
+        
+        self._train_and_replay()
 
     def delete(self, ids: List[str]) -> int:
-        """
-        删除向量（标记删除）
-
-        Args:
-            ids: 要删除的ID列表
-
-        Returns:
-            成功删除的数量
-        """
-        deleted = 0
-        for id_ in ids:
-            if id_ in self._id_to_idx and id_ not in self._deleted_ids:
-                self._deleted_ids.add(id_)
-                deleted += 1
-                self._total_deleted += 1
-
-        logger.info(f"标记删除 {deleted} 个向量（累计: {len(self._deleted_ids)}）")
-
-        # 检查是否需要重建索引
-        self._check_rebuild_needed()
-
-        return deleted
-
-    def remove(self, ids: List[str]) -> int:
-        """兼容性别名：删除向量"""
-        return self.delete(ids)
-
-    def get(self, ids: List[str]) -> List[Optional[np.ndarray]]:
-        """
-        获取向量
-
-        Args:
-            ids: ID列表
-
-        Returns:
-            向量列表（不存在的ID对应None）
-        """
-        vectors = []
-        for id_ in ids:
-            if id_ in self._deleted_ids:
-                vectors.append(None)
-                continue
-
-            # 先在缓冲区查找
-            if id_ in self._buffer_ids:
-                total_idx = self._buffer_ids.index(id_)
-                # 遍历缓冲区找到对应的向量
-                current_base = 0
-                for buf_arr in self._buffer_vectors:
-                    if current_base + len(buf_arr) > total_idx:
-                        vec = buf_arr[total_idx - current_base]
-                        vectors.append(self._dequantize_vector(vec))
-                        break
-                    current_base += len(buf_arr)
-                continue
-
-            # 在主存储查找
-            if id_ in self._id_to_idx:
-                idx = self._id_to_idx[id_]
-                vec = self._vectors[idx].copy()
-                vectors.append(self._dequantize_vector(vec))
-            else:
-                vectors.append(None)
-
-        return vectors
-
-    def rebuild_index(self) -> None:
-        """
-        重建索引（删除已标记的向量）
-
-        操作：
-        1. 过滤已删除的向量
-        2. 重新构建索引
-        3. 清空删除标记
-        """
-        if not self._deleted_ids:
-            logger.info("没有需要删除的向量，跳过重建")
-            return
-
-        logger.info(f"开始重建索引，当前向量数: {len(self._ids)}")
-
-        # 过滤向量
-        valid_indices = [
-            idx for idx, id_ in enumerate(self._ids) if id_ not in self._deleted_ids
-        ]
-
-        if not valid_indices:
-            logger.warning("所有向量都被删除，清空索引")
-            self._ids.clear()
-            self._id_to_idx.clear()
-            self._vectors = None
-            self._index = None
-            self._deleted_ids.clear()
-            return
-
-        # 重建数据
-        new_vectors = self._vectors[valid_indices]
-        new_ids = [self._ids[i] for i in valid_indices]
-
-        # 重建索引
-        self._ids = new_ids
-        self._id_to_idx = {id_: idx for idx, id_ in enumerate(new_ids)}
-        self._vectors = new_vectors
-        self._build_index(self._vectors)
-
-        # 清空删除标记
-        deleted_count = len(self._deleted_ids)
-        self._deleted_ids.clear()
-
-        logger.info(
-            f"索引重建完成: 删除 {deleted_count} 个向量，剩余 {len(new_ids)} 个"
-        )
-
-    def clear(self) -> None:
-        """清空所有数据"""
-        self._ids.clear()
-        self._id_to_idx.clear()
-        self._vectors = None
-        self._index = None
-        self._deleted_ids.clear()
-        self._buffer_ids.clear()
-        self._buffer_vectors.clear()
-        self._total_added = 0
-        self._total_deleted = 0
-        logger.info("向量存储已清空")
-
-    def save(self, data_dir: Optional[Union[str, Path]] = None) -> None:
-        """
-        保存到磁盘
-
-        Args:
-            data_dir: 数据目录（默认使用初始化时的目录）
-        """
-        if data_dir is None:
-            data_dir = self.data_dir
-
-        if data_dir is None:
-            raise ValueError("未指定数据目录")
-
-        data_dir = Path(data_dir)
-        data_dir.mkdir(parents=True, exist_ok=True)
-
-        # 先flush缓冲区
-        self._flush_buffer()
-
-        # 保存索引
-        if self._index is not None:
-            index_path = data_dir / "vectors.index"
-            with atomic_save_path(index_path) as tmp_path:
-                faiss.write_index(self._index, tmp_path)
-            logger.debug(f"保存索引: {index_path}")
-
-        # 保存向量（如果使用内存映射）
-        if self._vectors is not None:
-            vectors_path = data_dir / "vectors.npy"
+        with self._lock:
+            count = 0
+            for str_id in ids:
+                if str_id not in self._known_hashes:
+                    continue
+                int_id = self._generate_id(str_id)
+                if int_id not in self._deleted_ids:
+                    self._deleted_ids.add(int_id)
+                    if self._index.is_trained:
+                         self._index.remove_ids(np.array([int_id], dtype=np.int64))
+                    # 同步从 fallback 移除
+                    if self._fallback_index.ntotal > 0:
+                         self._fallback_index.remove_ids(np.array([int_id], dtype=np.int64))
+                    count += 1
+            self._total_deleted += count
             
-            # Windows 兼容性处理
-            is_same_file_mmap = False
-            if isinstance(self._vectors, np.memmap):
-                try:
-                    if os.path.abspath(self._vectors.filename) == os.path.abspath(str(vectors_path)):
-                        is_same_file_mmap = True
-                except Exception:
-                    pass
-            
-            if not is_same_file_mmap:
-                try:
-                    # 使用原子保存路径
-                    with atomic_save_path(vectors_path) as tmp_path:
-                         if self.use_mmap:
-                             np.save(tmp_path, self._vectors)
-                         else:
-                             np.save(tmp_path, self._vectors, allow_pickle=False)
-                    logger.debug(f"保存向量: {vectors_path}")
-                except Exception as e:
-                    # 如果是因为锁定（Errno 22/13），在 Windows 上尝试优雅处理
-                    if "Errno 22" in str(e) or "Errno 13" in str(e) or "PermissionError" in str(e):
-                        logger.warning(f"保存向量文件受阻 (通常由于文件处于内存映射状态): {e}。数据将保留在内存中。")
-                    else:
-                        logger.error(f"保存向量文件失败: {e}")
-                        raise
-            else:
-                logger.debug("数据为原始内存映射且无变化，跳过 vectors.npy 写入以避开 Windows 锁定")
+            # Check GC
+            self._check_rebuild_needed()
+            return count
 
-        # 保存元数据
-        metadata = {
-            "dimension": self.dimension,
-            "quantization_type": self.quantization_type.value,
-            "index_type": self.index_type,
-            "ids": self._ids,
-            "deleted_ids": list(self._deleted_ids),
-            "total_added": self._total_added,
-            "total_deleted": self._total_deleted,
-            "quant_min": self._quant_min,
-            "quant_max": self._quant_max,
-        }
-
-        metadata_path = data_dir / "vectors_metadata.pkl"
-        with atomic_write(metadata_path, "wb") as f:
-            pickle.dump(metadata, f)
-        logger.debug(f"保存元数据: {metadata_path}")
-
-        logger.info(f"向量存储已保存到: {data_dir}")
-
-    def load(self, data_dir: Optional[Union[str, Path]] = None) -> None:
-        """
-        从磁盘加载
-
-        Args:
-            data_dir: 数据目录（默认使用初始化时的目录）
-        """
-        if data_dir is None:
-            data_dir = self.data_dir
-
-        if data_dir is None:
-            raise ValueError("未指定数据目录")
-
-        data_dir = Path(data_dir)
-        if not data_dir.exists():
-            raise FileNotFoundError(f"数据目录不存在: {data_dir}")
-
-        # 加载元数据
-        metadata_path = data_dir / "vectors_metadata.pkl"
-        if not metadata_path.exists():
-            raise FileNotFoundError(f"元数据文件不存在: {metadata_path}")
-
-        with open(metadata_path, "rb") as f:
-            metadata = pickle.load(f)
-
-        # 恢复状态
-        self.dimension = metadata["dimension"]
-        self.quantization_type = QuantizationType(metadata["quantization_type"])
-        self.index_type = metadata["index_type"]
-        self._ids = metadata["ids"]
-        self._deleted_ids = set(metadata["deleted_ids"])
-        self._total_added = metadata["total_added"]
-        self._total_deleted = metadata["total_deleted"]
-        self._quant_min = metadata.get("quant_min")
-        self._quant_max = metadata.get("quant_max")
-
-        # 重建ID映射
-        self._id_to_idx = {id_: idx for idx, id_ in enumerate(self._ids)}
-
-        # 加载向量
-        vectors_path = data_dir / "vectors.npy"
-        if vectors_path.exists():
-            if self.use_mmap:
-                self._vectors = np.load(vectors_path, mmap_mode="r")
-            else:
-                self._vectors = np.load(vectors_path)
-            logger.debug(f"加载向量: {vectors_path}, shape={self._vectors.shape}")
-
-        # 加载索引
-        index_path = data_dir / "vectors.index"
-        if index_path.exists():
-            self._index = faiss.read_index(str(index_path))
-            logger.debug(f"加载索引: {index_path}, ntotal={self._index.ntotal}")
-
-        logger.info(
-            f"向量存储已加载: {len(self._ids)} 个向量, "
-            f"{len(self._deleted_ids)} 个已删除"
-        )
-
-    def _quantize_with_params(
-        self, vectors: np.ndarray
-    ) -> Tuple[np.ndarray, Dict[str, float]]:
-        """
-        量化向量并返回参数
-
-        Args:
-            vectors: 输入向量
-
-        Returns:
-            (量化后的向量, 参数字典)
-        """
-        if self.quantization_type == QuantizationType.FLOAT32:
-            return vectors.astype(np.float32), {}
-
-        # int8量化
-        min_val = np.min(vectors)
-        max_val = np.max(vectors)
-
-        if max_val == min_val:
-            return np.zeros_like(vectors, dtype=np.int8), {"min": 0.0, "max": 0.0}
-
-        # 归一化到 [0, 255]
-        normalized = (vectors - min_val) / (max_val - min_val) * 255
-        quantized = np.round(normalized).astype(np.int8)
-
-        return quantized, {"min": float(min_val), "max": float(max_val)}
-
-    def _dequantize_vector(self, vectors: np.ndarray) -> np.ndarray:
-        """
-        反量化向量
-
-        Args:
-            vectors: 量化后的向量
-
-        Returns:
-            反量化后的向量
-        """
-        if self.quantization_type == QuantizationType.FLOAT32:
-            return vectors
-
-        # int8反量化
-        if self._quant_min is None or self._quant_max is None:
-            # 默认范围 [0, 255] -> [-1, 1]
-            return (vectors.astype(np.float32) + 128.0) / 255.0 * 2.0 - 1.0
-
-        min_val = self._quant_min
-        max_val = self._quant_max
-        # 将 np.int8 [-128, 127] 映射回 [0, 255]
-        normalized = (vectors.astype(np.float32) + 128.0) / 255.0
-        return normalized * (max_val - min_val) + min_val
-
-    def _build_index(self, vectors: np.ndarray) -> None:
-        """
-        构建Faiss索引
-
-        Args:
-            vectors: 向量数组
-        """
-        if self.index_type == "flat":
-            # 精确搜索（内积）
-            self._index = faiss.IndexFlatIP(self.dimension)
-            self._index.add(vectors.astype(np.float32))
-
-        elif self.index_type == "ivf":
-            # IVF索引（倒排文件）
-            nlist = min(100, len(vectors) // 10)  # 聚类中心数量
-            if nlist < 1:
-                nlist = 1
-
-            quantizer = faiss.IndexFlatIP(self.dimension)
-            self._index = faiss.IndexIVFFlat(
-                quantizer, self.dimension, nlist, faiss.METRIC_INNER_PRODUCT
-            )
-
-            # 训练
-            if not self._index.is_trained:
-                self._index.train(vectors.astype(np.float32))
-
-            # 添加向量
-            self._index.add(vectors.astype(np.float32))
-
-        else:
-            raise ValueError(f"不支持的索引类型: {self.index_type}")
-
-        logger.info(
-            f"构建 {self.index_type} 索引完成: {self._index.ntotal} 个向量"
-        )
-
-    def _flush_buffer(self) -> None:
-        """刷新缓冲区到主存储"""
-        if not self._buffer_ids:
-            return
-
-        logger.debug(f"刷新缓冲区: {len(self._buffer_ids)} 个向量")
-
-        # 合并缓冲区向量
-        if self._buffer_vectors:
-            all_vectors = np.concatenate(self._buffer_vectors, axis=0)
-        else:
-            all_vectors = np.array([]).reshape(0, self.dimension)
-
-        # 扩展主存储
-        if self._vectors is None:
-            self._vectors = all_vectors
-        else:
-            self._vectors = np.concatenate([self._vectors, all_vectors], axis=0)
-
-        # 扩展ID列表
-        start_idx = len(self._ids)
-        self._ids.extend(self._buffer_ids)
-        for idx, id_ in enumerate(self._buffer_ids):
-            self._id_to_idx[id_] = start_idx + idx
-
-        # 清空缓冲区
-        self._buffer_ids.clear()
-        self._buffer_vectors.clear()
-
-        # 重建索引
-        self._build_index(self._vectors)
-
-    def _search_buffer(
-        self, query: np.ndarray, k: int
-    ) -> Tuple[List[float], List[str]]:
-        """
-        在缓冲区中线性搜索
-
-        Args:
-            query: 查询向量
-            k: 返回数量
-
-        Returns:
-            (分数列表, ID列表)
-        """
-        if not self._buffer_ids:
-            return [], []
-
-        # 计算相似度
-        scores = []
-        for vec_buffer in self._buffer_vectors:
-            # 内积
-            sim = np.dot(vec_buffer, query.T).flatten()
-            scores.extend(sim)
-
-        # 排序取top-k
-        indices = np.argsort(scores)[::-1][:k]
-        top_scores = [scores[i] for i in indices]
-        top_ids = [self._buffer_ids[i] for i in indices]
-
-        return top_scores, top_ids
-
-    def _merge_search_results(
-        self,
-        main_distances: np.ndarray,
-        main_indices: np.ndarray,
-        buffer_scores: List[float],
-        buffer_ids: List[str],
-        k: int,
-    ) -> List[Tuple[str, float]]:
-        """
-        合并主索引和缓冲区的搜索结果
-
-        Args:
-            main_distances: 主索引距离
-            main_indices: 主索引索引
-            buffer_scores: 缓冲区分数
-            buffer_ids: 缓冲区ID
-            k: 返回数量
-
-        Returns:
-            [(ID, 分数)] 列表
-        """
-        results = []
-
-        # 主索引结果
-        for idx, dist in zip(main_indices, main_distances):
-            if idx < 0 or idx >= len(self._ids):
-                continue
-            id_ = self._ids[idx]
-            results.append((id_, float(dist)))
-
-        # 缓冲区结果
-        for id_, score in zip(buffer_ids, buffer_scores):
-            results.append((id_, score))
-
-        # 排序
-        results.sort(key=lambda x: x[1], reverse=True)
-
-        # 返回top-k
-        return results[:k]
-
-    def _check_rebuild_needed(self) -> None:
-        """检查是否需要重建索引"""
-        if not self._ids:
-            return
-
-        delete_ratio = len(self._deleted_ids) / len(self._ids)
-        delete_count = len(self._deleted_ids)
-
-        # 删除比例超过30%或数量超过1000时重建
-        if delete_ratio > 0.3 or delete_count > 1000:
-            logger.info(
-                f"触发索引重建: 删除比例={delete_ratio:.1%}, "
-                f"删除数量={delete_count}"
-            )
+    def _check_rebuild_needed(self):
+        """GC Excution Check"""
+        # Internal check, lock held by delete
+        if self._bin_count == 0: return
+        ratio = len(self._deleted_ids) / self._bin_count
+        if ratio > 0.3 and len(self._deleted_ids) > 1000:
+            logger.info(f"Triggering GC/Rebuild (deleted ratio: {ratio:.2f})")
             self.rebuild_index()
 
-    @property
-    def size(self) -> int:
-        """当前向量数量（不包括已删除的，包括缓冲区）"""
-        return len(self._ids) + len(self._buffer_ids) - len(self._deleted_ids)
+    def rebuild_index(self):
+        """GC: 重建索引，压缩 bin 文件"""
+        # TODO: This logic is complex and should be protected by lock
+        # Caller holds lock (from delete -> check -> rebuild), so it is safe.
+        logger.info("Starting Compaction (GC)...")
+        
+        tmp_bin = self.data_dir / "vectors.bin.tmp"
+        tmp_ids = self.data_dir / "vectors_ids.bin.tmp"
+        
+        vec_item_size = self.dimension * 2
+        id_item_size = 8
+        chunk_size = 10000
+        
+        new_count = 0
+        
+        # 1. Compact Files
+        with open(self._bin_path, "rb") as f_vec, open(self._ids_bin_path, "rb") as f_id, \
+             open(tmp_bin, "wb") as w_vec, open(tmp_ids, "wb") as w_id:
+            while True:
+                vec_data = f_vec.read(chunk_size * vec_item_size)
+                id_data = f_id.read(chunk_size * id_item_size)
+                if not vec_data: break
+                
+                batch_fp16 = np.frombuffer(vec_data, dtype=np.float16).reshape(-1, self.dimension)
+                batch_ids = np.frombuffer(id_data, dtype='>i8').astype(np.int64)
+                
+                keep_mask = [id_ not in self._deleted_ids for id_ in batch_ids]
+                
+                if any(keep_mask):
+                    keep_vecs = batch_fp16[keep_mask]
+                    keep_ids = batch_ids[keep_mask]
+                    
+                    w_vec.write(keep_vecs.tobytes())
+                    w_id.write(keep_ids.astype('>i8').tobytes())
+                    new_count += len(keep_ids)
 
-    @property
-    def total_size(self) -> int:
-        """总向量数量（包括已删除的和缓冲区）"""
-        return len(self._ids) + len(self._buffer_ids)
+        # 2. Reset State & Atomic Swap
+        self._bin_count = new_count
+        
+        # Close current index
+        self._index.reset()
+        if self._fallback_index: self._fallback_index.reset() # Also clear fallback
+        self._is_trained = False
+        
+        # Swap files
+        shutil.move(str(tmp_bin), str(self._bin_path))
+        shutil.move(str(tmp_ids), str(self._ids_bin_path))
+        
+        # Reset Tombstones (Critical)
+        self._deleted_ids.clear()
+        
+        # 3. Reload/Rebuild Index (Fresh Train)
+        # We need to re-train because data distribution might have changed significantly after deletion
+        self._init_index()
+        self._init_fallback_index() # Re-init fallback too
+        self._force_train_small_data() # This will train and replay from the NEW compact file
+        
+        logger.info("Compaction Complete.")
+
+    def save(self, data_dir: Optional[Union[str, Path]] = None) -> None:
+        with self._lock:
+            if not data_dir: data_dir = self.data_dir
+            if not data_dir: raise ValueError("No data_dir")
+            
+            data_dir = Path(data_dir)
+            data_dir.mkdir(parents=True, exist_ok=True)
+            
+            self._flush_write_buffer()
+            
+            if self._is_trained:
+                index_path = data_dir / "vectors.index"
+                with atomic_save_path(index_path) as tmp:
+                    faiss.write_index(self._index, tmp)
+
+            meta = {
+                "dimension": self.dimension,
+                "quantization_type": self.quantization_type.value,
+                "is_trained": self._is_trained,
+                "vector_norm": self._vector_norm,
+                "deleted_ids": list(self._deleted_ids),
+                "known_hashes": list(self._known_hashes),
+            }
+            
+            with atomic_write(data_dir / "vectors_metadata.pkl", "wb") as f:
+                pickle.dump(meta, f)
+                
+            logger.info("VectorStore saved.")
+
+    def load(self, data_dir: Optional[Union[str, Path]] = None) -> None:
+        with self._lock:
+            if not data_dir: data_dir = self.data_dir
+            data_dir = Path(data_dir)
+            
+            npy_path = data_dir / "vectors.npy"
+            idx_path = data_dir / "vectors.index"
+            bin_path = data_dir / "vectors.bin"
+            
+            if npy_path.exists() and not bin_path.exists():
+                logger.info("Found legacy .npy, migrating to .bin...")
+                self._migrate_from_npy(npy_path, idx_path, data_dir)
+                return
+
+            meta_path = data_dir / "vectors_metadata.pkl"
+            if not meta_path.exists():
+                logger.warning("No metadata found, initialized empty.")
+                return
+                
+            with open(meta_path, "rb") as f:
+                meta = pickle.load(f)
+                
+            if meta.get("vector_norm") != "l2":
+                logger.warning("Index IDMap2 version mismatch (L2 Norm), forcing rebuild...")
+                self._known_hashes = set(meta.get("ids", [])) | set(meta.get("known_hashes", []))
+                self._deleted_ids = set(meta.get("deleted_ids", []))
+                self._init_index()
+                self._force_train_small_data()
+                return
+
+            self._is_trained = meta.get("is_trained", False)
+            self._vector_norm = meta.get("vector_norm", "l2")
+            self._deleted_ids = set(meta.get("deleted_ids", []))
+            self._known_hashes = set(meta.get("known_hashes", []))
+            
+            if self._is_trained:
+                if idx_path.exists():
+                    try:
+                        self._index = faiss.read_index(str(idx_path))
+                        if not isinstance(self._index, faiss.IndexIDMap2):
+                            logger.warning("Loaded index type mismatch. Rebuilding...")
+                            self._init_index()
+                            self._force_train_small_data()
+                    except Exception as e:
+                         logger.error(f"Failed to load index: {e}. Rebuilding...")
+                         self._init_index()
+                         self._force_train_small_data()
+                else:
+                    logger.warning("Index file missing despite metadata indicating trained. Rebuilding from bin...")
+                    self._init_index()
+                    self._force_train_small_data()
+            
+            if bin_path.exists():
+                self._bin_count = bin_path.stat().st_size // (self.dimension * 2)
+
+    def _migrate_from_npy(self, npy_path, idx_path, data_dir):
+        # Assumed safe to run without lock as it is called from inside load() which is locked (if load is used correctly)
+        # But for safety, recursive lock helps.
+        
+        try:
+            arr = np.load(npy_path, mmap_mode="r")
+        except Exception:
+            arr = np.load(npy_path)
+            
+        meta_path = data_dir / "vectors_metadata.pkl"
+        old_ids = []
+        if meta_path.exists():
+            with open(meta_path, "rb") as f:
+                m = pickle.load(f)
+                old_ids = m.get("ids", [])
+                
+        if len(arr) != len(old_ids):
+            logger.error(f"Migration mismatch: arr {len(arr)} != ids {len(old_ids)}")
+            return
+
+        logger.info(f"Migrating {len(arr)} vectors...")
+        
+        chunk = 1000
+        for i in range(0, len(arr), chunk):
+            sub_arr = arr[i : i+chunk]
+            sub_ids = old_ids[i : i+chunk]
+            self.add(sub_arr, sub_ids)
+            
+        if not self._is_trained:
+            self._force_train_small_data()
+
+        shutil.move(str(npy_path), str(npy_path) + ".bak")
+        if idx_path.exists():
+            shutil.move(str(idx_path), str(idx_path) + ".bak")
+            
+        logger.info("Migration complete.")
+
+    def clear(self) -> None:
+        with self._lock:
+            self._ids_bin_path.unlink(missing_ok=True)
+            self._bin_path.unlink(missing_ok=True)
+            self._init_index()
+            self._known_hashes.clear()
+            self._deleted_ids.clear()
+            self._bin_count = 0
+            logger.info("VectorStore cleared.")
+
+    def has_data(self) -> bool:
+        return (self.data_dir / "vectors_metadata.pkl").exists()
 
     @property
     def num_vectors(self) -> int:
-        """兼容性别名：当前向量数量"""
-        return self.size
+        return len(self._known_hashes) - len(self._deleted_ids)
 
-    @property
-    def deleted_count(self) -> int:
-        """已删除向量数量"""
-        return len(self._deleted_ids)
-
-    def __len__(self) -> int:
-        """向量数量（不包括已删除的）"""
-        return self.size
-
-    def has_data(self) -> bool:
-        """检查磁盘上是否存在现有数据"""
-        if self.data_dir is None:
-            return False
-        return (self.data_dir / "vectors.index").exists() or (self.data_dir / "vectors_metadata.pkl").exists()
-
-    def __repr__(self) -> str:
-        return (
-            f"VectorStore(dim={self.dimension}, "
-            f"size={self.size}, deleted={self.deleted_count}, "
-            f"quant={self.quantization_type.value})"
-        )

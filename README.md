@@ -1,6 +1,6 @@
 # A_Memorix
 
-**轻量级知识图谱插件** - 基于双路检索的完全独立的记忆增强系统
+**轻量级知识图谱插件** - 基于双路检索的完全独立的记忆增强系统 (v0.2.0)
 
 > 消えていかない感覚 , まだまだ足りてないみたい !
 ---
@@ -8,10 +8,11 @@
 ## ✨ 特性
 
 - **🧠 双路检索** - 关系图谱 + 向量语义并行检索，结合 Personalized PageRank 智能排序。
+- **🔄 智能回退** - 当直接检索结果弱时，自动触发多跳路径搜索，增强间接关系召回。
 - **📊 知识图谱可视化** - 内置 Web 可视化编辑器，支持节点/边的增删改查。
 - **📝 对话自动总结** - 自动总结历史聊天记录并提取知识，支持定时触发和人设深度整合。
 - **🎯 智能分类** - 兼容并自动识别结构化/叙事性/事实性知识，采用差异化处理策略。
-- **💾 高效存储** - SciPy 稀疏矩阵存储图结构，int8 量化向量节省 75% 空间。
+- **💾 高效存储** - SciPy 稀疏矩阵存储图结构，Faiss SQ8 向量量化节省 75%+ 空间。
 - **🔌 完全独立** - 不依赖原 LPMM 系统，拥有独立的数据格式和存储路径。
 - **🤖 LLM 集成** - 提供 Tool 和 Action 组件，支持 LLM 自主调用知识库。
 
@@ -84,9 +85,9 @@ A_Memorix 提供多种方式管理知识库，建议优先选择 **自动化脚�
 - **JSON 结构化**：`/import json {"paragraphs": [...], "entities": [...], "relations": [...]}`
 
 #### 🔍 查询知识 (`/query`)
-- **全文检索**：`/query search <query>` (缩写: `/query s`)
+- **全文检索**：`/query search <query>` (缩写: `/query s`) - 支持智能回退到路径搜索。
 - **实体查询**：`/query entity <name>` (缩写: `/query e`)
-- **关系查询**：`/query relation <spec>` (缩写: `/query r`)
+- **关系查询**：`/query relation <spec>` (缩写: `/query r`) - 支持自然语言或 `S|P|O` 格式。
 - **统计信息**：`/query stats`
 
 #### 🗑️ 删除与维护
@@ -102,27 +103,35 @@ A_Memorix 提供多种方式管理知识库，建议优先选择 **自动化脚�
 
 ### 4. 核心配置说明 (`config.toml`)
 
-你可以通过修改 `config.toml` 来定制插件行为。
+你可以通过修改 `config.toml` 来定制插件行为。v0.2.0 版本提供了更细粒度的控制。
 
-#### 🛡️ 聊天流过滤 `[filter]`
-控制哪些聊天流可以访问/写入知识库：
-- `enabled`: 是否启用过滤。
-- `mode`: `whitelist` (仅允许列表内) 或 `blacklist` (禁止列表内)。
-- `chats`: 列表，包含 `group_id`, `user_id` 或 `stream_id`。
-
-#### 🧠 对话自动总结 `[summarization]`
-- `enabled`: 是否允许对话自动转知识。
-- `include_personality`: 总结时是否参考机器人人格。
-- `default_knowledge_type`: 默认导入类型（`narrative`, `factual`, `structured`）。
-
-#### 🕒 定时导入 `[schedule]`
-- `enabled`: 是否启用定时任务。
-- `import_times`: 自动执行时间点，如 `["04:00", "16:00"]`。
+#### 💾 存储与嵌入 `[storage] & [embedding]`
+- **`storage.data_dir`**: 数据存储路径（默认为插件内 `data` 目录）。
+- **`embedding.quantization_type`**: 向量量化模式 (`int8` 推荐, `float32`, `pq`)。
+- **`embedding.dimension`**: 向量维度（默认 1024）。
 
 #### ⚙️ 检索与排序 `[retrieval]`
-- `enable_ppr`: 是否启用 Personalized PageRank 智能排序。
-- `alpha`: 段落与关系的融合权重 (0-1)。
-- `min_threshold`: 结果过滤的最小相似度分数。
+- **`alpha`**: 双路检索融合权重 (0.0=仅关系, 1.0=仅段落, 0.5=平衡)。
+- **`enable_ppr`**: 是否启用 Personalized PageRank 算法优化排序。
+- **`top_k_relations` / `top_k_paragraphs`**: 分别控制单路检索召回数量。
+- **`relation_semantic_fallback`**: 是否允许关系检索回退到语义搜索。
+
+#### 🎯 动态阈值 `[threshold]`
+- **`min_threshold`**: 硬性最小相似度阈值 (默认 0.3)。
+- **`enable_auto_adjust`**: 是否启用动态阈值调整（基于结果分布）。
+- **`std_multiplier`**: 异常值过滤的标准差倍数。
+
+#### 🧠 自动化功能 `[summarization] & [schedule]`
+- **`summarization.enabled`**: 开启对话自动总结。
+- **`schedule.import_times`**: 定时自动导入时间点列表 (e.g., `["04:00"]`).
+
+#### 🛡️ 聊天流过滤 `[filter]`
+- **`mode`**: `whitelist` (白名单) 或 `blacklist` (黑名单)。
+- **`chats`**: 目标列表。支持 `group:123`(群), `user:456`(私聊), `stream:hash`(流ID) 或纯数字 ID(兼容)。
+
+#### 🖥️ 可视化与调试 `[web] & [advanced]`
+- **`web.port`**: 可视化界面端口 (默认 8082)。
+- **`advanced.debug`**: 开启详细调试日志。
 
 
 ---
@@ -158,7 +167,7 @@ A_Memorix 是**完全独立**的知识管理系统，与原 LPMM 在技术实现
 | 维度 | 原 LPMM | A_Memorix |
 |------|---------|-----------|
 | **后端引擎** | 基于对象/字典的图算法 | 基于 SciPy 稀疏矩阵的线性代数计算 |
-| **向量格式** | float32 (高内存消耗) | int8 量化 (极致内存压缩) |
+| **向量格式** | float32 (高内存消耗) | Faiss SQ8 量化 (极致内存压缩) |
 | **存储路径** | 全局 `data/` 目录 | 隔离的 `plugins/A_memorix/data/` |
 | **依赖关系** | 与主程序逻辑混杂 | 模块化解耦，可独立升级 |
 | **数据格式** | JSON/SQLite | NPZ/PKL/SQLite |

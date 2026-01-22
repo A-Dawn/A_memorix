@@ -34,6 +34,7 @@ class EdgeCreate(BaseModel):
     source: str
     target: str
     weight: float = 1.0
+    predicate: Optional[str] = None
 
 class NodeRename(BaseModel):
     old_id: str
@@ -41,6 +42,14 @@ class NodeRename(BaseModel):
 
 class AutoSaveConfig(BaseModel):
     enabled: bool
+
+class SourceListRequest(BaseModel):
+    node_id: Optional[str] = None
+    edge_source: Optional[str] = None
+    edge_target: Optional[str] = None
+
+class SourceDeleteRequest(BaseModel):
+    paragraph_hash: str
 
 class MemorixServer:
     def __init__(self, plugin_instance, host="0.0.0.0", port=8082):
@@ -83,22 +92,78 @@ class MemorixServer:
                 
             # 获取所有边 - 遍历每个节点的邻居
             processed_edges = set()
+            
+            # 获取所有边 - 遍历每个节点的邻居
+            processed_edges = set()
+            
+            # 预加载所有关系谓语 (MetadataStore)
+            # 为了优化性能，一次性全部查出，构建内存查找表
+            edge_predicates = {} # (source, target) -> [predicate1, predicate2...]
+            
+            if self.plugin.metadata_store:
+                try:
+                    all_relations = self.plugin.metadata_store.get_relations()
+                    logger.info(f"[DEBUG] Fetched {len(all_relations)} relations from MetadataStore")
+                    for rel in all_relations:
+                        s, p, o = rel['subject'], rel['predicate'], rel['object']
+                        key = (s, o)
+                        if key not in edge_predicates:
+                            edge_predicates[key] = []
+                        edge_predicates[key].append(p)
+                    
+                    if all_relations:
+                        logger.info(f"[DEBUG] Sample edge_predicates key: {list(edge_predicates.keys())[0]}")
+                        
+                except Exception as e:
+                    logger.error(f"Error fetching relations for graph: {e}")
+            else:
+                logger.warning("[DEBUG] MetadataStore is NOT initialized or available")
+
             for source in node_names:
                 neighbors = self.plugin.graph_store.get_neighbors(source)
                 for target in neighbors:
                     edge_key = (source, target)
                     if edge_key not in processed_edges:
                         weight = self.plugin.graph_store.get_edge_weight(source, target)
+                        
+                        # 获取谓语描述
+                        # 尝试精确匹配
+                        predicates = edge_predicates.get((source, target), [])
+                        
+                        # 如果没有找到，尝试不区分大小写的匹配 (slow path, but helpful for debugging)
+                        if not predicates:
+                            for (ks, ko), preds in edge_predicates.items():
+                                if ks.lower() == source.lower() and ko.lower() == target.lower():
+                                    predicates = preds
+                                    logger.info(f"[DEBUG] Found case-insensitive match for {source}->{target}: {preds}")
+                                    break
+                        
+                        # 如果有谓语，优先显示谓语；否则显示权重
+                        if predicates:
+                            # 限制长度，防止 label 太长
+                            display_label = ", ".join(predicates[:3])
+                            if len(predicates) > 3:
+                                display_label += "..."
+                        else:
+                            display_label = f"{weight:.2f}"
+                        
                         edges.append({
                             "from": source, 
                             "to": target, 
                             "value": float(weight),
-                            "label": f"{weight:.2f}",
+                            "label": display_label,
+                            "predicates": predicates,
                             "arrows": "to"
                         })
                         processed_edges.add(edge_key)
+            
+            debug_info = {
+                "relation_count": len(all_relations) if self.plugin.metadata_store else -1,
+                "sample_key": list(edge_predicates.keys())[0] if edge_predicates else None,
+                "edge_count": len(edges)
+            }
                 
-            return {"nodes": nodes, "edges": edges}
+            return {"nodes": nodes, "edges": edges, "debug": debug_info}
 
         @self.app.post("/api/edge/weight")
         async def update_edge_weight(data: EdgeWeightUpdate):
@@ -181,7 +246,7 @@ class MemorixServer:
 
         @self.app.post("/api/edge")
         async def create_edge(data: EdgeCreate):
-            """创建边"""
+            """创建边 (支持语义关系)"""
             if not self.plugin.graph_store:
                 raise HTTPException(status_code=503, detail="Graph store not initialized")
             
@@ -189,14 +254,24 @@ class MemorixServer:
                 # 确保节点存在
                 self.plugin.graph_store.add_nodes([data.source, data.target])
                 
-                # 使用 GraphStore.add_edges 方法
+                # 1. 如果有语义关系，先存入 MetadataStore
+                if data.predicate and self.plugin.metadata_store:
+                   self.plugin.metadata_store.add_relation(
+                       subject=data.source, 
+                       predicate=data.predicate, 
+                       obj=data.target,
+                       confidence=data.weight
+                   )
+
+                # 2. 使用 GraphStore.add_edges 方法建立物理连接
                 added_count = self.plugin.graph_store.add_edges(
                     [(data.source, data.target)],
                     weights=[data.weight]
                 )
+                
                 # 持久化保存
                 self.plugin.graph_store.save()
-                return {"success": True, "added_count": added_count}
+                return {"success": True, "added_count": added_count, "predicate": data.predicate}
             except Exception as e:
                 logger.error(f"Create edge failed: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
@@ -242,6 +317,108 @@ class MemorixServer:
                 raise
             except Exception as e:
                 logger.error(f"Rename node failed: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.post("/api/source/list")
+        async def list_sources(data: SourceListRequest):
+            """获取来源段落列表"""
+            if not self.plugin.metadata_store:
+                 raise HTTPException(status_code=503, detail="Metadata store not initialized")
+            
+            paragraphs = []
+            seen_hashes = set()
+            
+            try:
+                # 1. 如果是查节点来源 (By Entity)
+                if data.node_id:
+                    # 注意: WebUI 传来的 node_id 通常是实体名称 (Node Name)
+                    # MetadataStore.get_paragraphs_by_entity 接受 entity_name
+                    entity_paras = self.plugin.metadata_store.get_paragraphs_by_entity(data.node_id)
+                    for p in entity_paras:
+                        if p['hash'] not in seen_hashes:
+                            paragraphs.append(p)
+                            seen_hashes.add(p['hash'])
+                            
+                # 2. 如果是查边来源 (By Relation)
+                if data.edge_source and data.edge_target:
+                    # 查出两点间的所有关系
+                    relations = self.plugin.metadata_store.get_relations(
+                        subject=data.edge_source, 
+                        object=data.edge_target
+                    )
+                    for rel in relations:
+                        rel_paras = self.plugin.metadata_store.get_paragraphs_by_relation(rel['hash'])
+                        for p in rel_paras:
+                            if p['hash'] not in seen_hashes:
+                                paragraphs.append(p)
+                                seen_hashes.add(p['hash'])
+                                
+                # 简化返回结构
+                result = []
+                for p in paragraphs:
+                    result.append({
+                        "hash": p["hash"],
+                        "content": p["content"], # 全文或截断
+                        "created_at": p.get("created_at"),
+                        "source": p.get("source", "unknown")
+                    })
+                    
+                return {"sources": result}
+                
+            except Exception as e:
+                logger.error(f"List sources failed: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.delete("/api/source")
+        async def delete_source(data: SourceDeleteRequest):
+            """删除来源段落（两阶段提交）"""
+            if not self.plugin.metadata_store or not self.plugin.vector_store or not self.plugin.graph_store:
+                 raise HTTPException(status_code=503, detail="Stores not fully initialized")
+                 
+            try:
+                # === Phase 1: DB Transaction & Plan Generation ===
+                # 调用我们在 MetadataStore 实现的原子方法
+                cleanup_plan = self.plugin.metadata_store.delete_paragraph_atomic(data.paragraph_hash)
+                
+                # === Phase 2: Post-Commit Cleanup (In-Memory Stores) ===
+                # 这一步失败不会回滚 DB，但保证了 DB 的一致性
+                errors = []
+                
+                # 1. 清理向量 (使用稳定 ID)
+                vec_id = cleanup_plan.get("vector_id_to_remove")
+                if vec_id:
+                    try:
+                        # VectorStore.delete 接受 ID 列表
+                        self.plugin.vector_store.delete([vec_id])
+                    except Exception as ve:
+                        logger.error(f"Vector cleanup failed for {vec_id}: {ve}")
+                        errors.append(f"Vector cleanup error: {ve}")
+                        
+                # 2. 清理图边 (批量删除)
+                edges_to_remove = cleanup_plan.get("edges_to_remove", [])
+                if edges_to_remove:
+                    try:
+                        self.plugin.graph_store.delete_edges(edges_to_remove)
+                    except Exception as ge:
+                        logger.error(f"Graph cleanup failed: {ge}")
+                        errors.append(f"Graph cleanup error: {ge}")
+                
+                # 如果有非致命错误，记录并在响应中提示
+                msg = "Source deleted successfully"
+                if errors:
+                    msg += f", but with cleanup warnings: {'; '.join(errors)}"
+                    
+                # 触发保存以持久化内存变更
+                try:
+                    self.plugin.vector_store.save()
+                    self.plugin.graph_store.save()
+                except Exception as se:
+                    logger.warning(f"Auto-save after delete failed: {se}")
+                
+                return {"success": True, "message": msg, "details": cleanup_plan}
+                
+            except Exception as e:
+                logger.error(f"Delete source failed: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
 
         @self.app.post("/api/save")

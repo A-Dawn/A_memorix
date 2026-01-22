@@ -131,8 +131,10 @@ class QueryCommand(BaseCommand):
                 alpha=self.get_config("retrieval.alpha", 0.5),
                 enable_ppr=self.get_config("retrieval.enable_ppr", True),
                 ppr_alpha=self.get_config("retrieval.ppr_alpha", 0.85),
+                ppr_concurrency_limit=self.get_config("retrieval.ppr_concurrency_limit", 4),
                 enable_parallel=self.get_config("retrieval.enable_parallel", True),
                 retrieval_strategy=RetrievalStrategy.DUAL_PATH,
+                debug=self.debug_enabled,
             )
 
             # 创建检索器

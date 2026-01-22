@@ -17,7 +17,7 @@ class SparseMatrixFormat(Enum):
     CSC = "csc"
 
 try:
-    from scipy.sparse import csr_matrix, csc_matrix, triu, save_npz, load_npz
+    from scipy.sparse import csr_matrix, csc_matrix, triu, save_npz, load_npz, bmat, lil_matrix
     from scipy.sparse.linalg import norm
     HAS_SCIPY = True
 except ImportError:
@@ -91,6 +91,10 @@ class GraphStore:
         
         # 状态管理
         self._modification_mode = GraphModificationMode.BATCH
+        
+        # 缓存的转置邻接矩阵（用于反向查找）
+        self._adjacency_T: Optional[Union[csr_matrix, csc_matrix]] = None
+        self._adjacency_dirty: bool = True
 
         logger.info(f"GraphStore 初始化: format={matrix_format}")
         
@@ -277,6 +281,7 @@ class GraphStore:
             self._adjacency = self._adjacency.tocsr()
 
         self._total_edges_added += len(edges)
+        self._adjacency_dirty = True  # 标记脏位
         logger.debug(f"添加 {len(edges)} 条边")
         return len(edges)
 
@@ -426,6 +431,7 @@ class GraphStore:
             self._adjacency = self._adjacency.tocsc()
 
         self._total_edges_deleted += deleted
+        self._adjacency_dirty = True
         logger.info(f"删除 {deleted} 条边")
         return deleted
 
@@ -445,14 +451,37 @@ class GraphStore:
     def has_node(self, node: str) -> bool:
         """
         检查节点是否存在
-
+        
         Args:
             node: 节点名称
-
-        Returns:
-            节点是否存在
         """
         return node in self._node_to_idx
+
+    def find_node(self, node: str, ignore_case: bool = False) -> Optional[str]:
+        """
+        查找节点（支持大小写不敏感）
+        
+        Args:
+            node: 节点名称
+            ignore_case: 是否忽略大小写
+            
+        Returns:
+            真实节点名称 (如果存在)，否则 None
+        """
+        if node in self._node_to_idx:
+            return node
+            
+        if not ignore_case:
+            return None
+            
+        # 大小写不敏感查找 (Slow fallback)
+        # TODO: Optimize with a cached lower->original map if this becomes a bottleneck
+        node_lower = node.lower()
+        for original_node in self._nodes:
+            if original_node.lower() == node_lower:
+                return original_node
+                
+        return None
 
     def get_node_attributes(self, node: str) -> Optional[Dict[str, Any]]:
         """
@@ -514,6 +543,126 @@ class GraphStore:
         tgt_idx = self._node_to_idx[target]
 
         return float(self._adjacency[src_idx, tgt_idx])
+
+    def _ensure_adjacency_T(self):
+        """确保转置邻接矩阵是最新的"""
+        if self._adjacency is None:
+            self._adjacency_T = None
+            return
+
+        if self._adjacency_dirty or self._adjacency_T is None:
+            # 只有在确实需要时才计算转置
+            # 注意：在 incremental 模式下 (LIL)，转置可能比较慢
+            if self._modification_mode == GraphModificationMode.INCREMENTAL:
+                 self._adjacency_T = self._adjacency.transpose().tocsr() # 转为 CSR 优化读
+            else:
+                 self._adjacency_T = self._adjacency.transpose()
+            
+            self._adjacency_dirty = False
+            # logger.debug("重建转置邻接矩阵缓存")
+
+    def find_paths(
+        self, 
+        start_node: str, 
+        end_node: str, 
+        max_depth: int = 3, 
+        max_paths: int = 5,
+        max_expansions: int = 20000
+    ) -> List[List[str]]:
+        """
+        查找两个节点之间的路径 (BFS)
+        支持有向和无向 (视作双向) 探索
+        
+        Args:
+            start_node: 起始节点
+            end_node: 目标节点
+            max_depth: 最大深度
+            max_paths: 最大路径数 (找到这么多就停止)
+            max_expansions: 最大扩展次数 (防止爆炸)
+            
+        Returns:
+            路径列表 [[n1, n2, n3], ...]
+        """
+        if start_node not in self._node_to_idx or end_node not in self._node_to_idx:
+            return []
+            
+        if self._adjacency is None:
+            return []
+
+        # 确保转置矩阵可用 (用于查找入边)
+        self._ensure_adjacency_T()
+        
+        start_idx = self._node_to_idx[start_node]
+        end_idx = self._node_to_idx[end_node]
+        
+        # 队列: (current_idx, path_indices)
+        queue = [(start_idx, [start_idx])]
+        found_paths = []
+        expansions = 0
+        
+        unique_paths = set()
+        
+        while queue:
+            curr, path = queue.pop(0)
+            
+            if len(path) > max_depth + 1:
+                continue
+                
+            if curr == end_idx:
+                # 找到路径
+                # 转换回节点名
+                path_names = [self._nodes[i] for i in path]
+                path_tuple = tuple(path_names)
+                if path_tuple not in unique_paths:
+                    found_paths.append(path_names)
+                    unique_paths.add(path_tuple)
+                    
+                if len(found_paths) >= max_paths:
+                    break
+                continue
+                
+            if expansions >= max_expansions:
+                break
+            
+            expansions += 1
+            
+            # 获取邻居 (出边 + 入边)
+            # 1. 出边
+            if self.matrix_format == "csr":
+                out_indices = self._adjacency.indices[self._adjacency.indptr[curr]:self._adjacency.indptr[curr+1]]
+            else:
+                # 兼容其他格式，虽然慢一点
+                row = self._adjacency[curr, :]
+                if hasattr(row, 'indices'):
+                     out_indices = row.indices
+                else:
+                     _, out_indices = row.nonzero()
+            
+            # 2. 入边 (使用转置矩阵)
+            if self._adjacency_T is not None:
+                if isinstance(self._adjacency_T, csr_matrix): # CSR based
+                     in_indices = self._adjacency_T.indices[self._adjacency_T.indptr[curr]:self._adjacency_T.indptr[curr+1]]
+                else:
+                     row = self._adjacency_T[curr, :]
+                     if hasattr(row, 'indices'): # csr/csc
+                          in_indices = row.indices
+                     else:
+                          _, in_indices = row.nonzero()
+                     
+                neighbors = np.concatenate((out_indices, in_indices))
+            else:
+                neighbors = out_indices
+                
+            # 去重并过滤已在路径中的节点 (防止环)
+            # 注意: 这里简单去重，可能包含重复的邻居(如果既是出又是入)
+            seen_in_path = set(path)
+            
+            for neighbor_idx in neighbors:
+                if neighbor_idx not in seen_in_path:
+                    # 只有未访问过的才加入
+                    queue.append((neighbor_idx, path + [neighbor_idx]))
+                    
+        return found_paths
 
     def compute_pagerank(
         self,
@@ -646,6 +795,8 @@ class GraphStore:
         self._node_to_idx.clear()
         self._node_attrs.clear()
         self._adjacency = None
+        self._adjacency_T = None
+        self._adjacency_dirty = True
         self._total_nodes_added = 0
         self._total_edges_added = 0
         self._total_nodes_deleted = 0
@@ -742,6 +893,15 @@ class GraphStore:
 
             logger.debug(f"加载邻接矩阵: {matrix_path}, shape={self._adjacency.shape}")
 
+        # 检查维度不匹配并修复
+        if self._adjacency is not None:
+             adj_n = self._adjacency.shape[0]
+             current_n = len(self._nodes)
+             if current_n > adj_n:
+                 logger.warning(f"检测到图存储维度不匹配: 节点数={current_n}, 矩阵大小={adj_n}. 正在自动修复...")
+                 self._expand_adjacency_matrix(current_n - adj_n)
+
+        self._adjacency_dirty = True
         logger.info(
             f"图存储已加载: {len(self._nodes)} 个节点, "
             f"{self._adjacency.nnz if self._adjacency is not None else 0} 条边"
@@ -750,27 +910,66 @@ class GraphStore:
     def _expand_adjacency_matrix(self, added_nodes: int) -> None:
         """
         扩展邻接矩阵以容纳新节点
-
+        
         Args:
             added_nodes: 新增节点数量
         """
         if self._adjacency is None:
             n = len(self._nodes)
-            self._adjacency = csr_matrix((n, n), dtype=np.float32)
+            # 根据模式初始化
+            if self._modification_mode == GraphModificationMode.INCREMENTAL:
+                 self._adjacency = lil_matrix((n, n), dtype=np.float32)
+            else:
+                 self._adjacency = csr_matrix((n, n), dtype=np.float32)
             return
 
         old_n = self._adjacency.shape[0]
         new_n = old_n + added_nodes
+        
+        # 优化：根据模式选择不同的扩容策略
+        if self._modification_mode == GraphModificationMode.INCREMENTAL:
+            # LIL 格式可以直接 resize，非常高效
+            try:
+                if not isinstance(self._adjacency, lil_matrix):
+                    self._adjacency = self._adjacency.tolil()
+                
+                self._adjacency.resize((new_n, new_n))
+                # logger.debug(f"扩展 LIL 矩阵: {old_n} -> {new_n}")
+            except Exception as e:
+                logger.warning(f"LIL resize 失败，回退到通用方法: {e}")
+                self._expand_generic(new_n, old_n)
+                
+        else:
+            # CSR/CSC 格式使用 bmat 避免结构破坏警告
+            try:
+                # bmat 需要明确的形状，不能全部依赖 None
+                added = new_n - old_n
+                # 创建零矩阵块
+                # 注意: 这里统一创建 CSR 零矩阵，bmat 会处理合并
+                z_tr = csr_matrix((old_n, added), dtype=np.float32)
+                z_bl = csr_matrix((added, old_n), dtype=np.float32)
+                z_br = csr_matrix((added, added), dtype=np.float32)
 
-        # 创建扩展后的矩阵
+                self._adjacency = bmat(
+                    [[self._adjacency, z_tr], [z_bl, z_br]], 
+                    format=self.matrix_format,
+                    dtype=np.float32
+                )
+                # logger.debug(f"扩展矩阵 (bmat): {old_n} -> {new_n}")
+            except Exception as e:
+                logger.warning(f"bmat 扩展失败: {e}")
+                self._expand_generic(new_n, old_n)
+
+    def _expand_generic(self, new_n: int, old_n: int):
+        """通用扩展方法（回退方案）"""
         if self.matrix_format == "csr":
             new_adjacency = csr_matrix((new_n, new_n), dtype=np.float32)
             new_adjacency[:old_n, :old_n] = self._adjacency
         else:
             new_adjacency = csc_matrix((new_n, new_n), dtype=np.float32)
             new_adjacency[:old_n, :old_n] = self._adjacency
-
         self._adjacency = new_adjacency
+        self._adjacency_dirty = True
         
         # 如果都在增量模式，确保是LIL
         if self._modification_mode == GraphModificationMode.INCREMENTAL:
