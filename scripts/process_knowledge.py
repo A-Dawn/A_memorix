@@ -23,6 +23,14 @@ import tomlkit
 import argparse
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
+from rich.console import Console
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type, before_sleep_log
+
+console = Console()
+
+class LLMGenerationError(Exception):
+    pass
 
 # 路径设置
 current_dir = Path(__file__).resolve().parent
@@ -96,6 +104,7 @@ class AutoImporter:
         self.embedding_manager = None
         self.plugin_config = {}
         self.manifest = {}
+        self.import_errors = []  # Record failed items
         self.force = force
         self.clear_manifest = clear_manifest
         self.target_type = target_type
@@ -386,6 +395,12 @@ class AutoImporter:
         all_data["entities"] = dedupe_entities(all_data["entities"])
         return all_data
 
+    @retry(
+        retry=retry_if_exception_type((LLMGenerationError, json.JSONDecodeError)),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        before_sleep=before_sleep_log(logger, "WARNING")
+    )
     async def _extract_info(self, chunk: str, model_config: Any) -> Dict:
         prompt = f"""请分析以下文本，提取其中的实体（Entities）和关系（Relations）。
 仅提取关键或重要的信息。实体名称应尽可能完整。
@@ -408,16 +423,14 @@ JSON格式示例:
             request_type="Script.ProcessKnowledge"
         )
         if success:
-            try:
-                # 简单清理
-                txt = response.strip()
-                if "```" in txt:
-                    txt = txt.split("```json")[-1].split("```")[0].strip()
-                    if txt.startswith("json"): txt = txt[4:].strip()
-                return json.loads(txt)
-            except:
-                pass
-        return {}
+            # 简单清理
+            txt = response.strip()
+            if "```" in txt:
+                txt = txt.split("```json")[-1].split("```")[0].strip()
+                if txt.startswith("json"): txt = txt[4:].strip()
+            return json.loads(txt)
+        else:
+            raise LLMGenerationError("LLM generation failed (success=False)")
 
     def _split_text(self, text: str, size=800) -> List[str]:
         # 简单按行分块
@@ -451,6 +464,20 @@ JSON格式示例:
             logger.warning(f"  [Error] Failed to vectorize entity {name}: {e}")
 
         return hash_value
+
+    async def import_json_data(self, data: Dict, filename: str = "imported"):
+        """公开的 JSON 导入接口，供外部脚本调用"""
+        if not self.vector_store:
+            await self.initialize()
+            
+        async with self.storage_lock:
+            logger.info(f"正在导入外部数据: {filename}")
+            await self._import_to_db(data)
+            
+            # 保存
+            self.vector_store.save()
+            self.graph_store.save()
+            logger.info(f"✅ 外部数据导入完成: {filename}")
 
     async def _import_to_db(self, data: Dict):
         """将JSON数据导入存储"""
@@ -504,6 +531,12 @@ JSON格式示例:
                         # 传入 source_paragraph 哈希
                         self.metadata_store.add_relation(s, p, o, source_paragraph=h_val)
 
+    async def close(self):
+        """关闭存储连接"""
+        if self.metadata_store:
+            self.metadata_store.close()
+            logger.info("元数据存储已关闭")
+
     def _save_manifest(self):
         with open(MANIFEST_PATH, "w", encoding="utf-8") as f:
             json.dump(self.manifest, f, ensure_ascii=False, indent=2)
@@ -533,6 +566,7 @@ async def main():
         concurrency=args.concurrency
     )
     await importer.process_and_import()
+    await importer.close()
 
 if __name__ == "__main__":
     if sys.platform == "win32":

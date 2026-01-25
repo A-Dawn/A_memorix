@@ -8,6 +8,9 @@ import asyncio
 import time
 from typing import List, Union, Optional
 import numpy as np
+import openai
+import aiohttp
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type, before_sleep_log
 
 from src.common.logger import get_logger
 from src.chat.utils.utils import get_embedding
@@ -65,6 +68,12 @@ class EmbeddingAPIAdapter:
             f"max_concurrent={max_concurrent}, default_dim={default_dimension}"
         )
 
+    @retry(
+        retry=retry_if_exception_type((openai.APIConnectionError, aiohttp.ClientError, asyncio.TimeoutError)),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        before_sleep=before_sleep_log(logger, "WARNING")
+    )
     async def _get_embedding_direct(self, text: str, dimensions: Optional[int] = None) -> Optional[List[float]]:
         """
         直接通过 Client 获取 Embedding，支持传递 dimensions 参数
@@ -125,10 +134,6 @@ class EmbeddingAPIAdapter:
             
         except Exception as e:
             logger.error(f"通过直接 Client 获取 Embedding 失败: {e}")
-            # 降级尝试使用标准接口（不支持 dimensions）
-            if dimensions is None:
-                logger.warning("尝试降级到标准 get_embedding 接口...")
-                return await get_embedding(text)
             return None
     
     async def _detect_dimension(self) -> int:
@@ -275,9 +280,9 @@ class EmbeddingAPIAdapter:
             self._total_errors += 1
             logger.error(f"编码失败: {e}")
             
-            # 降级处理：返回零向量
-            logger.warning(f"返回零向量作为降级处理")
-            fallback = np.zeros((len(texts), target_dim), dtype=np.float32)
+            # 失败处理：返回 NaN 向量以供上层识别跳过
+            logger.warning(f"返回 NaN 向量以供跳过处理")
+            fallback = np.full((len(texts), target_dim), np.nan, dtype=np.float32)
             
             if single_input:
                 return fallback[0]
@@ -316,16 +321,16 @@ class EmbeddingAPIAdapter:
                         embedding = await self._get_embedding_direct(text, dimensions=dimensions)
                         
                         if embedding is None:
-                            # API 返回 None，使用零向量
+                            # API 返回 None，使用 NaN 向量
                             dim = dimensions or self._dimension or self.default_dimension
-                            embedding = [0.0] * dim
-                            logger.warning(f"文本 {index} 编码返回 None，使用零向量")
+                            embedding = [np.nan] * dim
+                            logger.warning(f"文本 {index} 编码返回 None，使用 NaN 向量")
                         return index, np.array(embedding, dtype=np.float32)
                     except Exception as e:
                         logger.error(f"文本 {index} 编码失败: {e}")
-                        # 返回零向量
+                        # 返回 NaN 向量
                         dim = dimensions or self._dimension or self.default_dimension
-                        return index, np.zeros(dim, dtype=np.float32)
+                        return index, np.full(dim, np.nan, dtype=np.float32)
             
             # 并发执行
             tasks = [

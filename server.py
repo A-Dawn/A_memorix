@@ -51,6 +51,9 @@ class SourceListRequest(BaseModel):
 class SourceDeleteRequest(BaseModel):
     paragraph_hash: str
 
+class BatchSourceDeleteRequest(BaseModel):
+    source: str
+
 class MemorixServer:
     def __init__(self, plugin_instance, host="0.0.0.0", port=8082):
         self.plugin = plugin_instance
@@ -75,22 +78,154 @@ class MemorixServer:
     def _setup_routes(self):
         
         @self.app.get("/api/graph")
-        async def get_graph():
-            """获取全量图谱数据"""
-            if not self.plugin.graph_store:
+        async def get_graph(exclude_leaf: bool = False, source: Optional[str] = None, density: float = 1.0):
+            """获取图谱数据，支持过滤叶子节点、来源及信息密度控制"""
+            
+            # --- 分支 1: 按来源过滤 (Batch Filtering) ---
+            if source:
+                if self.plugin.metadata_store is None:
+                    raise HTTPException(status_code=503, detail="Metadata store not initialized")
+                
+                try:
+                    # 1. 获取该来源的所有段落
+                    paragraphs = self.plugin.metadata_store.get_paragraphs_by_source(source)
+                    
+                    found_nodes = set()
+                    found_edges = []
+                    processed_edge_keys = set()
+                    
+                    # 2. 遍历段落收集实体和关系
+                    node_map = {} # lowercase_id -> display_label
+                    
+                    for p in paragraphs:
+                        # 收集实体
+                        p_entities = self.plugin.metadata_store.get_paragraph_entities(p['hash'])
+                        for e in p_entities:
+                            raw_name = e['name']
+                            lower_id = raw_name.strip().lower()
+                            node_map[lower_id] = raw_name # Use the name from entity table as preferred label
+                            found_nodes.add(lower_id)
+                            
+                        # 收集关系
+                        p_relations = self.plugin.metadata_store.get_paragraph_relations(p['hash'])
+                        for r in p_relations:
+                            s_raw, t_raw = r['subject'], r['object']
+                            s_id, t_id = s_raw.strip().lower(), t_raw.strip().lower()
+                            
+                            # Update labels if not present (prefer entity table, but relation raw text is fallback)
+                            if s_id not in node_map: node_map[s_id] = s_raw
+                            if t_id not in node_map: node_map[t_id] = t_raw
+                            
+                            found_nodes.add(s_id)
+                            found_nodes.add(t_id)
+                            
+                            key = (s_id, t_id)
+                            if key not in processed_edge_keys:
+                                found_edges.append({
+                                    "id": f"{s_id}_{t_id}",
+                                    "from": s_id,
+                                    "to": t_id,
+                                    "value": float(r['confidence']),
+                                    "label": r['predicate'],
+                                    "arrows": "to"
+                                })
+                                processed_edge_keys.add(key)
+                    
+                    # 3. 转换为前端格式
+                    nodes = [{"id": nid, "label": node_map.get(nid, nid)} for nid in found_nodes]
+                    edges = found_edges
+                    
+                    # 4. (修正) 应用叶子节点过滤 (之前此处有且逻辑错误，会导致无法进入此分支)
+                    if exclude_leaf:
+                       # 重新计算局部度数 (针对当前来源过滤出的子图)
+                       degrees = {}
+                       for e in edges:
+                           degrees[e['from']] = degrees.get(e['from'], 0) + 1
+                           degrees[e['to']] = degrees.get(e['to'], 0) + 1
+                       
+                       # 过滤掉局部度数为 1 的节点
+                       nodes = [n for n in nodes if degrees.get(n['id'], 0) != 1]
+                       node_ids = set(n['id'] for n in nodes)
+                       # 只保留连接两个已存在节点的边
+                       edges = [e for e in edges if e['from'] in node_ids and e['to'] in node_ids]
+
+                    return {
+                        "nodes": nodes, 
+                        "edges": edges, 
+                        "debug": {
+                            "source": source,
+                            "nodes": len(nodes),
+                            "edges": len(edges)
+                        }
+                    }
+                    
+                except Exception as e:
+                    logger.error(f"Get graph by source failed: {e}")
+                    raise HTTPException(status_code=500, detail=str(e))
+
+            # --- 分支 2: 全量图谱 (现有逻辑) ---
+            if self.plugin.graph_store is None:
                 raise HTTPException(status_code=503, detail="Graph store not initialized")
             
-            nodes = []
-            edges = []
-            
-            # 使用正确的 GraphStore API
             node_names = self.plugin.graph_store.get_nodes()
             
-            # 构建节点列表
-            for name in node_names:
-                nodes.append({"id": name, "label": name})
-                
-            # 获取所有边 - 遍历每个节点的邻居
+            # --- 智能显著性过滤 (Saliency Filtering) ---
+            if exclude_leaf:
+                # 1. 获取 PageRank 得分
+                scores = self.plugin.graph_store.get_saliency_scores()
+                if not scores:
+                    filtered_nodes = node_names
+                else:
+                    # 2. 确定筛选阈值
+                    # 使用基于 density 的分位数或线性阈值
+                    # density=1.0 展示全部; density=0 仅展示最核心部分
+                    sorted_scores = sorted(scores.values())
+                    n = len(sorted_scores)
+                    # 我们过滤掉后 (1.0 - density) 比例的节点
+                    # 但即使 density 很低，也至少保留前 5 个节点或 10% 节点
+                    threshold_idx = min(int(n * (1.0 - density)), n - 5)
+                    threshold_idx = max(0, threshold_idx)
+                    min_score = sorted_scores[threshold_idx] if sorted_scores else 0
+                    
+                    # 3. 筛选与保护
+                    # 识别核心节点 (Hubs) - PageRank 前 10%
+                    hub_threshold = sorted_scores[int(n * 0.9)] if n > 10 else 0
+                    hubs = {node for node, score in scores.items() if score >= hub_threshold}
+                    
+                    filtered_nodes = [] # 最终显示的节点 ID 列表
+                    node_status = {} # nodeId -> score/ghost status
+                    
+                    # 确定幽灵密度 (Ghosting) - 阈值以下的 20% 节点作为幽灵显示
+                    ghost_threshold_idx = max(0, threshold_idx - int(n * 0.2))
+                    ghost_min_score = sorted_scores[ghost_threshold_idx] if sorted_scores else 0
+
+                    for name in node_names:
+                        score = scores.get(name, 0)
+                        is_hub_neighbor = any(self.plugin.graph_store.get_edge_weight(name, hub) > 0 for hub in hubs) or \
+                                          any(self.plugin.graph_store.get_edge_weight(hub, name) > 0 for hub in hubs)
+                        
+                        if score >= min_score or is_hub_neighbor:
+                            # 正常保留
+                            filtered_nodes.append(name)
+                            node_status[name] = {"is_ghost": False}
+                        elif score >= ghost_min_score:
+                            # 作为幽灵保留 (Ghosting)
+                            filtered_nodes.append(name)
+                            node_status[name] = {"is_ghost": True}
+            else:
+                filtered_nodes = node_names
+                node_status = {name: {"is_ghost": False} for name in node_names}
+
+            # 转换为 Set 以提高查找性能
+            filtered_node_set = set(filtered_nodes)
+            nodes = [
+                {
+                    "id": name, 
+                    "label": name, 
+                    "is_ghost": node_status.get(name, {}).get("is_ghost", False)
+                } for name in filtered_nodes
+            ]
+            edges = []
             processed_edges = set()
             
             # 获取所有边 - 遍历每个节点的邻居
@@ -119,13 +254,16 @@ class MemorixServer:
             else:
                 logger.warning("[DEBUG] MetadataStore is NOT initialized or available")
 
-            for source in node_names:
+            for source in filtered_nodes: # 关键修复：只从过滤后的节点开始搜索
                 neighbors = self.plugin.graph_store.get_neighbors(source)
                 for target in neighbors:
+                    # 关键修复：确保目标节点也在过滤后的列表中
+                    if target not in filtered_node_set:
+                        continue
+                        
                     edge_key = (source, target)
                     if edge_key not in processed_edges:
                         weight = self.plugin.graph_store.get_edge_weight(source, target)
-                        
                         # 获取谓语描述
                         # 尝试精确匹配
                         predicates = edge_predicates.get((source, target), [])
@@ -148,6 +286,7 @@ class MemorixServer:
                             display_label = f"{weight:.2f}"
                         
                         edges.append({
+                            "id": f"{source}_{target}",
                             "from": source, 
                             "to": target, 
                             "value": float(weight),
@@ -160,7 +299,8 @@ class MemorixServer:
             debug_info = {
                 "relation_count": len(all_relations) if self.plugin.metadata_store else -1,
                 "sample_key": list(edge_predicates.keys())[0] if edge_predicates else None,
-                "edge_count": len(edges)
+                "edge_count": len(edges),
+                "exclude_leaf": exclude_leaf
             }
                 
             return {"nodes": nodes, "edges": edges, "debug": debug_info}
@@ -168,7 +308,7 @@ class MemorixServer:
         @self.app.post("/api/edge/weight")
         async def update_edge_weight(data: EdgeWeightUpdate):
             """更新边权重"""
-            if not self.plugin.graph_store:
+            if self.plugin.graph_store is None:
                 raise HTTPException(status_code=503, detail="Graph store not initialized")
             
             try:
@@ -191,7 +331,7 @@ class MemorixServer:
         @self.app.delete("/api/node")
         async def delete_node(data: NodeDelete):
             """删除节点"""
-            if not self.plugin.graph_store:
+            if self.plugin.graph_store is None:
                 raise HTTPException(status_code=503, detail="Graph store not initialized")
                 
             try:
@@ -212,7 +352,7 @@ class MemorixServer:
         @self.app.delete("/api/edge")
         async def delete_edge(data: EdgeDelete):
             """删除边"""
-            if not self.plugin.graph_store:
+            if self.plugin.graph_store is None:
                 raise HTTPException(status_code=503, detail="Graph store not initialized")
             
             try:
@@ -231,12 +371,18 @@ class MemorixServer:
         @self.app.post("/api/node")
         async def create_node(data: NodeCreate):
             """创建节点"""
-            if not self.plugin.graph_store:
+            print(f"DEBUG: graph_store={self.plugin.graph_store}")
+            if self.plugin.graph_store is None:
                 raise HTTPException(status_code=503, detail="Graph store not initialized")
             
             try:
-                # 使用 GraphStore.add_nodes 方法
+                # 1. 使用 GraphStore.add_nodes 方法建立物理节点
                 added_count = self.plugin.graph_store.add_nodes([data.node_id])
+                
+                # 2. 同时在 MetadataStore 注册实体，保证元数据一致性
+                if self.plugin.metadata_store:
+                    self.plugin.metadata_store.add_entity(name=data.node_id)
+                
                 # 持久化保存
                 self.plugin.graph_store.save()
                 return {"success": True, "added_count": added_count, "node_id": data.node_id}
@@ -247,7 +393,7 @@ class MemorixServer:
         @self.app.post("/api/edge")
         async def create_edge(data: EdgeCreate):
             """创建边 (支持语义关系)"""
-            if not self.plugin.graph_store:
+            if self.plugin.graph_store is None:
                 raise HTTPException(status_code=503, detail="Graph store not initialized")
             
             try:
@@ -279,7 +425,7 @@ class MemorixServer:
         @self.app.put("/api/node/rename")
         async def rename_node(data: NodeRename):
             """重命名节点 (实际上是创建新节点，复制边，删除旧节点)"""
-            if not self.plugin.graph_store:
+            if self.plugin.graph_store is None:
                 raise HTTPException(status_code=503, detail="Graph store not initialized")
             
             try:
@@ -322,13 +468,17 @@ class MemorixServer:
         @self.app.post("/api/source/list")
         async def list_sources(data: SourceListRequest):
             """获取来源段落列表"""
-            if not self.plugin.metadata_store:
+            if self.plugin.metadata_store is None:
                  raise HTTPException(status_code=503, detail="Metadata store not initialized")
             
             paragraphs = []
             seen_hashes = set()
             
             try:
+                # 0. 如果无任何参数，则返回文件列表 (Summary Mode)
+                if not data.node_id and not data.edge_source and not data.edge_target:
+                    sources = self.plugin.metadata_store.get_all_sources()
+                    return {"mode": "summary", "sources": sources}
                 # 1. 如果是查节点来源 (By Entity)
                 if data.node_id:
                     # 注意: WebUI 传来的 node_id 通常是实体名称 (Node Name)
@@ -369,6 +519,65 @@ class MemorixServer:
                 logger.error(f"List sources failed: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
 
+        @self.app.post("/api/source/batch_delete")
+        async def batch_delete_source(data: BatchSourceDeleteRequest):
+            """按来源批量删除（文件删除）"""
+            if not self.plugin.metadata_store or not self.plugin.vector_store or not self.plugin.graph_store:
+                 raise HTTPException(status_code=503, detail="Stores not fully initialized")
+                 
+            try:
+                # 1. 找出所有相关段落
+                paragraphs = self.plugin.metadata_store.get_paragraphs_by_source(data.source)
+                if not paragraphs:
+                    return {"success": True, "message": "No paragraphs found for this source", "count": 0}
+                
+                deleted_count = 0
+                errors = []
+                
+                # 2. 逐个删除 (复用原子删除逻辑)
+                # 考虑到性能，这里是简单的循环。如果有成千上万条，可能需要优化为批量事务。
+                for p in paragraphs:
+                    try:
+                        # Phase 1: DB Transaction
+                        cleanup_plan = self.plugin.metadata_store.delete_paragraph_atomic(p['hash'])
+                        
+                        # Phase 2: Memory Store Cleanup
+                        vec_id = cleanup_plan.get("vector_id_to_remove")
+                        if vec_id:
+                            try:
+                                self.plugin.vector_store.delete([vec_id])
+                            except Exception:
+                                pass # ignore missing vector
+                                
+                        edges_to_remove = cleanup_plan.get("edges_to_remove", [])
+                        if edges_to_remove:
+                            try:
+                                self.plugin.graph_store.delete_edges(edges_to_remove)
+                            except Exception:
+                                pass
+                                
+                        deleted_count += 1
+                        
+                    except Exception as pe:
+                        logger.error(f"Failed to delete paragraph {p['hash']}: {pe}")
+                        errors.append(f"{p['hash']}: {pe}")
+                
+                # 3. 保存变更
+                try:
+                    self.plugin.vector_store.save()
+                    self.plugin.graph_store.save()
+                except Exception as se:
+                    logger.warning(f"Auto-save after batch delete failed: {se}")
+                    
+                msg = f"Successfully deleted {deleted_count} paragraphs from source '{data.source}'"
+                if errors:
+                    msg += f". Errors: {len(errors)} occurred."
+                    
+                return {"success": True, "message": msg, "count": deleted_count, "errors": errors}
+                
+            except Exception as e:
+                logger.error(f"Batch source delete failed: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
         @self.app.delete("/api/source")
         async def delete_source(data: SourceDeleteRequest):
             """删除来源段落（两阶段提交）"""
@@ -426,10 +635,10 @@ class MemorixServer:
             """手动保存所有数据到磁盘"""
             try:
                 saved_components = []
-                if self.plugin.graph_store:
+                if self.plugin.graph_store is not None:
                     self.plugin.graph_store.save()
                     saved_components.append("graph_store")
-                if self.plugin.vector_store:
+                if self.plugin.vector_store is not None:
                     self.plugin.vector_store.save()
                     saved_components.append("vector_store")
                 logger.info(f"手动保存完成: {saved_components}")
