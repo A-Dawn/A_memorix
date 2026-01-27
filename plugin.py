@@ -89,7 +89,7 @@ class A_MemorixPlugin(BasePlugin):
         "plugin": {
             "config_version": ConfigField(
                 type=str,
-                default="2.0.0",
+                default="2.0.1",
                 description="配置文件版本"
             ),
             "enabled": ConfigField(
