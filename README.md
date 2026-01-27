@@ -1,6 +1,6 @@
 # A_Memorix
 
-**轻量级知识图谱插件** - 基于双路检索的完全独立的记忆增强系统 (v0.2.1)
+**轻量级知识图谱插件** - 基于双路检索的完全独立的记忆增强系统 (v0.2.2)
 
 > 消えていかない感覚 , まだまだ足りてないみたい !
 
@@ -14,6 +14,7 @@
 
 - **🧠 双路检索** - 关系图谱 + 向量语义并行检索，结合 Personalized PageRank 智能排序。
 - **🔄 智能回退** - 当直接检索结果弱时，自动触发多跳路径搜索，增强间接关系召回。
+- **🛡️ 网络鲁棒性** - 内置指数退避重试机制，支持自定义嵌入请求的重试策略，从容应对网络波动。
 - **📊 知识图谱可视化** - 全新 Glassmorphism 风格 Web 编辑器，支持基于 **PageRank** 的信息密度筛选、记忆溯源管理及全量图谱探索。
 - **📝 对话自动总结** - 自动总结历史聊天记录并提取知识，支持定时触发和人设深度整合。
 - **🎯 智能分类** - 兼容并自动识别结构化/叙事性/事实性知识，采用差异化处理策略。
@@ -140,6 +141,8 @@ python plugins/A_memorix/scripts/import_lpmm_json.py <path_to_json_file_or_dir>
 - **`storage.data_dir`**: 数据存储路径（默认为插件内 `data` 目录）。
 - **`embedding.quantization_type`**: 向量量化模式 (`int8` 推荐, `float32`, `pq`)。
 - **`embedding.dimension`**: 向量维度（默认 1024）。
+- **`embedding.retry.max_attempts`**: 最大重试次数 (默认 10)。
+- **`embedding.retry.max_wait_seconds`**: 最大等待时间 (默认 30)。
 
 #### ⚙️ 检索与排序 `[retrieval]`
 

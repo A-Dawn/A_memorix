@@ -166,6 +166,7 @@ class AutoImporter:
             batch_size=self.plugin_config.get("embedding", {}).get("batch_size", 32),
             default_dimension=self.plugin_config.get("embedding", {}).get("dimension", 384),
             model_name=self.plugin_config.get("embedding", {}).get("model_name", "auto"),
+            retry_config=self.plugin_config.get("embedding", {}).get("retry", {}),
         )
         
         # 检测维度
