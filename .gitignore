@@ -206,3 +206,13 @@ ehthumbs.db
 # Temporary Verification Scripts
 verify_*.py
 config.toml
+
+# Test Artifacts & Generated Files
+MagicMock/
+benchmark_output.txt
+e2e_debug.log
+e2e_error.log
+full_diff.txt
+
+# Compressed Data Archives
+data.zip

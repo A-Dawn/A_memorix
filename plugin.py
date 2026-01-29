@@ -64,7 +64,7 @@ class A_MemorixPlugin(BasePlugin):
 
     # 插件基本信息（PluginBase要求的抽象属性）
     plugin_name = "A_Memorix"
-    plugin_version = "0.2.2"
+    plugin_version = "0.2.3"
     plugin_description = "轻量级知识库插件 - 完全独立的记忆增强系统"
     plugin_author = "A_Dawn"
     enable_plugin = False  # 默认禁用，需要在config.toml中启用
@@ -82,6 +82,9 @@ class A_MemorixPlugin(BasePlugin):
         "graph": "知识图谱配置",
         "web": "可视化服务器配置",
         "advanced": "高级配置",
+        "summarization": "总结与导入配置",
+        "schedule": "定时任务配置",
+        "filter": "消息过滤配置",
     }
 
     # 配置Schema定义

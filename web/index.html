@@ -1,600 +1,635 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
-
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>A_Memorix | 知识全景图</title>
     <!-- Font -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap"
+      rel="stylesheet"
+    />
     <!-- Vis.js & Axios -->
-    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <script
+      type="text/javascript"
+      src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"
+    ></script>
     <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
     <style>
-        :root {
-            --bg-color: #0f172a;
-            --glass-bg: rgba(30, 41, 59, 0.7);
-            --glass-border: rgba(255, 255, 255, 0.1);
-            --accent-primary: #38bdf8;
-            --accent-secondary: #818cf8;
-            --text-main: #f1f5f9;
-            --text-dim: #94a3b8;
-            --danger: #ef4444;
-            --success: #10b981;
-            --warning: #f59e0b;
+      :root {
+        --bg-color: #0f172a;
+        --glass-bg: rgba(30, 41, 59, 0.7);
+        --glass-border: rgba(255, 255, 255, 0.1);
+        --accent-primary: #38bdf8;
+        --accent-secondary: #818cf8;
+        --text-main: #f1f5f9;
+        --text-dim: #94a3b8;
+        --danger: #ef4444;
+        --success: #10b981;
+        --warning: #f59e0b;
+      }
+
+      :root[data-theme="light"] {
+        --bg-color: #f8fafc;
+        --glass-bg: rgba(255, 255, 255, 0.75);
+        --glass-border: rgba(0, 0, 0, 0.1);
+        --accent-primary: #0284c7;
+        /* Sky 600 */
+        --accent-secondary: #6366f1;
+        /* Indigo 500 */
+        --text-main: #1e293b;
+        --text-dim: #64748b;
+      }
+
+      :root[data-theme="neon"] {
+        --bg-color: #13001f;
+        /* Deep Purple */
+        --glass-bg: rgba(40, 0, 60, 0.6);
+        --glass-border: rgba(217, 70, 239, 0.3);
+        /* Pink border */
+        --accent-primary: #d946ef;
+        /* Fuchsia */
+        --accent-secondary: #8b5cf6;
+        /* Violet */
+        --text-main: #e9d5ff;
+        --text-dim: #a78bfa;
+      }
+
+      body {
+        font-family: "Outfit", "Segoe UI", system-ui, sans-serif;
+        margin: 0;
+        padding: 0;
+        height: 100vh;
+        overflow: hidden;
+        background-color: var(--bg-color);
+        color: var(--text-main);
+        background-image:
+          radial-gradient(
+            circle at 10% 20%,
+            rgba(56, 189, 248, 0.05) 0%,
+            transparent 40%
+          ),
+          radial-gradient(
+            circle at 90% 80%,
+            rgba(129, 140, 248, 0.05) 0%,
+            transparent 40%
+          );
+      }
+
+      /* Loading Overlay */
+      #loader {
+        position: fixed;
+        inset: 0;
+        background: var(--bg-color);
+        z-index: 9999;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+        backdrop-filter: blur(10px);
+      }
+
+      #loader.sync-mode {
+        background: rgba(15, 23, 42, 0.6);
+      }
+
+      .spinner {
+        width: 48px;
+        height: 48px;
+        border: 3px solid rgba(56, 189, 248, 0.1);
+        border-top: 3px solid var(--accent-primary);
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+        box-shadow: 0 0 20px rgba(56, 189, 248, 0.2);
+      }
+
+      .loader-text {
+        margin-top: 24px;
+        color: var(--text-main);
+        font-size: 1rem;
+        font-weight: 500;
+        letter-spacing: 0.05em;
+        animation: loaderPulse 2s infinite ease-in-out;
+      }
+
+      @keyframes loaderPulse {
+        0%, 100% { opacity: 0.6; transform: scale(1); }
+        50% { opacity: 1; transform: scale(1.02); }
+      }
+
+      @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+      }
+
+      /* Container */
+      #container {
+        width: 100%;
+        height: 100vh;
+        background-color: transparent;
+      }
+
+      /* Floating Search */
+      .search-container {
+        position: absolute;
+        top: 24px;
+        left: 24px;
+        z-index: 100;
+        display: flex;
+        gap: 8px;
+        backdrop-filter: blur(12px);
+        background: var(--glass-bg);
+        padding: 6px;
+        border-radius: 12px;
+        border: 1px solid var(--glass-border);
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+      }
+
+      .search-container input {
+        background: transparent;
+        border: none;
+        color: white;
+        padding: 8px 12px;
+        outline: none;
+        width: 200px;
+        font-size: 0.9rem;
+      }
+
+      .search-container button {
+        background: var(--accent-primary);
+        border: none;
+        color: var(--bg-color);
+        padding: 8px 12px;
+        border-radius: 8px;
+        cursor: pointer;
+        font-weight: 600;
+        transition: transform 0.2s;
+      }
+
+      .search-container button:hover {
+        transform: scale(1.05);
+      }
+
+      /* Bottom Dock */
+      .dock {
+        position: absolute;
+        bottom: 32px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 100;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        backdrop-filter: blur(16px);
+        background: var(--glass-bg);
+        padding: 12px 24px;
+        border-radius: 24px;
+        border: 1px solid var(--glass-border);
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
+      }
+
+      .dock-btn {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 4px;
+        cursor: pointer;
+        padding: 8px;
+        border-radius: 12px;
+        transition: all 0.2s;
+        color: var(--text-dim);
+        min-width: 60px;
+      }
+
+      .dock-btn:hover {
+        background: rgba(255, 255, 255, 0.05);
+        color: var(--accent-primary);
+        transform: translateY(-4px);
+      }
+
+      .dock-btn.active {
+        color: var(--accent-primary);
+      }
+
+      .dock-btn span {
+        font-size: 0.7rem;
+        font-weight: 600;
+      }
+
+      .dock-icon {
+        font-size: 1.2rem;
+      }
+
+      .divider {
+        width: 1px;
+        height: 30px;
+        background: var(--glass-border);
+        margin: 0 8px;
+      }
+
+      /* Side Panel (Glassmorphism) */
+      .side-panel {
+        position: absolute;
+        top: 24px;
+        right: 24px;
+        width: 360px;
+        max-height: calc(100vh - 120px);
+        z-index: 100;
+        backdrop-filter: blur(20px);
+        background: var(--glass-bg);
+        border: 1px solid var(--glass-border);
+        border-radius: 20px;
+        box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+        display: none;
+        flex-direction: column;
+        overflow: hidden;
+        animation: slideIn 0.3s ease-out;
+      }
+
+      @keyframes slideIn {
+        from {
+          transform: translateX(50px);
+          opacity: 0;
         }
 
-        :root[data-theme="light"] {
-            --bg-color: #f8fafc;
-            --glass-bg: rgba(255, 255, 255, 0.75);
-            --glass-border: rgba(0, 0, 0, 0.1);
-            --accent-primary: #0284c7;
-            /* Sky 600 */
-            --accent-secondary: #6366f1;
-            /* Indigo 500 */
-            --text-main: #1e293b;
-            --text-dim: #64748b;
+        to {
+          transform: translateX(0);
+          opacity: 1;
+        }
+      }
+
+      .panel-header {
+        padding: 20px;
+        background: rgba(255, 255, 255, 0.03);
+        border-bottom: 1px solid var(--glass-border);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+
+      .panel-header h3 {
+        margin: 0;
+        font-size: 1.1rem;
+        color: var(--accent-primary);
+      }
+
+      .close-btn {
+        cursor: pointer;
+        color: var(--text-dim);
+        padding: 4px;
+      }
+
+      .panel-content {
+        padding: 20px;
+        overflow-y: auto;
+        flex: 1;
+      }
+
+      .form-group {
+        margin-bottom: 20px;
+      }
+
+      .form-group label {
+        display: block;
+        font-size: 0.8rem;
+        color: var(--text-dim);
+        margin-bottom: 8px;
+      }
+
+      .form-group input,
+      .form-group textarea {
+        width: 100%;
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid var(--glass-border);
+        border-radius: 8px;
+        padding: 10px;
+        color: white;
+        box-sizing: border-box;
+        outline: none;
+      }
+
+      .form-group input:focus {
+        border-color: var(--accent-primary);
+      }
+
+      /* Buttons */
+      .btn {
+        padding: 10px 16px;
+        border-radius: 10px;
+        border: none;
+        cursor: pointer;
+        font-weight: 600;
+        transition: all 0.2s;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+      }
+
+      .btn-primary {
+        background: var(--accent-primary);
+        color: var(--bg-color);
+      }
+
+      .btn-ghost {
+        background: transparent;
+        border: 1px solid var(--glass-border);
+        color: var(--text-main);
+      }
+
+      .btn-danger {
+        background: var(--danger);
+        color: white;
+      }
+
+      .btn-full {
+        width: 100%;
+      }
+
+      .btn:hover {
+        opacity: 0.9;
+        transform: translateY(-1px);
+      }
+
+      /* Switches */
+      .switch-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 15px;
+      }
+
+      .switch {
+        position: relative;
+        display: inline-block;
+        width: 44px;
+        height: 22px;
+      }
+
+      .switch input {
+        opacity: 0;
+        width: 0;
+        height: 0;
+      }
+
+      .slider {
+        position: absolute;
+        cursor: pointer;
+        inset: 0;
+        background-color: rgba(255, 255, 255, 0.1);
+        transition: 0.3s;
+        border-radius: 22px;
+      }
+
+      .slider:before {
+        position: absolute;
+        content: "";
+        height: 16px;
+        width: 16px;
+        left: 3px;
+        bottom: 3px;
+        background-color: white;
+        transition: 0.3s;
+        border-radius: 50%;
+      }
+
+      input:checked + .slider {
+        background-color: var(--accent-primary);
+      }
+
+      input:checked + .slider:before {
+        transform: translateX(22px);
+      }
+
+      /* List Items */
+      .list-item {
+        background: rgba(255, 255, 255, 0.03);
+        border-radius: 12px;
+        padding: 12px;
+        margin-bottom: 10px;
+        border: 1px solid transparent;
+        transition: all 0.2s;
+      }
+
+      .list-item:hover {
+        border-color: var(--glass-border);
+        background: rgba(255, 255, 255, 0.05);
+      }
+
+      /* Toast */
+      #toast {
+        position: fixed;
+        top: 32px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: var(--glass-bg);
+        backdrop-filter: blur(12px);
+        border: 1px solid var(--glass-border);
+        padding: 12px 24px;
+        border-radius: 12px;
+        z-index: 1000;
+        display: none;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+        animation: fadeInOut 3s forwards;
+      }
+
+      @keyframes fadeInOut {
+        0% {
+          opacity: 0;
+          transform: translate(-50%, -20px);
         }
 
-        :root[data-theme="neon"] {
-            --bg-color: #13001f;
-            /* Deep Purple */
-            --glass-bg: rgba(40, 0, 60, 0.6);
-            --glass-border: rgba(217, 70, 239, 0.3);
-            /* Pink border */
-            --accent-primary: #d946ef;
-            /* Fuchsia */
-            --accent-secondary: #8b5cf6;
-            /* Violet */
-            --text-main: #e9d5ff;
-            --text-dim: #a78bfa;
+        15% {
+          opacity: 1;
+          transform: translate(-50%, 0);
         }
 
-        body {
-            font-family: 'Outfit', 'Segoe UI', system-ui, sans-serif;
-            margin: 0;
-            padding: 0;
-            height: 100vh;
-            overflow: hidden;
-            background-color: var(--bg-color);
-            color: var(--text-main);
-            background-image:
-                radial-gradient(circle at 10% 20%, rgba(56, 189, 248, 0.05) 0%, transparent 40%),
-                radial-gradient(circle at 90% 80%, rgba(129, 140, 248, 0.05) 0%, transparent 40%);
+        85% {
+          opacity: 1;
+          transform: translate(-50%, 0);
         }
 
-        /* Loading Overlay */
-        #loader {
-            position: fixed;
-            inset: 0;
-            background: var(--bg-color);
-            z-index: 9999;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            transition: opacity 0.5s ease;
+        100% {
+          opacity: 0;
+          transform: translate(-50%, -20px);
         }
+      }
 
-        .spinner {
-            width: 40px;
-            height: 40px;
-            border: 3px solid rgba(56, 189, 248, 0.1);
-            border-top: 3px solid var(--accent-primary);
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-        }
-
-        @keyframes spin {
-            0% {
-                transform: rotate(0deg);
-            }
-
-            100% {
-                transform: rotate(360deg);
-            }
-        }
-
-        /* Container */
-        #container {
-            width: 100%;
-            height: 100vh;
-            background-color: transparent;
-        }
-
-        /* Floating Search */
-        .search-container {
-            position: absolute;
-            top: 24px;
-            left: 24px;
-            z-index: 100;
-            display: flex;
-            gap: 8px;
-            backdrop-filter: blur(12px);
-            background: var(--glass-bg);
-            padding: 6px;
-            border-radius: 12px;
-            border: 1px solid var(--glass-border);
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-        }
-
-        .search-container input {
-            background: transparent;
-            border: none;
-            color: white;
-            padding: 8px 12px;
-            outline: none;
-            width: 200px;
-            font-size: 0.9rem;
-        }
-
-        .search-container button {
-            background: var(--accent-primary);
-            border: none;
-            color: var(--bg-color);
-            padding: 8px 12px;
-            border-radius: 8px;
-            cursor: pointer;
-            font-weight: 600;
-            transition: transform 0.2s;
-        }
-
-        .search-container button:hover {
-            transform: scale(1.05);
-        }
-
-        /* Bottom Dock */
-        .dock {
-            position: absolute;
-            bottom: 32px;
-            left: 50%;
-            transform: translateX(-50%);
-            z-index: 100;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            backdrop-filter: blur(16px);
-            background: var(--glass-bg);
-            padding: 12px 24px;
-            border-radius: 24px;
-            border: 1px solid var(--glass-border);
-            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
-        }
-
-        .dock-btn {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 4px;
-            cursor: pointer;
-            padding: 8px;
-            border-radius: 12px;
-            transition: all 0.2s;
-            color: var(--text-dim);
-            min-width: 60px;
-        }
-
-        .dock-btn:hover {
-            background: rgba(255, 255, 255, 0.05);
-            color: var(--accent-primary);
-            transform: translateY(-4px);
-        }
-
-        .dock-btn.active {
-            color: var(--accent-primary);
-        }
-
-        .dock-btn span {
-            font-size: 0.7rem;
-            font-weight: 600;
-        }
-
-        .dock-icon {
-            font-size: 1.2rem;
-        }
-
-        .divider {
-            width: 1px;
-            height: 30px;
-            background: var(--glass-border);
-            margin: 0 8px;
-        }
-
-        /* Side Panel (Glassmorphism) */
+      /* Responsive */
+      @media (max-width: 768px) {
         .side-panel {
-            position: absolute;
-            top: 24px;
-            right: 24px;
-            width: 360px;
-            max-height: calc(100vh - 120px);
-            z-index: 100;
-            backdrop-filter: blur(20px);
-            background: var(--glass-bg);
-            border: 1px solid var(--glass-border);
-            border-radius: 20px;
-            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
-            display: none;
-            flex-direction: column;
-            overflow: hidden;
-            animation: slideIn 0.3s ease-out;
+          width: calc(100% - 48px);
         }
 
-        @keyframes slideIn {
-            from {
-                transform: translateX(50px);
-                opacity: 0;
-            }
+        .dock {
+          padding: 8px 16px;
+          bottom: 20px;
+          overflow-x: auto;
+          max-width: 90%;
+        }
+      }
 
-            to {
-                transform: translateX(0);
-                opacity: 1;
-            }
-        }
+      /* Search Candidates */
+      .search-results {
+        position: absolute;
+        top: 100%;
+        left: 0;
+        right: 0;
+        background: var(--glass-bg);
+        backdrop-filter: blur(12px);
+        border: 1px solid var(--glass-border);
+        border-radius: 12px;
+        margin-top: 8px;
+        max-height: 300px;
+        overflow-y: auto;
+        display: none;
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+      }
 
-        .panel-header {
-            padding: 20px;
-            background: rgba(255, 255, 255, 0.03);
-            border-bottom: 1px solid var(--glass-border);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
+      .search-item {
+        padding: 10px 12px;
+        cursor: pointer;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
 
-        .panel-header h3 {
-            margin: 0;
-            font-size: 1.1rem;
-            color: var(--accent-primary);
-        }
+      .search-item:hover,
+      .search-item.active {
+        background: rgba(255, 255, 255, 0.1);
+        color: var(--accent-primary);
+      }
 
-        .close-btn {
-            cursor: pointer;
-            color: var(--text-dim);
-            padding: 4px;
-        }
+      /* Browser Panel */
+      .browser-tabs {
+        display: flex;
+        background: rgba(0, 0, 0, 0.2);
+        border-radius: 12px;
+        padding: 4px;
+        margin-bottom: 15px;
+      }
 
-        .panel-content {
-            padding: 20px;
-            overflow-y: auto;
-            flex: 1;
-        }
+      .browser-tab {
+        flex: 1;
+        text-align: center;
+        padding: 8px;
+        cursor: pointer;
+        border-radius: 8px;
+        font-size: 0.9rem;
+        color: var(--text-dim);
+        transition: all 0.2s;
+      }
 
-        .form-group {
-            margin-bottom: 20px;
-        }
+      .browser-tab.active {
+        background: var(--accent-primary);
+        color: var(--bg-color);
+        font-weight: 600;
+      }
 
-        .form-group label {
-            display: block;
-            font-size: 0.8rem;
-            color: var(--text-dim);
-            margin-bottom: 8px;
-        }
+      .group-header {
+        font-size: 0.8rem;
+        font-weight: 600;
+        color: var(--accent-secondary);
+        margin: 15px 0 8px 0;
+        padding-left: 8px;
+        border-left: 2px solid var(--accent-secondary);
+      }
 
-        .form-group input,
-        .form-group textarea {
-            width: 100%;
-            background: rgba(255, 255, 255, 0.05);
-            border: 1px solid var(--glass-border);
-            border-radius: 8px;
-            padding: 10px;
-            color: white;
-            box-sizing: border-box;
-            outline: none;
-        }
+      .group-content {
+        display: grid;
+        gap: 6px;
+      }
 
-        .form-group input:focus {
-            border-color: var(--accent-primary);
-        }
+      /* Help Content Styles */
+      .help-section {
+        margin-bottom: 24px;
+      }
+      .help-title {
+        font-size: 1rem;
+        color: var(--accent-primary);
+        margin-bottom: 12px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .help-item {
+        display: flex;
+        gap: 12px;
+        margin-bottom: 12px;
+        font-size: 0.85rem;
+        line-height: 1.5;
+      }
+      .help-key {
+        background: rgba(255, 255, 255, 0.1);
+        padding: 2px 6px;
+        border-radius: 4px;
+        color: var(--accent-secondary);
+        font-family: monospace;
+        font-weight: 600;
+        white-space: nowrap;
+      }
+      .help-desc {
+        color: var(--text-dim);
+      }
+      .help-feature {
+        background: rgba(56, 189, 248, 0.05);
+        padding: 12px;
+        border-radius: 12px;
+        border: 1px border var(--glass-border);
+      }
 
-        /* Buttons */
-        .btn {
-            padding: 10px 16px;
-            border-radius: 10px;
-            border: none;
-            cursor: pointer;
-            font-weight: 600;
-            transition: all 0.2s;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-        }
-
-        .btn-primary {
-            background: var(--accent-primary);
-            color: var(--bg-color);
-        }
-
-        .btn-ghost {
-            background: transparent;
-            border: 1px solid var(--glass-border);
-            color: var(--text-main);
-        }
-
-        .btn-danger {
-            background: var(--danger);
-            color: white;
-        }
-
-        .btn-full {
-            width: 100%;
-        }
-
-        .btn:hover {
-            opacity: 0.9;
-            transform: translateY(-1px);
-        }
-
-        /* Switches */
-        .switch-row {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 15px;
-        }
-
-        .switch {
-            position: relative;
-            display: inline-block;
-            width: 44px;
-            height: 22px;
-        }
-
-        .switch input {
-            opacity: 0;
-            width: 0;
-            height: 0;
-        }
-
-        .slider {
-            position: absolute;
-            cursor: pointer;
-            inset: 0;
-            background-color: rgba(255, 255, 255, 0.1);
-            transition: .3s;
-            border-radius: 22px;
-        }
-
-        .slider:before {
-            position: absolute;
-            content: "";
-            height: 16px;
-            width: 16px;
-            left: 3px;
-            bottom: 3px;
-            background-color: white;
-            transition: .3s;
-            border-radius: 50%;
-        }
-
-        input:checked+.slider {
-            background-color: var(--accent-primary);
-        }
-
-        input:checked+.slider:before {
-            transform: translateX(22px);
-        }
-
-        /* List Items */
-        .list-item {
-            background: rgba(255, 255, 255, 0.03);
-            border-radius: 12px;
-            padding: 12px;
-            margin-bottom: 10px;
-            border: 1px solid transparent;
-            transition: all 0.2s;
-        }
-
-        .list-item:hover {
-            border-color: var(--glass-border);
-            background: rgba(255, 255, 255, 0.05);
-        }
-
-        /* Toast */
-        #toast {
-            position: fixed;
-            top: 32px;
-            left: 50%;
-            transform: translateX(-50%);
-            background: var(--glass-bg);
-            backdrop-filter: blur(12px);
-            border: 1px solid var(--glass-border);
-            padding: 12px 24px;
-            border-radius: 12px;
-            z-index: 1000;
-            display: none;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
-            animation: fadeInOut 3s forwards;
-        }
-
-        @keyframes fadeInOut {
-            0% {
-                opacity: 0;
-                transform: translate(-50%, -20px);
-            }
-
-            15% {
-                opacity: 1;
-                transform: translate(-50%, 0);
-            }
-
-            85% {
-                opacity: 1;
-                transform: translate(-50%, 0);
-            }
-
-            100% {
-                opacity: 0;
-                transform: translate(-50%, -20px);
-            }
-        }
-
-        /* Responsive */
-        @media (max-width: 768px) {
-            .side-panel {
-                width: calc(100% - 48px);
-            }
-
-            .dock {
-                padding: 8px 16px;
-                bottom: 20px;
-                overflow-x: auto;
-                max-width: 90%;
-            }
-        }
-
-        /* Search Candidates */
-        .search-results {
-            position: absolute;
-            top: 100%;
-            left: 0;
-            right: 0;
-            background: var(--glass-bg);
-            backdrop-filter: blur(12px);
-            border: 1px solid var(--glass-border);
-            border-radius: 12px;
-            margin-top: 8px;
-            max-height: 300px;
-            overflow-y: auto;
-            display: none;
-            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
-        }
-
-        .search-item {
-            padding: 10px 12px;
-            cursor: pointer;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .search-item:hover,
-        .search-item.active {
-            background: rgba(255, 255, 255, 0.1);
-            color: var(--accent-primary);
-        }
-
-        /* Browser Panel */
-        .browser-tabs {
-            display: flex;
-            background: rgba(0, 0, 0, 0.2);
-            border-radius: 12px;
-            padding: 4px;
-            margin-bottom: 15px;
-        }
-
-        .browser-tab {
-            flex: 1;
-            text-align: center;
-            padding: 8px;
-            cursor: pointer;
-            border-radius: 8px;
-            font-size: 0.9rem;
-            color: var(--text-dim);
-            transition: all 0.2s;
-        }
-
-        .browser-tab.active {
-            background: var(--accent-primary);
-            color: var(--bg-color);
-            font-weight: 600;
-        }
-
-        .group-header {
-            font-size: 0.8rem;
-            font-weight: 600;
-            color: var(--accent-secondary);
-            margin: 15px 0 8px 0;
-            padding-left: 8px;
-            border-left: 2px solid var(--accent-secondary);
-        }
-
-        .group-content {
-            display: grid;
-            gap: 6px;
-        }
-
-        /* Help Content Styles */
-        .help-section {
-            margin-bottom: 24px;
-        }
-        .help-title {
-            font-size: 1rem;
-            color: var(--accent-primary);
-            margin-bottom: 12px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .help-item {
-            display: flex;
-            gap: 12px;
-            margin-bottom: 12px;
-            font-size: 0.85rem;
-            line-height: 1.5;
-        }
-        .help-key {
-            background: rgba(255,255,255,0.1);
-            padding: 2px 6px;
-            border-radius: 4px;
-            color: var(--accent-secondary);
-            font-family: monospace;
-            font-weight: 600;
-            white-space: nowrap;
-        }
-        .help-desc {
-            color: var(--text-dim);
-        }
-        .help-feature {
-            background: rgba(56, 189, 248, 0.05);
-            padding: 12px;
-            border-radius: 12px;
-            border: 1px border var(--glass-border);
-        }
-
-        /* Toggle Switch */
-        .switch {
-            position: relative;
-            display: inline-block;
-            width: 36px;
-            height: 20px;
-        }
-        .switch input {
-            opacity: 0; width: 0; height: 0;
-        }
-        .slider-round {
-            position: absolute;
-            cursor: pointer;
-            inset: 0;
-            background-color: rgba(255,255,255,0.1);
-            transition: .4s;
-            border-radius: 20px;
-        }
-        .slider-round:before {
-            position: absolute;
-            content: "";
-            height: 14px; width: 14px;
-            left: 3px; bottom: 3px;
-            background-color: white;
-            transition: .4s;
-            border-radius: 50%;
-        }
-        input:checked + .slider-round {
-            background-color: var(--accent-primary);
-        }
-        input:checked + .slider-round:before {
-            transform: translateX(16px);
-        }
+      /* Toggle Switch */
+      .switch {
+        position: relative;
+        display: inline-block;
+        width: 36px;
+        height: 20px;
+      }
+      .switch input {
+        opacity: 0;
+        width: 0;
+        height: 0;
+      }
+      .slider-round {
+        position: absolute;
+        cursor: pointer;
+        inset: 0;
+        background-color: rgba(255, 255, 255, 0.1);
+        transition: 0.4s;
+        border-radius: 20px;
+      }
+      .slider-round:before {
+        position: absolute;
+        content: "";
+        height: 14px;
+        width: 14px;
+        left: 3px;
+        bottom: 3px;
+        background-color: white;
+        transition: 0.4s;
+        border-radius: 50%;
+      }
+      input:checked + .slider-round {
+        background-color: var(--accent-primary);
+      }
+      input:checked + .slider-round:before {
+        transform: translateX(16px);
+      }
     </style>
-</head>
+  </head>
 
-<body>
+  <body>
     <!-- Initial Loader -->
     <div id="loader">
-        <div class="spinner"></div>
-        <p style="margin-top: 16px; color: var(--text-dim); font-size: 0.9rem;">正在同步全景知识图谱...</p>
+      <div class="spinner"></div>
+      <p class="loader-text">正在同步全景知识图谱...</p>
+      <p style="margin-top: 8px; color: var(--text-dim); font-size: 0.8rem; opacity: 0.8">
+        初次使用？请在加载完成后点击操作指南了解基础操作
+      </p>
     </div>
 
     <!-- Graph Surface -->
@@ -602,48 +637,58 @@
 
     <!-- Search Box -->
     <div class="search-container">
-        <input type="text" id="node-search-input" placeholder="输入关键词 (支持拼音/ID)..." autocomplete="off"
-            oninput="handleSearchInput(this.value)" onblur="setTimeout(() => hideSearchResults(), 200)">
-        <div id="search-results" class="search-results"></div>
+      <input
+        type="text"
+        id="node-search-input"
+        placeholder="输入关键词 (支持拼音/ID)..."
+        autocomplete="off"
+        oninput="handleSearchInput(this.value)"
+        onblur="setTimeout(() => hideSearchResults(), 200)"
+      />
+      <div id="search-results" class="search-results"></div>
     </div>
 
     <!-- Dock Menu -->
     <div class="dock">
-        <div class="dock-btn" onclick="loadData()">
-            <div class="dock-icon">🔄</div>
-            <span>同步状态</span>
-        </div>
-        <div class="dock-btn" onclick="layout()">
-            <div class="dock-icon">📐</div>
-            <span>重排布局</span>
-        </div>
-        <div class="dock-btn" onclick="openPanel('content-browser-panel')">
-            <div class="dock-icon">📖</div>
-            <span>内容字典</span>
-        </div>
-        <div class="divider"></div>
-        <div class="dock-btn" onclick="openPanel('add-node-panel')">
-            <div class="dock-icon">➕</div>
-            <span>新增节点</span>
-        </div>
-        <div class="dock-btn" onclick="openPanel('source-manager-panel')">
-            <div class="dock-icon">📂</div>
-            <span>记忆溯源</span>
-        </div>
-        <div class="dock-btn" onclick="manualSave()">
-            <div class="dock-icon">💾</div>
-            <span>持久化</span>
-        </div>
-        <div class="divider"></div>
-        <div class="dock-btn" onclick="openPanel('view-settings-panel')">
-            <div class="dock-icon">⚙️</div>
-            <span>视图配置</span>
-        </div>
-        <div class="divider"></div>
-        <div class="dock-btn" onclick="openPanel('help-panel')">
-            <div class="dock-icon">❓</div>
-            <span>操作指南</span>
-        </div>
+      <div class="dock-btn" onclick="loadData()">
+        <div class="dock-icon">🔄</div>
+        <span>同步状态</span>
+      </div>
+      <div class="dock-btn" onclick="layout()">
+        <div class="dock-icon">📐</div>
+        <span>重排布局</span>
+      </div>
+      <div class="dock-btn" onclick="toggleSimulation()">
+        <div class="dock-icon" id="sim-btn-icon">⏸️</div>
+        <span id="sim-btn-text">暂停模拟</span>
+      </div>
+      <div class="dock-btn" onclick="openPanel('content-browser-panel')">
+        <div class="dock-icon">📖</div>
+        <span>内容字典</span>
+      </div>
+      <div class="divider"></div>
+      <div class="dock-btn" onclick="openPanel('add-node-panel')">
+        <div class="dock-icon">➕</div>
+        <span>新增节点</span>
+      </div>
+      <div class="dock-btn" onclick="openPanel('source-manager-panel')">
+        <div class="dock-icon">📂</div>
+        <span>记忆溯源</span>
+      </div>
+      <div class="dock-btn" onclick="manualSave()">
+        <div class="dock-icon">💾</div>
+        <span>持久化</span>
+      </div>
+      <div class="divider"></div>
+      <div class="dock-btn" onclick="openPanel('view-settings-panel')">
+        <div class="dock-icon">⚙️</div>
+        <span>视图配置</span>
+      </div>
+      <div class="divider"></div>
+      <div class="dock-btn" onclick="openPanel('help-panel')">
+        <div class="dock-icon">❓</div>
+        <span>操作指南</span>
+      </div>
     </div>
 
     <!-- Data Suggestions -->
@@ -651,890 +696,1448 @@
 
     <!-- Generic Side Panel Wrapper -->
     <div id="side-panel" class="side-panel">
-        <div class="panel-header">
-            <h3 id="panel-title">属性信息</h3>
-            <div class="close-btn" onclick="closePanel()">✕</div>
-        </div>
-        <div class="panel-content" id="panel-body">
-            <!-- Content will be injected here -->
-        </div>
+      <div class="panel-header">
+        <h3 id="panel-title">属性信息</h3>
+        <div class="close-btn" onclick="closePanel()">✕</div>
+      </div>
+      <div class="panel-content" id="panel-body">
+        <!-- Content will be injected here -->
+      </div>
     </div>
 
     <!-- Dynamic Containers (Templates for injection) -->
-    <div id="templates" style="display: none;">
-        <!-- Node Panel -->
-        <div id="node-editor-tpl">
-            <div style="text-align: center; margin-bottom: 24px;">
-                <div style="font-size: 0.8rem; color: var(--text-dim);">当前选中实体</div>
-                <div style="font-size: 1.4rem; font-weight: 600; color: var(--accent-primary);" id="node-id-display">
-                </div>
-            </div>
-
-            <div class="form-group">
-                <label>修改实标</label>
-                <input type="text" id="rename-input" placeholder="请输入新名称">
-            </div>
-
-            <div style="display: flex; gap: 8px; margin-bottom: 24px;">
-                <button class="btn btn-primary btn-full" onclick="renameNode()">重命名</button>
-                <button class="btn btn-danger" onclick="deleteNode()" title="彻底删除">🗑️</button>
-            </div>
-
-            <div style="border-top: 1px solid var(--glass-border); padding-top: 20px;">
-                <label style="font-size: 0.8rem; color: var(--text-dim);">快速添加关联</label>
-                <div style="background: rgba(255,255,255,0.03); padding: 12px; border-radius: 12px; margin-top: 8px;">
-                    <input type="text" id="quick-target" placeholder="目标实体" list="node-list-suggestions"
-                        style="margin-bottom: 8px; width: 100%; padding: 8px; background: rgba(0,0,0,0.2); border: 1px solid var(--glass-border); border-radius: 6px; color: white;">
-                    <input type="text" id="quick-predicate" placeholder="描述关系 (如: 居住于)"
-                        style="margin-bottom: 12px; width: 100%; padding: 8px; background: rgba(0,0,0,0.2); border: 1px solid var(--glass-border); border-radius: 6px; color: white;">
-                    <button class="btn btn-primary btn-full" onclick="submitQuickRelation()">确认建立</button>
-                </div>
-            </div>
-
-            <div id="relations-list-root" style="margin-top: 24px;"></div>
-            <div id="sources-list-root" style="margin-top: 24px;"></div>
+    <div id="templates" style="display: none">
+      <!-- Node Panel -->
+      <div id="node-editor-tpl">
+        <div style="text-align: center; margin-bottom: 24px">
+          <div style="font-size: 0.8rem; color: var(--text-dim)">
+            当前选中实体
+          </div>
+          <div
+            style="
+              font-size: 1.4rem;
+              font-weight: 600;
+              color: var(--accent-primary);
+            "
+            id="node-id-display"
+          ></div>
         </div>
 
-        <!-- Edge Panel -->
-        <div id="edge-editor-tpl">
-            <div style="text-align: center; margin-bottom: 24px;">
-                <div style="font-size: 0.8rem; color: var(--text-dim);">关系详情</div>
-                <div style="font-size: 1.1rem; color: var(--text-main);" id="edge-title-display"></div>
-            </div>
-            <div class="form-group">
-                <label>连接强度 (0.1 - 5.0): <span id="weight-val-display" style="float: right;">1.0</span></label>
-                <input type="range" id="weight-slider" min="0.1" max="5" step="0.1" value="1.0"
-                    oninput="document.getElementById('weight-val-display').innerText=this.value">
-            </div>
-            <button class="btn btn-primary btn-full" onclick="saveEdge()" style="margin-bottom: 8px;">同步权重</button>
-            <button class="btn btn-danger btn-full" onclick="deleteEdge()">切断此连接</button>
-
-            <div id="edge-sources-list-root" style="margin-top: 24px;"></div>
+        <div class="form-group">
+          <label>修改实标</label>
+          <input type="text" id="rename-input" placeholder="请输入新名称" />
         </div>
 
-        <!-- Add Node Panel -->
-        <div id="add-node-tpl">
-            <div class="form-group">
-                <label>实体名称</label>
-                <input type="text" id="new-node-name" placeholder="请输入新实体名称">
-            </div>
-            <button class="btn btn-primary btn-full" onclick="addNode()">创建并同步</button>
+        <div style="display: flex; gap: 8px; margin-bottom: 24px">
+          <button class="btn btn-primary btn-full" onclick="renameNode()">
+            重命名
+          </button>
+          <button
+            class="btn btn-danger"
+            onclick="deleteNode()"
+            title="彻底删除"
+          >
+            🗑️
+          </button>
         </div>
 
-        <!-- Add Edge Panel -->
-        <div id="add-edge-tpl">
-            <div class="form-group">
-                <label>源实体</label>
-                <input type="text" id="edge-source" placeholder="起始点" list="node-list-suggestions">
-            </div>
-            <div class="form-group">
-                <label>目标实体</label>
-                <input type="text" id="edge-target" placeholder="指向点" list="node-list-suggestions">
-            </div>
-            <div class="form-group">
-                <label>谓词描述 (词向量感知)</label>
-                <input type="text" id="edge-predicate" placeholder="例如: 关联自, 属于, 喜欢">
-            </div>
-            <button class="btn btn-primary btn-full" onclick="addEdge()">建立逻辑映射</button>
+        <div
+          style="border-top: 1px solid var(--glass-border); padding-top: 20px"
+        >
+          <label style="font-size: 0.8rem; color: var(--text-dim)"
+            >快速添加关联</label
+          >
+          <div
+            style="
+              background: rgba(255, 255, 255, 0.03);
+              padding: 12px;
+              border-radius: 12px;
+              margin-top: 8px;
+            "
+          >
+            <input
+              type="text"
+              id="quick-target"
+              placeholder="目标实体"
+              list="node-list-suggestions"
+              style="
+                margin-bottom: 8px;
+                width: 100%;
+                padding: 8px;
+                background: rgba(0, 0, 0, 0.2);
+                border: 1px solid var(--glass-border);
+                border-radius: 6px;
+                color: white;
+              "
+            />
+            <input
+              type="text"
+              id="quick-predicate"
+              placeholder="描述关系 (如: 居住于)"
+              style="
+                margin-bottom: 12px;
+                width: 100%;
+                padding: 8px;
+                background: rgba(0, 0, 0, 0.2);
+                border: 1px solid var(--glass-border);
+                border-radius: 6px;
+                color: white;
+              "
+            />
+            <button
+              class="btn btn-primary btn-full"
+              onclick="submitQuickRelation()"
+            >
+              确认建立
+            </button>
+          </div>
         </div>
 
-        <!-- Source Manager Panel -->
-        <div id="source-manager-tpl">
-            <div class="switch-row">
-                <span style="font-size: 0.85rem;">自动保存 (Runtime)</span>
-                <label class="switch">
-                    <input type="checkbox" id="auto-save-toggle" onchange="toggleAutoSave(this.checked)">
-                    <span class="slider"></span>
-                </label>
-            </div>
-            <div style="margin-top: 10px; max-height: 400px; overflow-y: auto;" id="source-files-list">
-                <!-- Records -->
-            </div>
+        <div id="relations-list-root" style="margin-top: 24px"></div>
+        <div id="sources-list-root" style="margin-top: 24px"></div>
+      </div>
+
+      <!-- Edge Panel -->
+      <div id="edge-editor-tpl">
+        <div style="text-align: center; margin-bottom: 24px">
+          <div style="font-size: 0.8rem; color: var(--text-dim)">关系详情</div>
+          <div
+            style="font-size: 1.1rem; color: var(--text-main)"
+            id="edge-title-display"
+          ></div>
+        </div>
+        <div class="form-group">
+          <label
+            >连接强度 (0.1 - 5.0):
+            <span id="weight-val-display" style="float: right">1.0</span></label
+          >
+          <input
+            type="range"
+            id="weight-slider"
+            min="0.1"
+            max="5"
+            step="0.1"
+            value="1.0"
+            oninput="
+              document.getElementById('weight-val-display').innerText =
+                this.value
+            "
+          />
+        </div>
+        <button
+          class="btn btn-primary btn-full"
+          onclick="saveEdge()"
+          style="margin-bottom: 8px"
+        >
+          同步权重
+        </button>
+        <button class="btn btn-danger btn-full" onclick="deleteEdge()">
+          切断此连接
+        </button>
+
+        <div id="edge-sources-list-root" style="margin-top: 24px"></div>
+      </div>
+
+      <!-- Add Node Panel -->
+      <div id="add-node-tpl">
+        <div class="form-group">
+          <label>实体名称</label>
+          <input
+            type="text"
+            id="new-node-name"
+            placeholder="请输入新实体名称"
+          />
+        </div>
+        <button class="btn btn-primary btn-full" onclick="addNode()">
+          创建并同步
+        </button>
+      </div>
+
+      <!-- Add Edge Panel -->
+      <div id="add-edge-tpl">
+        <div class="form-group">
+          <label>源实体</label>
+          <input
+            type="text"
+            id="edge-source"
+            placeholder="起始点"
+            list="node-list-suggestions"
+          />
+        </div>
+        <div class="form-group">
+          <label>目标实体</label>
+          <input
+            type="text"
+            id="edge-target"
+            placeholder="指向点"
+            list="node-list-suggestions"
+          />
+        </div>
+        <div class="form-group">
+          <label>谓词描述 (词向量感知)</label>
+          <input
+            type="text"
+            id="edge-predicate"
+            placeholder="例如: 关联自, 属于, 喜欢"
+          />
+        </div>
+        <button class="btn btn-primary btn-full" onclick="addEdge()">
+          建立逻辑映射
+        </button>
+      </div>
+
+      <!-- Source Manager Panel -->
+      <div id="source-manager-tpl">
+        <div class="switch-row">
+          <span style="font-size: 0.85rem">自动保存 (Runtime)</span>
+          <label class="switch">
+            <input
+              type="checkbox"
+              id="auto-save-toggle"
+              onchange="toggleAutoSave(this.checked)"
+            />
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div
+          style="margin-top: 10px; max-height: 400px; overflow-y: auto"
+          id="source-files-list"
+        >
+          <!-- Records -->
+        </div>
+      </div>
+
+      <!-- Content Browser Panel -->
+      <div id="content-browser-tpl">
+        <div class="browser-tabs">
+          <div class="browser-tab active" onclick="switchBrowserTab('nodes')">
+            实体列表
+          </div>
+          <div class="browser-tab" onclick="switchBrowserTab('edges')">
+            关系列表
+          </div>
         </div>
 
-        <!-- Content Browser Panel -->
-        <div id="content-browser-tpl">
-            <div class="browser-tabs">
-                <div class="browser-tab active" onclick="switchBrowserTab('nodes')">实体列表</div>
-                <div class="browser-tab" onclick="switchBrowserTab('edges')">关系列表</div>
-            </div>
+        <input
+          type="text"
+          id="browser-filter"
+          placeholder="筛选列表..."
+          style="
+            width: 100%;
+            margin-bottom: 12px;
+            background: rgba(0, 0, 0, 0.2);
+            padding: 8px;
+            border: 1px solid var(--glass-border);
+            border-radius: 8px;
+            color: white;
+          "
+          oninput="renderBrowserContent()"
+        />
 
-            <input type="text" id="browser-filter" placeholder="筛选列表..."
-                style="width: 100%; margin-bottom: 12px; background: rgba(0,0,0,0.2); padding: 8px; border: 1px solid var(--glass-border); border-radius: 8px; color: white;"
-                oninput="renderBrowserContent()">
+        <div
+          id="browser-content-root"
+          style="
+            overflow-y: auto;
+            height: calc(100vh - 250px);
+            padding-right: 4px;
+          "
+        >
+          <!-- Content -->
+        </div>
+      </div>
 
-            <div id="browser-content-root" style="overflow-y: auto; height: calc(100vh - 250px); padding-right: 4px;">
-                <!-- Content -->
-            </div>
+      <!-- Help Panel -->
+      <div id="help-tpl">
+        <div class="help-section">
+          <div class="help-title"><span>🖱️</span> 基础交互</div>
+          <div class="help-item">
+            <span class="help-key">拖拽</span>
+            <span class="help-desc">移动图谱画布</span>
+          </div>
+          <div class="help-item">
+            <span class="help-key">中键/滚轮</span>
+            <span class="help-desc">缩放视角大小</span>
+          </div>
+          <div class="help-item">
+            <span class="help-key">点击</span>
+            <span class="help-desc">选中节点或连线查看详细属性及来源</span>
+          </div>
         </div>
 
-        <!-- Help Panel -->
-        <div id="help-tpl">
-            <div class="help-section">
-                <div class="help-title"><span>🖱️</span> 基础交互</div>
-                <div class="help-item">
-                    <span class="help-key">拖拽</span>
-                    <span class="help-desc">移动图谱画布</span>
-                </div>
-                <div class="help-item">
-                    <span class="help-key">中键/滚轮</span>
-                    <span class="help-desc">缩放视角大小</span>
-                </div>
-                <div class="help-item">
-                    <span class="help-key">点击</span>
-                    <span class="help-desc">选中节点或连线查看详细属性及来源</span>
-                </div>
-            </div>
-
-            <div class="help-section help-feature">
-                <div class="help-title"><span>🧠</span> 智能显著性视图</div>
-                <p class="help-desc" style="font-size: 0.8rem; margin: 0 0 10px 0;">系统现在基于<b>拓扑重要性 (PageRank)</b> 智能筛选显示内容，而非简单的数量过滤。</p>
-                <div class="help-item">
-                    <span class="help-key">密度滑块</span>
-                    <span class="help-desc">在“视图配置”中调节。向左聚焦核心骨干，向右展开全量细节。</span>
-                </div>
-                <div class="help-item">
-                     <span class="help-key">幽灵节点</span>
-                     <span class="help-desc">背景中半透明的节点是算法判定的次要关联。它们不会干扰视线，但提供了探索线索。</span>
-                </div>
-            </div>
-
-            <div class="help-section" style="margin-top: 24px;">
-                <div class="help-title"><span>🛠️</span> 功能导航</div>
-                <div class="help-item">
-                    <span class="help-key">⚙️ 视图配置</span>
-                    <span class="help-desc">统一管理主题、节能模式及信息密度设置。</span>
-                </div>
-                <div class="help-item">
-                    <span class="help-key">📂 记忆溯源</span>
-                    <span class="help-desc">按知识提取的源文件批次检视图谱，支持批量管理。</span>
-                </div>
-            </div>
-
-            <p style="text-align: center; color: var(--accent-secondary); font-size: 0.75rem; border-top: 1px solid var(--glass-border); padding-top: 16px;">A_Memorix Panorama View v1.2</p>
+        <div class="help-section help-feature">
+          <div class="help-title"><span>🧠</span> 智能显著性视图</div>
+          <p class="help-desc" style="font-size: 0.8rem; margin: 0 0 10px 0">
+            系统基于<b>PageRank拓扑重要性</b>智能筛选显示内容。
+          </p>
+          <div class="help-item">
+            <span class="help-key">密度滑块</span>
+            <span class="help-desc">向左聚焦核心骨干，向右展开全量细节。</span>
+          </div>
+          <div class="help-item">
+            <span class="help-key">幽灵节点</span>
+            <span class="help-desc">半透明背景节点代表次要关联，提供探索线索。</span>
+          </div>
         </div>
 
-        <!-- View Settings Panel -->
-        <div id="view-settings-tpl">
-            <div class="group-header">视觉外观</div>
-            <div class="group-content">
-                <button class="btn btn-ghost" onclick="toggleTheme()" style="justify-content: flex-start;">
-                    <span>🎨 切换配色主题</span>
-                </button>
-                <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px; background: rgba(255,255,255,0.03); border-radius: 8px;">
-                    <span style="font-size: 0.85rem; color: var(--text-dim);">⚡ 节能模式</span>
-                    <label class="switch">
-                        <input type="checkbox" id="settings-perf-mode" onchange="toggleLowPerfMode()">
-                        <span class="slider-round"></span>
-                    </label>
-                </div>
-            </div>
+        <div class="help-section" style="margin-top: 24px">
+          <div class="help-title"><span>🛠️</span> 全功能导航</div>
+          
+          <div style="font-size:0.85rem; font-weight:600; color:var(--text-main); margin-bottom:8px;">底部 Dock 栏</div>
+          <div class="help-item">
+            <span class="help-key">🔄 同步状态</span>
+            <span class="help-desc">手动刷新图谱，获取最新数据（含加载动画）。</span>
+          </div>
+          <div class="help-item">
+            <span class="help-key">📐 重排布局</span>
+            <span class="help-desc">触发物理引擎重新计算节点位置。</span>
+          </div>
+          <div class="help-item">
+            <span class="help-key">⏯️ 模拟控制</span>
+            <span class="help-desc">暂停/继续物理模拟，大型图谱推荐暂停以节省性能。</span>
+          </div>
+          <div class="help-item">
+            <span class="help-key">📖 内容字典</span>
+            <span class="help-desc">列表化查看所有实体和关系，支持关键词检索。</span>
+          </div>
+          
+          <div class="divider" style="height:1px; width:100%; margin:12px 0;"></div>
+          
+          <div style="font-size:0.85rem; font-weight:600; color:var(--text-main); margin-bottom:8px;">编辑与管理</div>
+          <div class="help-item">
+            <span class="help-key">➕/🔗 新增</span>
+            <span class="help-desc">手动创建知识实体或建立两点间的语义关联。</span>
+          </div>
+          <div class="help-item">
+            <span class="help-key">📂 记忆溯源</span>
+            <span class="help-desc">管理导入的源文件批次，支持批量聚焦或删除记忆。</span>
+          </div>
+          <div class="help-item">
+            <span class="help-key">💾 持久化</span>
+            <span class="help-desc">强制将内存数据写入磁盘（通常系统会自动保存）。</span>
+          </div>
+          
+           <div class="divider" style="height:1px; width:100%; margin:12px 0;"></div>
 
-            <div class="group-header">信息显度控制</div>
-            <div class="group-content" style="padding: 10px; background: rgba(255,255,255,0.03); border-radius: 8px;">
-                <div style="display: flex; justify-content: space-between; margin-bottom: 15px;">
-                    <span style="font-size: 0.85rem; color: var(--text-dim);">详细模式</span>
-                    <label class="switch">
-                        <input type="checkbox" id="settings-detailed-mode" onchange="toggleDetailedMode()">
-                        <span class="slider-round"></span>
-                    </label>
-                </div>
-                
-                <div id="density-control-area" style="opacity: 0.5; pointer-events: none;">
-                    <label style="font-size: 0.75rem; color: var(--accent-primary); display: block; margin-bottom: 8px;">显著性密度: <span id="density-val">50</span>%</label>
-                    <input type="range" id="density-slider" min="0" max="1" step="0.05" value="0.5" style="width: 100%;" 
-                           oninput="updateDensity(this.value)">
-                    <div style="display: flex; justify-content: space-between; font-size: 0.65rem; color: var(--text-dim); margin-top: 5px;">
-                        <span>核心骨干</span>
-                        <span>平衡</span>
-                        <span>全量末梢</span>
-                    </div>
-                </div>
-            </div>
-
-            <div class="group-header">快捷操作</div>
-            <div class="group-content">
-                 <button class="btn btn-ghost" onclick="openPanel('add-node-panel')" style="justify-content: flex-start;">
-                    <span>➕ 新增知识实体</span>
-                </button>
-                <button class="btn btn-ghost" onclick="openPanel('add-edge-panel')" style="justify-content: flex-start;">
-                    <span>🔗 建立语义关系</span>
-                </button>
-                <button class="btn btn-ghost" onclick="manualSave()" style="justify-content: flex-start;">
-                    <span>💾 执行数据持久化</span>
-                </button>
-            </div>
+          <div style="font-size:0.85rem; font-weight:600; color:var(--text-main); margin-bottom:8px;">⚙️ 视图配置</div>
+          <div class="help-item">
+            <span class="help-key">详细模式</span>
+            <span class="help-desc">开启全量显示（忽略密度筛选），适合小规模图谱。</span>
+          </div>
+          <div class="help-item">
+            <span class="help-key">节能模式</span>
+            <span class="help-desc">简化渲染（无阴影、直线连接），提升大图流畅度。</span>
+          </div>
         </div>
+
+        <p style="text-align: center; color: var(--accent-secondary); font-size: 0.75rem; border-top: 1px solid var(--glass-border); padding-top: 16px;">
+          A_Memorix Panorama View v1.3
+        </p>
+      </div>
+
+      <!-- View Settings Panel -->
+      <div id="view-settings-tpl">
+        <div class="group-header">视觉外观</div>
+        <div class="group-content">
+          <button
+            class="btn btn-ghost"
+            onclick="toggleTheme()"
+            style="justify-content: flex-start"
+          >
+            <span>🎨 切换配色主题</span>
+          </button>
+          <div
+            style="
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              padding: 10px;
+              background: rgba(255, 255, 255, 0.03);
+              border-radius: 8px;
+            "
+          >
+            <span style="font-size: 0.85rem; color: var(--text-dim)"
+              >⚡ 节能模式</span
+            >
+            <label class="switch">
+              <input
+                type="checkbox"
+                id="settings-perf-mode"
+                onchange="toggleLowPerfMode()"
+              />
+              <span class="slider-round"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="group-header">信息显度控制</div>
+        <div
+          class="group-content"
+          style="
+            padding: 10px;
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 8px;
+          "
+        >
+          <div
+            style="
+              display: flex;
+              justify-content: space-between;
+              margin-bottom: 15px;
+            "
+          >
+            <span style="font-size: 0.85rem; color: var(--text-dim)"
+              >详细模式</span
+            >
+            <label class="switch">
+              <input
+                type="checkbox"
+                id="settings-detailed-mode"
+                onchange="toggleDetailedMode()"
+              />
+              <span class="slider-round"></span>
+            </label>
+          </div>
+
+          <div
+            id="density-control-area"
+            style="opacity: 0.5; pointer-events: none"
+          >
+            <label
+              style="
+                font-size: 0.75rem;
+                color: var(--accent-primary);
+                display: block;
+                margin-bottom: 8px;
+              "
+              >显著性密度: <span id="density-val">50</span>%</label
+            >
+            <input
+              type="range"
+              id="density-slider"
+              min="0"
+              max="1"
+              step="0.05"
+              value="0.5"
+              style="width: 100%"
+              oninput="updateDensity(this.value)"
+            />
+            <div
+              style="
+                display: flex;
+                justify-content: space-between;
+                font-size: 0.65rem;
+                color: var(--text-dim);
+                margin-top: 5px;
+              "
+            >
+              <span>核心骨干</span>
+              <span>平衡</span>
+              <span>全量末梢</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="group-header">快捷操作</div>
+        <div class="group-content">
+          <button
+            class="btn btn-ghost"
+            onclick="openPanel('add-node-panel')"
+            style="justify-content: flex-start"
+          >
+            <span>➕ 新增知识实体</span>
+          </button>
+          <button
+            class="btn btn-ghost"
+            onclick="openPanel('add-edge-panel')"
+            style="justify-content: flex-start"
+          >
+            <span>🔗 建立语义关系</span>
+          </button>
+          <button
+            class="btn btn-ghost"
+            onclick="manualSave()"
+            style="justify-content: flex-start"
+          >
+            <span>💾 执行数据持久化</span>
+          </button>
+        </div>
+      </div>
     </div>
 
     <div id="toast">操作成功</div>
 
     <script>
-        let network = null;
-        let nodes = new vis.DataSet([]);
-        let edges = new vis.DataSet([]);
-        let currentSelection = null;
-        let detailedMode = false; // By default, exclude leaves
-        let currentSource = null; // Current batch filter
-        let isHighlighting = false; // Focus fade state
-        let isLowPerfMode = false; // Low Performance Mode
-        let infoDensity = 0.5; // Shared state for saliency filtering
+      let network = null;
+      let nodes = new vis.DataSet([]);
+      let edges = new vis.DataSet([]);
+      let currentSelection = null;
+      let detailedMode = false; // By default, exclude leaves
+      let currentSource = null; // Current batch filter
+      let isHighlighting = false; // Focus fade state
+      let isLowPerfMode = false; // Low Performance Mode
+      let infoDensity = 0.5; // Shared state for saliency filtering
+      let isSimulationRunning = true; // Physics simulation state
+      let _freezeTimer = null;
 
-        // Theme Config
-        const THEMES = ['dark', 'light', 'neon'];
-        let currentThemeIdx = 0;
-        const THEME_CONFIG = {
-            dark: {
-                background: '#0f172a',
-                node: { background: '#38bdf8', border: '#0ea5e9', font: '#f1f5f9' },
-                edge: { color: 'rgba(148, 163, 184, 0.4)', highlight: '#38bdf8' }
-            },
-            light: {
-                background: '#f8fafc',
-                node: { background: '#0284c7', border: '#0369a1', font: '#1e293b' },
-                edge: { color: 'rgba(100, 116, 139, 0.4)', highlight: '#0284c7' }
-            },
-            neon: {
-                background: '#13001f',
-                node: { background: '#d946ef', border: '#c026d3', font: '#e9d5ff' },
-                edge: { color: 'rgba(217, 70, 239, 0.4)', highlight: '#d946ef' }
-            }
-        };
-
-        function toggleTheme() {
-            currentThemeIdx = (currentThemeIdx + 1) % THEMES.length;
-            const theme = THEMES[currentThemeIdx];
-            document.documentElement.setAttribute('data-theme', theme);
-
-            // Re-apply options if network exists
-            if (network) applyThemeToNetwork(theme);
-            showToast(`已切换主题: ${theme}`);
+      // Loading Control
+      function showLoader(text = "正在同步全景知识图谱...", isSync = false) {
+        const loader = document.getElementById("loader");
+        const textEl = loader.querySelector(".loader-text");
+        if (textEl) textEl.innerText = text;
+        
+        if (isSync) {
+          loader.classList.add("sync-mode");
+        } else {
+          loader.classList.remove("sync-mode");
         }
+        
+        loader.style.display = "flex";
+        // Force reflow
+        loader.offsetHeight;
+        loader.style.opacity = "1";
+      }
 
-        function toggleLowPerfMode() {
-            isLowPerfMode = !isLowPerfMode;
-            
-            if (isLowPerfMode) {
-                if (network) {
-                    network.setOptions({
-                        nodes: { shadow: { enabled: false } },
-                        edges: { smooth: { enabled: false } } // Straight lines
-                    });
-                }
-                showToast("⚡ 节能模式已开启 (无阴影/直线)");
-            } else {
-                // Restore defaults
-                if (network) {
-                    network.setOptions({
-                        nodes: { shadow: { enabled: true, color: 'rgba(0,0,0,0.5)', size: 10 } },
-                        edges: { smooth: { type: 'continuous', roundness: 0.5, enabled: true } }
-                    });
-                }
-                showToast("全特效模式已恢复");
-            }
-            updateSettingsUI();
-        }
+      function hideLoader() {
+        const loader = document.getElementById("loader");
+        loader.style.opacity = "0";
+        setTimeout(() => {
+          loader.style.display = "none";
+        }, 500);
+      }
 
-        function applyThemeToNetwork(theme) {
-            const cfg = THEME_CONFIG[theme];
-            document.body.style.backgroundColor = cfg.background; // ensure body matches
+      // Theme Config
+      const THEMES = ["dark", "light", "neon"];
+      let currentThemeIdx = 0;
+      const THEME_CONFIG = {
+        dark: {
+          background: "#0f172a",
+          node: { background: "#38bdf8", border: "#0ea5e9", font: "#f1f5f9" },
+          edge: { color: "rgba(148, 163, 184, 0.4)", highlight: "#38bdf8" },
+        },
+        light: {
+          background: "#f8fafc",
+          node: { background: "#0284c7", border: "#0369a1", font: "#1e293b" },
+          edge: { color: "rgba(100, 116, 139, 0.4)", highlight: "#0284c7" },
+        },
+        neon: {
+          background: "#13001f",
+          node: { background: "#d946ef", border: "#c026d3", font: "#e9d5ff" },
+          edge: { color: "rgba(217, 70, 239, 0.4)", highlight: "#d946ef" },
+        },
+      };
 
+      function toggleTheme() {
+        currentThemeIdx = (currentThemeIdx + 1) % THEMES.length;
+        const theme = THEMES[currentThemeIdx];
+        document.documentElement.setAttribute("data-theme", theme);
+
+        // Re-apply options if network exists
+        if (network) applyThemeToNetwork(theme);
+        showToast(`已切换主题: ${theme}`);
+      }
+
+      function toggleLowPerfMode() {
+        setLowPerfMode(!isLowPerfMode);
+      }
+
+      function setLowPerfMode(enable) {
+        isLowPerfMode = enable;
+
+        if (isLowPerfMode) {
+          if (network) {
             network.setOptions({
-                nodes: {
-                    font: { color: cfg.node.font },
-                    color: {
-                        background: cfg.node.background,
-                        border: cfg.node.border,
-                        highlight: { background: cfg.node.background, border: cfg.node.border }
-                    }
-                },
-                edges: {
-                    color: { color: cfg.edge.color, highlight: cfg.edge.highlight },
-                    font: { color: cfg.edge.color } // Also update edge label default
-                }
+              nodes: { shadow: { enabled: false } },
+              edges: { smooth: { enabled: false } }, // Straight lines
             });
-
-            // If we are not highlighting, we should force update dataset colors to new defaults
-            if (!isHighlighting) {
-                const allNodes = nodes.get();
-                const updates = allNodes.map(n => ({
-                    id: n.id,
-                    color: { background: cfg.node.background, border: cfg.node.border },
-                    font: { color: cfg.node.font }
-                }));
-                nodes.update(updates);
-
-                const allEdges = edges.get();
-                const edgeUpdates = allEdges.map(e => ({
-                    id: e.id,
-                    color: { color: cfg.edge.color, highlight: cfg.edge.highlight },
-                    font: { color: cfg.edge.color } 
-                }));
-                edges.update(edgeUpdates);
-            } else {
-                // If highlighting, just reset to apply new base colors
-                resetHighlight();
-            }
+          }
+          // Don't show toast here if called programmatically, handle in caller or use optional param
+        } else {
+          // Restore defaults
+          if (network) {
+            network.setOptions({
+              nodes: {
+                shadow: { enabled: true, color: "rgba(0,0,0,0.5)", size: 10 },
+              },
+              edges: {
+                smooth: { type: "continuous", roundness: 0.5, enabled: true },
+              },
+            });
+          }
         }
+        updateSettingsUI();
+      }
 
-        // Init
-        document.addEventListener('DOMContentLoaded', () => {
-            initNetwork();
-            loadData();
-            loadConfig();
+      function applyThemeToNetwork(theme) {
+        const cfg = THEME_CONFIG[theme];
+        document.body.style.backgroundColor = cfg.background; // ensure body matches
+
+        network.setOptions({
+          nodes: {
+            font: { color: cfg.node.font },
+            color: {
+              background: cfg.node.background,
+              border: cfg.node.border,
+              highlight: {
+                background: cfg.node.background,
+                border: cfg.node.border,
+              },
+            },
+          },
+          edges: {
+            color: { color: cfg.edge.color, highlight: cfg.edge.highlight },
+            font: { color: cfg.edge.color }, // Also update edge label default
+          },
         });
 
-        function initNetwork() {
-            const container = document.getElementById('container');
-            const data = { nodes: nodes, edges: edges };
+        // If we are not highlighting, we should force update dataset colors to new defaults
+        if (!isHighlighting) {
+          const allNodes = nodes.get();
+          const updates = allNodes.map((n) => ({
+            id: n.id,
+            color: { background: cfg.node.background, border: cfg.node.border },
+            font: { color: cfg.node.font },
+          }));
+          nodes.update(updates);
 
-            // Initial Theme: Dark
-            const cfg = THEME_CONFIG['dark'];
+          const allEdges = edges.get();
+          const edgeUpdates = allEdges.map((e) => ({
+            id: e.id,
+            color: { color: cfg.edge.color, highlight: cfg.edge.highlight },
+            font: { color: cfg.edge.color },
+          }));
+          edges.update(edgeUpdates);
+        } else {
+          // If highlighting, just reset to apply new base colors
+          resetHighlight();
+        }
+      }
 
-            const options = {
-                nodes: {
-                    shape: 'dot',
-                    scaling: { min: 10, max: 40, label: { enabled: true, min: 14, max: 24 } },
-                    font: { color: cfg.node.font, face: 'Outfit', strokeWidth: 0 },
-                    color: {
-                        background: cfg.node.background,
-                        border: cfg.node.border,
-                        highlight: { background: cfg.node.background, border: cfg.node.border }
-                    },
-                    shadow: { enabled: true, color: 'rgba(0,0,0,0.5)', size: 10 }
-                },
-                edges: {
-                    arrows: { to: { enabled: true, scaleFactor: 0.6 } },
-                    smooth: { type: 'continuous', roundness: 0.5 },
-                    color: { color: cfg.edge.color, highlight: cfg.edge.highlight },
-                    font: { size: 11, color: '#94a3b8', strokeWidth: 0, align: 'top', background: 'transparent' },
-                    width: 1
-                },
-                physics: {
-                    solver: 'forceAtlas2Based',
-                    forceAtlas2Based: {
-                        gravitationalConstant: -120,
-                        centralGravity: 0.01,
-                        springLength: 120,
-                        springConstant: 0.08,
-                        damping: 0.4,
-                        avoidOverlap: 1
-                    },
-                    stabilization: { iterations: 200 }
-                },
-                interaction: {
-                    hover: true,
-                    multiselect: false,
-                    tooltipDelay: 300
-                }
+      // Init
+      document.addEventListener("DOMContentLoaded", () => {
+        initNetwork();
+        loadData();
+        loadConfig();
+      });
+
+      function initNetwork() {
+        const container = document.getElementById("container");
+        const data = { nodes: nodes, edges: edges };
+
+        // Initial Theme: Dark
+        const cfg = THEME_CONFIG["dark"];
+
+        const options = {
+          nodes: {
+            shape: "dot",
+            scaling: {
+              min: 10,
+              max: 40,
+              label: { enabled: true, min: 14, max: 24 },
+            },
+            font: { color: cfg.node.font, face: "Outfit", strokeWidth: 0 },
+            color: {
+              background: cfg.node.background,
+              border: cfg.node.border,
+              highlight: {
+                background: cfg.node.background,
+                border: cfg.node.border,
+              },
+            },
+            shadow: { enabled: true, color: "rgba(0,0,0,0.5)", size: 10 },
+          },
+          edges: {
+            arrows: { to: { enabled: true, scaleFactor: 0.6 } },
+            smooth: { type: "continuous", roundness: 0.5 },
+            color: { color: cfg.edge.color, highlight: cfg.edge.highlight },
+            font: {
+              size: 11,
+              color: "#94a3b8",
+              strokeWidth: 0,
+              align: "top",
+              background: "transparent",
+            },
+            width: 1,
+          },
+          physics: {
+            solver: "forceAtlas2Based",
+            forceAtlas2Based: {
+              gravitationalConstant: -120,
+              centralGravity: 0.01,
+              springLength: 120,
+              springConstant: 0.08,
+              damping: 0.4,
+              avoidOverlap: 1,
+            },
+            stabilization: { iterations: 200 },
+          },
+          interaction: {
+            hover: true,
+            multiselect: false,
+            tooltipDelay: 300,
+          },
+          layout: {
+            improvedLayout: false, // Performance: Disable default layout algo, use random scatter
+            randomSeed: 42 // Deterministic fallback
+          }
+        };
+
+        network = new vis.Network(container, data, options);
+
+        network.on("click", (params) => {
+          if (params.nodes.length > 0) {
+            onNodeClick(params.nodes[0]);
+          } else if (params.edges.length > 0) {
+            onEdgeClick(params.edges[0]);
+          } else {
+            resetHighlight();
+            closePanel();
+          }
+        });
+
+        // Removed premature hideLoader. 
+        // Loader control is now fully managed by loadData() to ensure it waits for API response.
+
+        // LOD Events
+        network.on("hoverNode", function (params) {
+          if (isHighlighting || isZoomedIn()) return; // In focus mode or zoomed in, labels are fixed
+          const ids = [params.node, ...network.getConnectedNodes(params.node)];
+          const updates = [];
+          ids.forEach((id) => {
+            const node = nodes.get(id);
+            // Show label if it's currently hidden
+            if (node && (!node.label || !node.label.trim())) {
+              updates.push({ id: id, label: node.hiddenLabel });
+            }
+          });
+          if (updates.length > 0) nodes.update(updates);
+        });
+
+        network.on("blurNode", function (params) {
+          if (isHighlighting || isZoomedIn()) return;
+          const ids = [params.node, ...network.getConnectedNodes(params.node)];
+          const updates = [];
+          ids.forEach((id) => {
+            const node = nodes.get(id);
+            // Hide label if it's not a Hub
+            if (node && !node.isHub && node.label === node.hiddenLabel) {
+              updates.push({ id: id, label: " " });
+            }
+          });
+          if (updates.length > 0) nodes.update(updates);
+        });
+
+        // Semantic Zoom (LOD) & Panning Update
+        let viewUpdateThrottle = null;
+        const throttledUpdate = () => {
+          if (viewUpdateThrottle) return;
+          viewUpdateThrottle = setTimeout(() => {
+            updateLabelsByZoom();
+            viewUpdateThrottle = null;
+          }, 100);
+        };
+
+        network.on("zoom", throttledUpdate);
+        network.on("drag", throttledUpdate);
+        network.on("dragEnd", throttledUpdate);
+
+        // Reliable Reset on Deselect
+        network.on("deselectNode", () => {
+          resetHighlight();
+          closePanel();
+        });
+        network.on("deselectEdge", () => {
+          resetHighlight();
+          closePanel();
+        });
+      }
+
+      function isZoomedIn() {
+        return network && network.getScale() > 0.8;
+      }
+
+      function updateLabelsByZoom() {
+        if (isHighlighting) return; // Don't interfere with focus mode
+
+        const scale = network.getScale();
+        const zoomedIn = scale > 0.8;
+        const allNodes = nodes.get();
+        const updates = [];
+
+        // Optimization: Only check visibility if zoomed in enough to care
+        const viewRect = zoomedIn
+          ? network.canvas.frame.getBoundingClientRect()
+          : null;
+
+        allNodes.forEach((n) => {
+          let shouldShow = n.isHub;
+
+          if (zoomedIn) {
+            // Check if node is in viewport
+            const pos = network.getPositions([n.id])[n.id];
+            if (pos) {
+              const domPos = network.canvasToDOM(pos);
+              if (
+                domPos.x >= 0 &&
+                domPos.x <= viewRect.width &&
+                domPos.y >= 0 &&
+                domPos.y <= viewRect.height
+              ) {
+                shouldShow = true;
+              }
+            }
+          }
+
+          const currentLabel = n.label;
+          const targetLabel = shouldShow ? n.hiddenLabel : " ";
+
+          if (currentLabel !== targetLabel) {
+            updates.push({ id: n.id, label: targetLabel });
+          }
+        });
+
+        if (updates.length > 0) nodes.update(updates);
+      }
+
+      async function loadData() {
+        isHighlighting = false; // Reset highlight state
+        showLoader("正在同步图谱...", true);
+        try {
+          let url = `/api/graph?exclude_leaf=${!detailedMode}&density=${infoDensity}`;
+          if (currentSource) {
+            url += `&source=${encodeURIComponent(currentSource)}`;
+          }
+          const res = await axios.get(url);
+          // Data fetched, now processing/rendering
+          showLoader("正在解析拓扑结构...", true);
+          const data = res.data;
+
+          // --- Adaptive Performance Logic ---
+          const nodeCount = data.nodes.length;
+          const edgeCount = data.edges.length;
+          // Heuristic complexity: Edges cost less than nodes but matter for physics
+          const complexity = nodeCount + edgeCount * 0.2;
+
+          applyAdaptiveSettings(complexity, nodeCount);
+
+          // 1. Calculate degrees for LOD
+          const degrees = {};
+          data.edges.forEach((e) => {
+            degrees[e.from] = (degrees[e.from] || 0) + 1;
+            degrees[e.to] = (degrees[e.to] || 0) + 1;
+          });
+
+          // 2. Process Nodes with LOD logic
+          let processedNodeIndex = 0; // For spiral layout
+          const processedNodes = data.nodes.map((n) => {
+            const deg = degrees[n.id] || 0;
+            const isHub = deg > 5;
+            const realLabel = n.label || n.id;
+
+            // Apply ghosting style if flagged
+            const opacity = n.is_ghost ? 0.2 : 1.0;
+
+            // Use theme font color as base
+            const themeCfg = THEME_CONFIG[THEMES[currentThemeIdx]];
+            const fontColor = n.is_ghost
+              ? hexToRgba(themeCfg.node.font, 0.4)
+              : themeCfg.node.font;
+
+            // Check if node exists to preserve position
+            const exists = nodes.get(n.id);
+            const baseNode = {
+              ...n,
+              value: 1,
+              isHub: isHub,
+              hiddenLabel: realLabel,
+              label: isHub ? realLabel : " ",
+              opacity: opacity,
+              font: { color: fontColor },
             };
 
-            network = new vis.Network(container, data, options);
-
-            network.on("click", (params) => {
-                if (params.nodes.length > 0) {
-                    onNodeClick(params.nodes[0]);
-                } else if (params.edges.length > 0) {
-                    onEdgeClick(params.edges[0]);
-                } else {
-                    resetHighlight();
-                    closePanel();
-                }
-            });
-
-            // 使用 afterDrawing 确保画面渲染后隐藏 loading
-            network.once("afterDrawing", () => {
-                document.getElementById('loader').style.opacity = '0';
-                setTimeout(() => document.getElementById('loader').style.display = 'none', 500);
-            });
-
-            // LOD Events
-            network.on("hoverNode", function (params) {
-                if (isHighlighting || isZoomedIn()) return; // In focus mode or zoomed in, labels are fixed
-                const ids = [params.node, ...network.getConnectedNodes(params.node)];
-                const updates = [];
-                ids.forEach(id => {
-                    const node = nodes.get(id);
-                    // Show label if it's currently hidden
-                    if (node && (!node.label || !node.label.trim())) {
-                        updates.push({ id: id, label: node.hiddenLabel });
-                    }
-                });
-                if (updates.length > 0) nodes.update(updates);
-            });
-
-            network.on("blurNode", function (params) {
-                if (isHighlighting || isZoomedIn()) return;
-                const ids = [params.node, ...network.getConnectedNodes(params.node)];
-                const updates = [];
-                ids.forEach(id => {
-                    const node = nodes.get(id);
-                    // Hide label if it's not a Hub
-                    if (node && !node.isHub && node.label === node.hiddenLabel) {
-                        updates.push({ id: id, label: " " });
-                    }
-                });
-                if (updates.length > 0) nodes.update(updates);
-            });
-
-            // Semantic Zoom (LOD) & Panning Update
-            let viewUpdateThrottle = null;
-            const throttledUpdate = () => {
-                if (viewUpdateThrottle) return;
-                viewUpdateThrottle = setTimeout(() => {
-                    updateLabelsByZoom();
-                    viewUpdateThrottle = null;
-                }, 100);
-            };
-
-            network.on("zoom", throttledUpdate);
-            network.on("drag", throttledUpdate);
-            network.on("dragEnd", throttledUpdate);
-
-            // Reliable Reset on Deselect
-            network.on("deselectNode", () => {
-                resetHighlight();
-                closePanel();
-            });
-            network.on("deselectEdge", () => {
-                resetHighlight();
-                closePanel();
-            });
-        }
-
-        function isZoomedIn() {
-            return network && network.getScale() > 0.8;
-        }
-
-        function updateLabelsByZoom() {
-            if (isHighlighting) return; // Don't interfere with focus mode
-            
-            const scale = network.getScale();
-            const zoomedIn = scale > 0.8;
-            const allNodes = nodes.get();
-            const updates = [];
-            
-            // Optimization: Only check visibility if zoomed in enough to care
-            const viewRect = zoomedIn ? network.canvas.frame.getBoundingClientRect() : null;
-
-            allNodes.forEach(n => {
-                let shouldShow = n.isHub;
-                
-                if (zoomedIn) {
-                    // Check if node is in viewport
-                    const pos = network.getPositions([n.id])[n.id];
-                    if (pos) {
-                        const domPos = network.canvasToDOM(pos);
-                        if (domPos.x >= 0 && domPos.x <= viewRect.width && 
-                            domPos.y >= 0 && domPos.y <= viewRect.height) {
-                            shouldShow = true;
-                        }
-                    }
-                }
-
-                const currentLabel = n.label;
-                const targetLabel = shouldShow ? n.hiddenLabel : " ";
-                
-                if (currentLabel !== targetLabel) {
-                    updates.push({ id: n.id, label: targetLabel });
-                }
-            });
-
-            if (updates.length > 0) nodes.update(updates);
-        }
-
-        async function loadData() {
-            isHighlighting = false; // Reset highlight state
-            showToast("正在同步图谱...", 1000);
-            try {
-                let url = `/api/graph?exclude_leaf=${!detailedMode}&density=${infoDensity}`;
-                if (currentSource) {
-                    url += `&source=${encodeURIComponent(currentSource)}`;
-                }
-                const res = await axios.get(url);
-                const data = res.data;
-
-                // 1. Calculate degrees for LOD
-                const degrees = {};
-                data.edges.forEach(e => {
-                    degrees[e.from] = (degrees[e.from] || 0) + 1;
-                    degrees[e.to] = (degrees[e.to] || 0) + 1;
-                });
-
-                // 2. Process Nodes with LOD logic
-                const processedNodes = data.nodes.map(n => {
-                    const deg = degrees[n.id] || 0;
-                    const isHub = deg > 5;
-                    const realLabel = n.label || n.id;
-                    
-                    // Apply ghosting style if flagged
-                    const opacity = n.is_ghost ? 0.2 : 1.0;
-                    
-                    // Use theme font color as base
-                    const themeCfg = THEME_CONFIG[THEMES[currentThemeIdx]];
-                    const fontColor = n.is_ghost ? hexToRgba(themeCfg.node.font, 0.4) : themeCfg.node.font;
-
-                    return {
-                        ...n,
-                        value: 1,
-                        isHub: isHub,
-                        hiddenLabel: realLabel,
-                        label: isHub ? realLabel : " ",
-                        opacity: opacity,
-                        font: { color: fontColor }
-                    };
-                });
-
-                // --- 增量更新逻辑，防止全图跳动 ---
-                
-                // A. 更新节点
-                const newNodeIds = new Set(processedNodes.map(n => n.id));
-                const currentNodeIds = nodes.getIds();
-                const nodesToRemove = currentNodeIds.filter(id => !newNodeIds.has(id));
-                
-                if (nodesToRemove.length > 0) nodes.remove(nodesToRemove);
-                nodes.update(processedNodes);
-
-                // B. 更新边
-                // 注意：Vis.js 边如果没有 ID，我们会根据 from+to 生成一个，但 API 返回的边通常有 ID 或者我们可以稳定生成
-                // 确保 API 返回的边包含稳定 ID
-                const newEdgeIds = new Set(data.edges.map(e => e.id));
-                const currentEdgeIds = edges.getIds();
-                const edgesToRemove = currentEdgeIds.filter(id => !newEdgeIds.has(id));
-                
-                if (edgesToRemove.length > 0) edges.remove(edgesToRemove);
-                edges.update(data.edges);
-
-                // Update datalist
-                const datalist = document.getElementById('node-list-suggestions');
-                datalist.innerHTML = data.nodes.map(n => `<option value="${n.id}">`).join('');
-
-                // 统一隐藏 Loading
-                if (processedNodes.length === 0 || network) {
-                    setTimeout(() => {
-                        document.getElementById('loader').style.opacity = '0';
-                        setTimeout(() => document.getElementById('loader').style.display = 'none', 500);
-                    }, 100);
-                }
-
-            } catch (err) {
-                showToast("连接失败: " + err.message);
-                document.getElementById('loader').style.display = 'none';
+            // If new node, assign position using spiral layout
+            // Spiral avoids overlapping and scales with node count
+            if (!exists) {
+                const nodeIndex = processedNodeIndex++;
+                // Spiral layout: r = a + b*theta, (x,y) = (r*cos(theta), r*sin(theta))
+                const spacing = 80; // Base spacing between spiral arms
+                const theta = nodeIndex * 0.5; // Angular increment
+                const r = spacing * Math.sqrt(nodeIndex); // Expanding radius
+                baseNode.x = r * Math.cos(theta);
+                baseNode.y = r * Math.sin(theta);
             }
-        }
 
-        async function loadConfig() {
-            try {
-                const res = await axios.get('/api/config');
-                // We'll update state when manager panel opens
-            } catch (err) { }
-        }
+            return baseNode;
+          });
 
-        function toggleDetailedMode() {
-            detailedMode = !detailedMode;
-            updateSettingsUI();
-            loadData();
-        }
+          // --- 增量更新逻辑，防止全图跳动 ---
 
-        function updateDensity(val) {
-            infoDensity = parseFloat(val);
-            document.getElementById('density-val').innerText = Math.round(infoDensity * 100);
+          // A. 更新节点
+          const newNodeIds = new Set(processedNodes.map((n) => n.id));
+          const currentNodeIds = nodes.getIds();
+          const nodesToRemove = currentNodeIds.filter(
+            (id) => !newNodeIds.has(id),
+          );
+
+          if (nodesToRemove.length > 0) nodes.remove(nodesToRemove);
+          nodes.update(processedNodes);
+
+          // B. 更新边
+          // 注意：Vis.js 边如果没有 ID，我们会根据 from+to 生成一个，但 API 返回的边通常有 ID 或者我们可以稳定生成
+          // 确保 API 返回的边包含稳定 ID
+          const newEdgeIds = new Set(data.edges.map((e) => e.id));
+          const currentEdgeIds = edges.getIds();
+          const edgesToRemove = currentEdgeIds.filter(
+            (id) => !newEdgeIds.has(id),
+          );
+
+          if (edgesToRemove.length > 0) edges.remove(edgesToRemove);
+          edges.update(data.edges);
+
+          // Update datalist
+          const datalist = document.getElementById("node-list-suggestions");
+          datalist.innerHTML = data.nodes
+            .map((n) => `<option value="${n.id}">`)
+            .join("");
+
+          // 统一隐藏 Loading
+          if (processedNodes.length === 0) {
+            hideLoader();
+          } else if (network) {
+            // Wait for next draw to ensure no flickering
+            network.once("afterDrawing", () => hideLoader());
+            // Fallback for cases where afterDrawing doesn't fire or graph is too small/stable
+            setTimeout(() => hideLoader(), 2000);
+          }
+
+          // For large graphs, auto zoom-out to prevent close-up lag
+          if (complexity > 600 && network) {
+            setTimeout(() => {
+              // Calculate appropriate scale based on node count
+              // More nodes = zoom out more
+              const targetScale = Math.max(0.1, 0.5 / Math.log10(nodeCount));
+              network.moveTo({
+                scale: targetScale,
+                animation: { duration: 300, easingFunction: "easeInOutQuad" }
+              });
+            }, 200);
+          }
+        } catch (err) {
+          showToast("连接失败: " + err.message);
+          hideLoader();
+        }
+      }
+
+      async function loadConfig() {
+        try {
+          const res = await axios.get("/api/config");
+          // We'll update state when manager panel opens
+        } catch (err) {}
+      }
+
+      function toggleDetailedMode() {
+        detailedMode = !detailedMode;
+        updateSettingsUI();
+        loadData();
+      }
+
+      function updateDensity(val) {
+        infoDensity = parseFloat(val);
+        document.getElementById("density-val").innerText = Math.round(
+          infoDensity * 100,
+        );
+
+        // Throttle reload
+        if (window._densityTimeout) clearTimeout(window._densityTimeout);
+        window._densityTimeout = setTimeout(() => {
+          loadData();
+        }, 300);
+      }
+
+      function updateSettingsUI() {
+        const detailedCheckbox = document.getElementById(
+          "settings-detailed-mode",
+        );
+        const perfCheckbox = document.getElementById("settings-perf-mode");
+        const densityControl = document.getElementById("density-control-area");
+
+        if (detailedCheckbox) detailedCheckbox.checked = detailedMode;
+        if (perfCheckbox) perfCheckbox.checked = isLowPerfMode;
+
+        if (densityControl) {
+          // Info Density only relevant in non-detailed (simplified) mode
+          if (detailedMode) {
+            densityControl.style.opacity = "0.3";
+            densityControl.style.pointerEvents = "none";
+          } else {
+            densityControl.style.opacity = "1";
+            densityControl.style.pointerEvents = "auto";
+          }
+        }
+      }
+
+      function layout() {
+        if (network) network.stabilize();
+      }
+
+      // --- Panel Control ---
+
+      function openPanel(type, data) {
+        const panel = document.getElementById("side-panel");
+        const title = document.getElementById("panel-title");
+        const body = document.getElementById("panel-body");
+
+        panel.style.display = "flex";
+
+        if (type === "node-editor") {
+          title.innerText = "实体属性";
+          body.innerHTML = document.getElementById("node-editor-tpl").innerHTML;
+
+          // Display Label, use ID for logic
+          const nodeObj = nodes.get(data);
+          document.getElementById("node-id-display").innerText = nodeObj
+            ? nodeObj.label
+            : data;
+
+          renderNodeRelations(data);
+          fetchSources({ node_id: data }, "sources-list-root");
+          // Trigger Highlight
+          highlightNeighborhood(data);
+        } else if (type === "edge-editor") {
+          title.innerText = "关系属性";
+          body.innerHTML = document.getElementById("edge-editor-tpl").innerHTML;
+          document.getElementById("edge-title-display").innerText =
+            `${data.from} ➔ ${data.to}`;
+          document.getElementById("weight-slider").value = data.value || 1.0;
+          document.getElementById("weight-val-display").innerText = (
+            data.value || 1.0
+          ).toFixed(1);
+          fetchSources(
+            { edge_source: data.from, edge_target: data.to },
+            "edge-sources-list-root",
+          );
+        } else if (type === "add-node-panel") {
+          title.innerText = "新增实体";
+          body.innerHTML = document.getElementById("add-node-tpl").innerHTML;
+        } else if (type === "add-edge-panel") {
+          title.innerText = "建立新关系";
+          body.innerHTML = document.getElementById("add-edge-tpl").innerHTML;
+        } else if (type === "source-manager-panel") {
+          title.innerText = "记忆溯源管理";
+          body.innerHTML =
+            document.getElementById("source-manager-tpl").innerHTML;
+          loadSourceFiles();
+          // Check auto-save state
+          axios.get("/api/config").then((res) => {
+            document.getElementById("auto-save-toggle").checked =
+              res.data.auto_save_enabled;
+          });
+        } else if (type === "content-browser-panel") {
+          title.innerText = "知识字典";
+          body.innerHTML = document.getElementById(
+            "content-browser-tpl",
+          ).innerHTML;
+          // Init browser
+          window.currentBrowserTab = "nodes";
+          renderBrowserContent();
+        } else if (type === "view-settings-panel") {
+          title.innerText = "视图策略配置";
+          body.innerHTML =
+            document.getElementById("view-settings-tpl").innerHTML;
+          updateSettingsUI();
+          // Set initial slider value
+          document.getElementById("density-slider").value = infoDensity;
+          document.getElementById("density-val").innerText = Math.round(
+            infoDensity * 100,
+          );
+        } else if (type === "help-panel") {
+          title.innerText = "操作指南";
+          body.innerHTML = document.getElementById("help-tpl").innerHTML;
+        }
+      }
+
+      function closePanel() {
+        document.getElementById("side-panel").style.display = "none";
+        currentSelection = null;
+      }
+
+      // --- Event Handlers ---
+
+      function onNodeClick(nodeId) {
+        currentSelection = { type: "node", data: nodeId };
+        openPanel("node-editor", nodeId);
+      }
+
+      function onEdgeClick(edgeId) {
+        const edge = edges.get(edgeId);
+        currentSelection = { type: "edge", data: edge };
+        openPanel("edge-editor", edge);
+      }
+
+      async function manualSave() {
+        showToast("同步持久化层...");
+        try {
+          const res = await axios.post("/api/save");
+          showToast("✅ 持久化完成: " + res.data.saved.join(", "));
+        } catch (err) {
+          showToast("❌ 同步失败");
+        }
+      }
+
+      // --- Actions ---
+
+      async function renameNode() {
+        const oldId = currentSelection.data;
+        const newId = document.getElementById("rename-input").value.trim();
+        if (!newId) return showToast("请输入名称");
+        try {
+          const pos = network.getPositions([oldId])[oldId];
+          await axios.put("/api/node/rename", { old_id: oldId, new_id: newId });
+          showToast("修订成功");
+
+          // Optimistically update or just reload. Since loadData is now incremental,
+          // re-fetching is safe.
+          await loadData();
+          closePanel();
+          if (nodes.get(newId)) {
+            focusNode(newId);
+          }
+        } catch (e) {
+          showToast("操作异常");
+        }
+      }
+
+      async function deleteNode() {
+        const nodeId = currentSelection.data;
+        if (!confirm(`确认从全局全景中剥离实体 "${nodeId}"？`)) return;
+        try {
+          await axios.delete("/api/node", { data: { node_id: nodeId } });
+          showToast("已剥离");
+          nodes.remove(nodeId);
+          closePanel();
+        } catch (e) {
+          showToast("剥离失败");
+        }
+      }
+
+      async function saveEdge() {
+        const edge = currentSelection.data;
+        const weight = parseFloat(
+          document.getElementById("weight-slider").value,
+        );
+        try {
+          await axios.post("/api/edge/weight", {
+            source: edge.from,
+            target: edge.to,
+            weight,
+          });
+          showToast("权重刷新完成");
+          edges.update({ ...edge, value: weight });
+        } catch (e) {
+          showToast("网络异常");
+        }
+      }
+
+      async function deleteEdge() {
+        const edge = currentSelection.data;
+        if (!confirm("确定切断此映射连接？")) return;
+        try {
+          await axios.delete("/api/edge", {
+            data: { source: edge.from, target: edge.to },
+          });
+          showToast("连接已切断");
+          edges.remove(edge.id);
+          closePanel();
+        } catch (e) {
+          showToast("操作失败");
+        }
+      }
+
+      async function addNode() {
+        const name = document.getElementById("new-node-name").value.trim();
+        if (!name) return;
+        try {
+          await axios.post("/api/node", { node_id: name });
+          showToast("实体已同步");
+          loadData();
+          closePanel();
+        } catch (e) {
+          showToast("同步异常");
+        }
+      }
+
+      async function addEdge() {
+        const source = document.getElementById("edge-source").value.trim();
+        const target = document.getElementById("edge-target").value.trim();
+        const predicate = document
+          .getElementById("edge-predicate")
+          .value.trim();
+        if (!source || !target) return;
+        try {
+          await axios.post("/api/edge", {
+            source,
+            target,
+            weight: 1.0,
+            predicate,
+          });
+          showToast("关系层已就绪");
+          loadData();
+          closePanel();
+        } catch (e) {
+          showToast("建立失败");
+        }
+      }
+
+      async function submitQuickRelation() {
+        const cur = currentSelection.data;
+        const tgt = document.getElementById("quick-target").value.trim();
+        const pre = document.getElementById("quick-predicate").value.trim();
+        if (!tgt) return;
+        try {
+          await axios.post("/api/edge", {
+            source: cur,
+            target: tgt,
+            weight: 1.0,
+            predicate: pre,
+          });
+          showToast("快速关联成功");
+          loadData();
+          renderNodeRelations(cur);
+        } catch (e) {
+          showToast("失败");
+        }
+      }
+
+      // --- Simulation Control ---
+
+      function toggleSimulation() {
+        if (!network) return;
+        if (isSimulationRunning) {
+          network.stopSimulation();
+          isSimulationRunning = false;
+          showToast("物理模拟已暂停");
+
+          // Clear any pending freeze timer if user manually pauses
+          if (_freezeTimer) {
+            clearTimeout(_freezeTimer);
+            _freezeTimer = null;
+          }
+        } else {
+          // Re-enable physics with sensible defaults for manual trigger
+          network.setOptions({
+            physics: {
+              enabled: true,
+              solver: "barnesHut",
+              barnesHut: {
+                gravitationalConstant: -5000,
+                centralGravity: 0.005, // Very low to prevent collapse
+                springLength: 200,
+                avoidOverlap: 0.5
+              }
+            }
+          });
+          network.startSimulation();
+          isSimulationRunning = true;
+          showToast("物理模拟继续 (可随时暂停)");
+          
+          // Auto-freeze after a while for large graphs
+          if (_freezeTimer) clearTimeout(_freezeTimer);
+          _freezeTimer = setTimeout(() => {
+            if (network && isSimulationRunning) {
+              network.stopSimulation();
+              isSimulationRunning = false;
+              updateSimBtnEnv();
+              showToast("已自动冻结布局");
+            }
+          }, 8000);
+        }
+        updateSimBtnEnv();
+      }
+
+      function updateSimBtnEnv() {
+        const icon = document.getElementById("sim-btn-icon");
+        const text = document.getElementById("sim-btn-text");
+        if (isSimulationRunning) {
+          icon.innerText = "⏸️";
+          text.innerText = "暂停模拟";
+        } else {
+          icon.innerText = "▶️";
+          text.innerText = "继续布局";
+        }
+      }
+
+      function applyAdaptiveSettings(complexity, nodeCount) {
+        // Default (Small)
+        let mode = "SMALL";
+
+        if (complexity > 600) mode = "LARGE";
+        else if (complexity > 300) mode = "MEDIUM";
+
+        console.log(
+          `[Perf] Complexity: ${complexity} (Nodes: ${nodeCount}), Mode: ${mode}`,
+        );
+
+        if (mode === "SMALL") {
+          setLowPerfMode(false);
+          if (network) {
+            network.setOptions({
+              physics: {
+                solver: "forceAtlas2Based",
+                stabilization: { enabled: true, iterations: 200 },
+                forceAtlas2Based: {
+                  theta: 0.5,
+                  gravitationalConstant: -50,
+                  springLength: 100,
+                },
+              },
+              nodes: { font: { size: 14 } }, // Restore font
+            });
+          }
+        } else if (mode === "MEDIUM") {
+          setLowPerfMode(true);
+          if (network) {
+            network.setOptions({
+              physics: {
+                solver: "forceAtlas2Based",
+                // High iterations but distributed over frames to avoid freeze
+                stabilization: {
+                  enabled: true,
+                  iterations: 1000,
+                  updateInterval: 50,
+                  onlyDynamicEdges: false,
+                },
+              },
+              nodes: { font: { size: 14 } },
+            });
+          }
+          // Only toast if not already in that mode to avoid spam
+          // But since loadData usually happens on manual refresh or significant change, toast is fine.
+          showToast(`🚀 中规模数据: 已启用分帧渲染`);
+        } else if (mode === "LARGE") {
+          setLowPerfMode(true);
+          if (network) {
+            // For very large graphs: DISABLE physics entirely
+            // User can re-enable via "Continue Layout" button
+            network.setOptions({
+              physics: { enabled: false },
+              nodes: { font: { size: 0 } }, // Label Degradation
+            });
             
-            // Throttle reload
-            if (window._densityTimeout) clearTimeout(window._densityTimeout);
-            window._densityTimeout = setTimeout(() => {
-                loadData();
-            }, 300);
+            // Stop simulation immediately
+            network.stopSimulation();
+            isSimulationRunning = false;
+            updateSimBtnEnv();
+          }
+          showToast(`⚡ 大规模数据 (${nodeCount}节点): 物理已禁用，点击"继续布局"可启用`);
+
+          // Clear any pending freeze timer
+          if (_freezeTimer) {
+            clearTimeout(_freezeTimer);
+            _freezeTimer = null;
+          }
         }
+      }
 
-        function updateSettingsUI() {
-            const detailedCheckbox = document.getElementById('settings-detailed-mode');
-            const perfCheckbox = document.getElementById('settings-perf-mode');
-            const densityControl = document.getElementById('density-control-area');
-            
-            if (detailedCheckbox) detailedCheckbox.checked = detailedMode;
-            if (perfCheckbox) perfCheckbox.checked = isLowPerfMode;
-            
-            if (densityControl) {
-                // Info Density only relevant in non-detailed (simplified) mode
-                if (detailedMode) {
-                    densityControl.style.opacity = '0.3';
-                    densityControl.style.pointerEvents = 'none';
-                } else {
-                    densityControl.style.opacity = '1';
-                    densityControl.style.pointerEvents = 'auto';
-                }
-            }
+      // --- Utils ---
+
+      function hexToRgba(hex, alpha) {
+        let c;
+        if (/^#([A-Fa-f0-9]{3}){1,2}$/.test(hex)) {
+          c = hex.substring(1).split("");
+          if (c.length === 3) {
+            c = [c[0], c[0], c[1], c[1], c[2], c[2]];
+          }
+          c = "0x" + c.join("");
+          return (
+            "rgba(" +
+            [(c >> 16) & 255, (c >> 8) & 255, c & 255].join(",") +
+            "," +
+            alpha +
+            ")"
+          );
         }
+        return hex;
+      }
 
-        function layout() {
-            if (network) network.stabilize();
-        }
+      // --- Fetch Helpers ---
 
-        // --- Panel Control ---
-
-        function openPanel(type, data) {
-            const panel = document.getElementById('side-panel');
-            const title = document.getElementById('panel-title');
-            const body = document.getElementById('panel-body');
-
-            panel.style.display = 'flex';
-
-            if (type === 'node-editor') {
-                title.innerText = "实体属性";
-                body.innerHTML = document.getElementById('node-editor-tpl').innerHTML;
-
-                // Display Label, use ID for logic
-                const nodeObj = nodes.get(data);
-                document.getElementById('node-id-display').innerText = nodeObj ? nodeObj.label : data;
-
-                renderNodeRelations(data);
-                fetchSources({ node_id: data }, 'sources-list-root');
-                // Trigger Highlight
-                highlightNeighborhood(data);
-            } else if (type === 'edge-editor') {
-                title.innerText = "关系属性";
-                body.innerHTML = document.getElementById('edge-editor-tpl').innerHTML;
-                document.getElementById('edge-title-display').innerText = `${data.from} ➔ ${data.to}`;
-                document.getElementById('weight-slider').value = data.value || 1.0;
-                document.getElementById('weight-val-display').innerText = (data.value || 1.0).toFixed(1);
-                fetchSources({ edge_source: data.from, edge_target: data.to }, 'edge-sources-list-root');
-            } else if (type === 'add-node-panel') {
-                title.innerText = "新增实体";
-                body.innerHTML = document.getElementById('add-node-tpl').innerHTML;
-            } else if (type === 'add-edge-panel') {
-                title.innerText = "建立新关系";
-                body.innerHTML = document.getElementById('add-edge-tpl').innerHTML;
-            } else if (type === 'source-manager-panel') {
-                title.innerText = "记忆溯源管理";
-                body.innerHTML = document.getElementById('source-manager-tpl').innerHTML;
-                loadSourceFiles();
-                // Check auto-save state
-                axios.get('/api/config').then(res => {
-                    document.getElementById('auto-save-toggle').checked = res.data.auto_save_enabled;
-                });
-            } else if (type === 'content-browser-panel') {
-                title.innerText = "知识字典";
-                body.innerHTML = document.getElementById('content-browser-tpl').innerHTML;
-                // Init browser
-                window.currentBrowserTab = 'nodes';
-                renderBrowserContent();
-            } else if (type === 'view-settings-panel') {
-                title.innerText = "视图策略配置";
-                body.innerHTML = document.getElementById('view-settings-tpl').innerHTML;
-                updateSettingsUI();
-                // Set initial slider value
-                document.getElementById('density-slider').value = infoDensity;
-                document.getElementById('density-val').innerText = Math.round(infoDensity * 100);
-            } else if (type === 'help-panel') {
-                title.innerText = "操作指南";
-                body.innerHTML = document.getElementById('help-tpl').innerHTML;
-            }
-        }
-
-        function closePanel() {
-            document.getElementById('side-panel').style.display = 'none';
-            currentSelection = null;
-        }
-
-        // --- Event Handlers ---
-
-        function onNodeClick(nodeId) {
-            currentSelection = { type: 'node', data: nodeId };
-            openPanel('node-editor', nodeId);
-        }
-
-        function onEdgeClick(edgeId) {
-            const edge = edges.get(edgeId);
-            currentSelection = { type: 'edge', data: edge };
-            openPanel('edge-editor', edge);
-        }
-
-        async function manualSave() {
-            showToast('同步持久化层...');
-            try {
-                const res = await axios.post('/api/save');
-                showToast('✅ 持久化完成: ' + res.data.saved.join(', '));
-            } catch (err) {
-                showToast('❌ 同步失败');
-            }
-        }
-
-        // --- Actions ---
-
-        async function renameNode() {
-            const oldId = currentSelection.data;
-            const newId = document.getElementById('rename-input').value.trim();
-            if (!newId) return showToast('请输入名称');
-            try {
-                const pos = network.getPositions([oldId])[oldId];
-                await axios.put('/api/node/rename', { old_id: oldId, new_id: newId });
-                showToast('修订成功');
-                
-                // Optimistically update or just reload. Since loadData is now incremental, 
-                // re-fetching is safe.
-                await loadData();
-                closePanel();
-                if (nodes.get(newId)) {
-                    focusNode(newId);
-                }
-            } catch (e) { showToast('操作异常'); }
-        }
-
-        async function deleteNode() {
-            const nodeId = currentSelection.data;
-            if (!confirm(`确认从全局全景中剥离实体 "${nodeId}"？`)) return;
-            try {
-                await axios.delete('/api/node', { data: { node_id: nodeId } });
-                showToast('已剥离');
-                nodes.remove(nodeId);
-                closePanel();
-            } catch (e) { showToast('剥离失败'); }
-        }
-
-        async function saveEdge() {
-            const edge = currentSelection.data;
-            const weight = parseFloat(document.getElementById('weight-slider').value);
-            try {
-                await axios.post('/api/edge/weight', { source: edge.from, target: edge.to, weight });
-                showToast('权重刷新完成');
-                edges.update({ ...edge, value: weight });
-            } catch (e) { showToast('网络异常'); }
-        }
-
-        async function deleteEdge() {
-            const edge = currentSelection.data;
-            if (!confirm("确定切断此映射连接？")) return;
-            try {
-                await axios.delete('/api/edge', { data: { source: edge.from, target: edge.to } });
-                showToast('连接已切断');
-                edges.remove(edge.id);
-                closePanel();
-            } catch (e) { showToast('操作失败'); }
-        }
-
-        async function addNode() {
-            const name = document.getElementById('new-node-name').value.trim();
-            if (!name) return;
-            try {
-                await axios.post('/api/node', { node_id: name });
-                showToast('实体已同步');
-                loadData();
-                closePanel();
-            } catch (e) { showToast('同步异常'); }
-        }
-
-        async function addEdge() {
-            const source = document.getElementById('edge-source').value.trim();
-            const target = document.getElementById('edge-target').value.trim();
-            const predicate = document.getElementById('edge-predicate').value.trim();
-            if (!source || !target) return;
-            try {
-                await axios.post('/api/edge', { source, target, weight: 1.0, predicate });
-                showToast('关系层已就绪');
-                loadData();
-                closePanel();
-            } catch (e) { showToast('建立失败'); }
-        }
-
-        async function submitQuickRelation() {
-            const cur = currentSelection.data;
-            const tgt = document.getElementById('quick-target').value.trim();
-            const pre = document.getElementById('quick-predicate').value.trim();
-            if (!tgt) return;
-            try {
-                await axios.post('/api/edge', { source: cur, target: tgt, weight: 1.0, predicate: pre });
-                showToast('快速关联成功');
-                loadData();
-                renderNodeRelations(cur);
-            } catch (e) { showToast('失败'); }
-        }
-
-        // --- Utils ---
-
-        function hexToRgba(hex, alpha) {
-            let c;
-            if (/^#([A-Fa-f0-9]{3}){1,2}$/.test(hex)) {
-                c = hex.substring(1).split('');
-                if (c.length === 3) {
-                    c = [c[0], c[0], c[1], c[1], c[2], c[2]];
-                }
-                c = '0x' + c.join('');
-                return 'rgba(' + [(c >> 16) & 255, (c >> 8) & 255, c & 255].join(',') + ',' + alpha + ')';
-            }
-            return hex;
-        }
-
-        // --- Fetch Helpers ---
-
-        async function fetchSources(params, rootId) {
-            const root = document.getElementById(rootId);
-            root.innerHTML = '<div style="color: var(--text-dim); font-size: 0.8rem;">正在追溯记忆来源...</div>';
-            try {
-                const res = await axios.post('/api/source/list', params);
-                const sources = res.data.sources;
-                if (!sources || sources.length === 0) {
-                    root.innerHTML = '<div style="color: var(--text-dim); font-size: 0.8rem;">[ 未发现直接记忆溯源 ]</div>';
-                    return;
-                }
-                let html = '<div style="font-size: 0.8rem; color: var(--text-dim); margin-bottom: 12px; border-top: 1px solid var(--glass-border); padding-top: 15px;">📚 知识溯源</div>';
-                sources.forEach(s => {
-                    html += `
+      async function fetchSources(params, rootId) {
+        const root = document.getElementById(rootId);
+        root.innerHTML =
+          '<div style="color: var(--text-dim); font-size: 0.8rem;">正在追溯记忆来源...</div>';
+        try {
+          const res = await axios.post("/api/source/list", params);
+          const sources = res.data.sources;
+          if (!sources || sources.length === 0) {
+            root.innerHTML =
+              '<div style="color: var(--text-dim); font-size: 0.8rem;">[ 未发现直接记忆溯源 ]</div>';
+            return;
+          }
+          let html =
+            '<div style="font-size: 0.8rem; color: var(--text-dim); margin-bottom: 12px; border-top: 1px solid var(--glass-border); padding-top: 15px;">📚 知识溯源</div>';
+          sources.forEach((s) => {
+            html += `
                         <div class="list-item">
                             <div style="font-size: 0.85rem; color: white;">${escapeHtml(s.content)}</div>
                             <div style="font-size: 0.7rem; color: var(--accent-secondary); margin-top: 6px;">来自: ${s.source}</div>
                         </div>
                     `;
-                });
-                root.innerHTML = html;
-            } catch (e) { root.innerHTML = ''; }
+          });
+          root.innerHTML = html;
+        } catch (e) {
+          root.innerHTML = "";
+        }
+      }
+
+      function renderNodeRelations(nodeId) {
+        const connectedEdges = edges.get({
+          filter: (item) => item.from === nodeId || item.to === nodeId,
+        });
+        const root = document.getElementById("relations-list-root");
+        if (connectedEdges.length === 0) {
+          root.innerHTML = "";
+          return;
         }
 
-        function renderNodeRelations(nodeId) {
-            const connectedEdges = edges.get({ filter: (item) => item.from === nodeId || item.to === nodeId });
-            const root = document.getElementById('relations-list-root');
-            if (connectedEdges.length === 0) {
-                root.innerHTML = '';
-                return;
-            }
-
-            let html = '<div style="font-size: 0.8rem; color: var(--text-dim); margin-bottom: 12px; border-top: 1px solid var(--glass-border); padding-top: 15px;">🔗 节点拓扑</div>';
-            connectedEdges.forEach(e => {
-                const isOut = e.from === nodeId;
-                const other = isOut ? e.to : e.from;
-                html += `
+        let html =
+          '<div style="font-size: 0.8rem; color: var(--text-dim); margin-bottom: 12px; border-top: 1px solid var(--glass-border); padding-top: 15px;">🔗 节点拓扑</div>';
+        connectedEdges.forEach((e) => {
+          const isOut = e.from === nodeId;
+          const other = isOut ? e.to : e.from;
+          html += `
                     <div class="list-item" style="display: flex; justify-content: space-between; align-items: center;">
                         <div style="cursor: pointer; display: flex; align-items: center;" onclick="focusNode('${other}')" title="跳转至该实体">
-                            <span style="color: ${isOut ? 'var(--accent-primary)' : 'var(--accent-secondary)'}; font-weight: 600;">${isOut ? '➔' : '←'}</span>
+                            <span style="color: ${isOut ? "var(--accent-primary)" : "var(--accent-secondary)"}; font-weight: 600;">${isOut ? "➔" : "←"}</span>
                             <span style="margin-left: 8px; font-size: 0.85rem; border-bottom: 1px dashed rgba(255,255,255,0.3);">${other}</span>
                         </div>
-                        <span style="color: var(--text-dim); font-size: 0.75rem;">${e.label || '-'}</span>
+                        <span style="color: var(--text-dim); font-size: 0.75rem;">${e.label || "-"}</span>
                     </div>
                 `;
-            });
-            root.innerHTML = html;
-        }
+        });
+        root.innerHTML = html;
+      }
 
-        async function loadSourceFiles() {
-            const root = document.getElementById('source-files-list');
-            root.innerHTML = '加载中...';
-            try {
-                const res = await axios.post('/api/source/list', {});
-                const sources = res.data.sources;
+      async function loadSourceFiles() {
+        const root = document.getElementById("source-files-list");
+        root.innerHTML = "加载中...";
+        try {
+          const res = await axios.post("/api/source/list", {});
+          const sources = res.data.sources;
 
-                // Filter status display
-                let header = '';
-                if (currentSource) {
-                    header = `<div style="padding: 10px; background: rgba(56, 189, 248, 0.2); border-radius: 8px; margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center;">
+          // Filter status display
+          let header = "";
+          if (currentSource) {
+            header = `<div style="padding: 10px; background: rgba(56, 189, 248, 0.2); border-radius: 8px; margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center;">
                         <span>🔎 当前聚焦: <b>${currentSource}</b></span>
                         <button class="btn btn-ghost" style="padding: 4px 10px; font-size: 0.8rem;" onclick="setSourceFilter(null)">重置 / 查看全部</button>
                     </div>`;
-                }
+          }
 
-                const listHtml = sources.map(f => `
+          const listHtml = sources
+            .map(
+              (f) => `
                     <div class="list-item" style="display: flex; justify-content: space-between; align-items: center;">
                         <div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; margin-right: 15px;">
-                            <div style="font-size: 0.9rem; color: ${currentSource === f.source ? 'var(--accent-primary)' : 'white'};">${f.source}</div>
+                            <div style="font-size: 0.9rem; color: ${currentSource === f.source ? "var(--accent-primary)" : "white"};">${f.source}</div>
                             <div style="font-size: 0.7rem; color: var(--text-dim);">${f.count} 段记忆记录</div>
                         </div>
                         <div style="display: flex; gap: 6px;">
@@ -1542,364 +2145,423 @@
                             <button class="btn btn-danger" style="padding: 4px 8px;" onclick="deleteSourceFile('${f.source}')" title="删除">🗑️</button>
                         </div>
                     </div>
-                `).join('');
+                `,
+            )
+            .join("");
 
-                root.innerHTML = header + listHtml;
-            } catch (e) { root.innerHTML = '加载失败'; }
+          root.innerHTML = header + listHtml;
+        } catch (e) {
+          root.innerHTML = "加载失败";
         }
+      }
 
-        function setSourceFilter(source) {
-            currentSource = source;
-            loadData();
-            loadSourceFiles(); // Refresh UI
-            if (source) showToast(`已聚焦批次: ${source}`);
-            else showToast("已重置视图");
+      function setSourceFilter(source) {
+        currentSource = source;
+        loadData();
+        loadSourceFiles(); // Refresh UI
+        if (source) showToast(`已聚焦批次: ${source}`);
+        else showToast("已重置视图");
+      }
+
+      async function deleteSourceFile(src) {
+        if (
+          !confirm(
+            `危险：一旦擦除 "${src}"，所有相关的关联与记忆将永久消失。是否继续？`,
+          )
+        )
+          return;
+        try {
+          await axios.post("/api/source/batch_delete", { source: src });
+          showToast("已完成记忆擦除");
+          loadSourceFiles();
+          loadData();
+        } catch (e) {
+          showToast("擦除失败");
         }
+      }
 
-        async function deleteSourceFile(src) {
-            if (!confirm(`危险：一旦擦除 "${src}"，所有相关的关联与记忆将永久消失。是否继续？`)) return;
-            try {
-                await axios.post('/api/source/batch_delete', { source: src });
-                showToast('已完成记忆擦除');
-                loadSourceFiles();
-                loadData();
-            } catch (e) { showToast('擦除失败'); }
+      async function toggleAutoSave(enabled) {
+        try {
+          await axios.post("/api/config/auto_save", { enabled });
+          showToast(enabled ? "自动保存激活" : "自动保存已挂起");
+        } catch (e) {
+          showToast("设置失败");
         }
+      }
 
-        async function toggleAutoSave(enabled) {
-            try {
-                await axios.post('/api/config/auto_save', { enabled });
-                showToast(enabled ? '自动保存激活' : '自动保存已挂起');
-            } catch (e) { showToast('设置失败'); }
-        }
+      // --- Helpers ---
 
-        // --- Helpers ---
+      function highlightNeighborhood(nodeId) {
+        if (!nodeId) return;
+        isHighlighting = true;
 
-        function highlightNeighborhood(nodeId) {
-            if (!nodeId) return;
-            isHighlighting = true;
+        const allNodes = nodes.get();
+        const allEdges = edges.get();
 
-            const allNodes = nodes.get();
-            const allEdges = edges.get();
+        // 1. Find neighbors
+        const degree1 = network.getConnectedNodes(nodeId);
+        const degree2 = [];
+        degree1.forEach((id) => {
+          degree2.push(...network.getConnectedNodes(id));
+        });
 
-            // 1. Find neighbors
-            const degree1 = network.getConnectedNodes(nodeId);
-            const degree2 = [];
-            degree1.forEach(id => {
-                degree2.push(...network.getConnectedNodes(id));
-            });
+        const mainSet = new Set([nodeId]);
+        const d1Set = new Set(degree1);
+        const d2Set = new Set(degree2);
 
-            const mainSet = new Set([nodeId]);
-            const d1Set = new Set(degree1);
-            const d2Set = new Set(degree2);
+        // Get current theme config
+        const themeName = THEMES[currentThemeIdx];
+        const cfg = THEME_CONFIG[themeName];
 
-            // Get current theme config
-            const themeName = THEMES[currentThemeIdx];
-            const cfg = THEME_CONFIG[themeName];
+        // 2. Apply opacity
+        // Vis.js doesn't support direct opacity prop easily for all shapes without RGBA.
+        // We will use a simpler approach: color alpha
+        const hexToRgba = (hex, alpha) => {
+          // Assuming hex is #RRGGBB
+          if (!hex) return `rgba(128, 128, 128, ${alpha})`; // Neutral fallback
+          const r = parseInt(hex.slice(1, 3), 16);
+          const g = parseInt(hex.slice(3, 5), 16);
+          const b = parseInt(hex.slice(5, 7), 16);
+          return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+        };
 
-            // 2. Apply opacity
-            // Vis.js doesn't support direct opacity prop easily for all shapes without RGBA.
-            // We will use a simpler approach: color alpha
-            const hexToRgba = (hex, alpha) => {
-                // Assuming hex is #RRGGBB
-                if (!hex) return `rgba(128, 128, 128, ${alpha})`; // Neutral fallback
-                const r = parseInt(hex.slice(1, 3), 16);
-                const g = parseInt(hex.slice(3, 5), 16);
-                const b = parseInt(hex.slice(5, 7), 16);
-                return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-            };
+        const finalNodes = allNodes.map((n) => {
+          let opacity = 0.1;
+          let color = n.color
+            ? typeof n.color === "string"
+              ? n.color
+              : n.color.background
+            : cfg.node.background;
+          let showLabel = n.isHub; // Default
 
-            const finalNodes = allNodes.map(n => {
-                let opacity = 0.1;
-                let color = n.color ? (typeof n.color === 'string' ? n.color : n.color.background) : cfg.node.background;
-                let showLabel = n.isHub; // Default
+          // Check sets (Order matters: main -> d1 -> d2)
+          if (mainSet.has(n.id)) {
+            opacity = 1.0;
+            showLabel = true;
+          } else if (d1Set.has(n.id)) {
+            opacity = 0.8;
+            showLabel = true;
+          } else if (d2Set.has(n.id)) {
+            opacity = 0.3;
+            showLabel = true;
+          }
 
-                // Check sets (Order matters: main -> d1 -> d2)
-                if (mainSet.has(n.id)) { opacity = 1.0; showLabel = true; }
-                else if (d1Set.has(n.id)) { opacity = 0.8; showLabel = true; }
-                else if (d2Set.has(n.id)) { opacity = 0.3; showLabel = true; }
+          // Define vars for reuse
+          const alpha = opacity;
+          const baseColor = cfg.node.background;
+          const borderColor = cfg.node.border;
 
-                // Define vars for reuse
-                const alpha = opacity;
-                const baseColor = cfg.node.background;
-                const borderColor = cfg.node.border;
+          // Adjust font color alpha (using the theme font color as base)
+          // Note: simple alpha append for hex font color isn't trivial without helper,
+          // but we can assume font is hex and use hexToRgba.
+          const fontBase = cfg.node.font;
 
-                // Adjust font color alpha (using the theme font color as base)
-                // Note: simple alpha append for hex font color isn't trivial without helper, 
-                // but we can assume font is hex and use hexToRgba.
-                const fontBase = cfg.node.font;
+          return {
+            id: n.id,
+            opacity: opacity,
+            label: showLabel ? n.hiddenLabel : " ",
+            color: {
+              background: hexToRgba(baseColor, alpha),
+              border: hexToRgba(borderColor, alpha),
+            },
+            font: { color: hexToRgba(fontBase, alpha) },
+          };
+        });
 
-                return {
-                    id: n.id,
-                    opacity: opacity,
-                    label: showLabel ? n.hiddenLabel : " ",
-                    color: {
-                        background: hexToRgba(baseColor, alpha),
-                        border: hexToRgba(borderColor, alpha)
-                    },
-                    font: { color: hexToRgba(fontBase, alpha) }
-                };
-            });
+        const finalEdges = allEdges.map((e) => {
+          let alpha = 0.05;
+          const connectedToMain = mainSet.has(e.from) || mainSet.has(e.to);
+          const connectedToD1 = d1Set.has(e.from) || d1Set.has(e.to);
 
-            const finalEdges = allEdges.map(e => {
-                let alpha = 0.05;
-                const connectedToMain = mainSet.has(e.from) || mainSet.has(e.to);
-                const connectedToD1 = d1Set.has(e.from) || d1Set.has(e.to);
+          if (connectedToMain) alpha = 0.8;
+          else if (connectedToD1) alpha = 0.2;
 
-                if (connectedToMain) alpha = 0.8;
-                else if (connectedToD1) alpha = 0.2;
+          // Use theme edge colors
+          // Extract R,G,B from theme edge color?
+          // Theme edge color is usually rgba... e.g. 'rgba(148, 163, 184, 0.4)'
+          // Complexity: parsing the rgba string from config to change alpha.
+          // Shortcuts: The theme defines a base color, we should use that base but modify alpha.
+          // For simplicity, let's use a standard gray-ish for edges in all themes OR parse.
+          // Let's use specific dim colors based on theme if possible, or just the hardcoded gray which works generally well.
+          // BETTER: Use `cfg.edge.color` but replace alpha.
 
-                // Use theme edge colors
-                // Extract R,G,B from theme edge color? 
-                // Theme edge color is usually rgba... e.g. 'rgba(148, 163, 184, 0.4)'
-                // Complexity: parsing the rgba string from config to change alpha.
-                // Shortcuts: The theme defines a base color, we should use that base but modify alpha.
-                // For simplicity, let's use a standard gray-ish for edges in all themes OR parse.
-                // Let's use specific dim colors based on theme if possible, or just the hardcoded gray which works generally well.
-                // BETTER: Use `cfg.edge.color` but replace alpha.
+          // Quick hack: Just use the hardcoded gray/slate for edges as they are distinct enough,
+          // OR adapt to light mode (needs dark edges).
 
-                // Quick hack: Just use the hardcoded gray/slate for edges as they are distinct enough,
-                // OR adapt to light mode (needs dark edges).
+          let edgeBase = "148, 163, 184"; // Default Slate 400
+          if (themeName === "light") edgeBase = "100, 116, 139"; // Slate 500 (Darker)
+          if (themeName === "neon") edgeBase = "217, 70, 239"; // Pinkish
 
-                let edgeBase = '148, 163, 184'; // Default Slate 400
-                if (themeName === 'light') edgeBase = '100, 116, 139'; // Slate 500 (Darker)
-                if (themeName === 'neon') edgeBase = '217, 70, 239'; // Pinkish
+          const edgeColor = `rgba(${edgeBase}, ${alpha})`;
 
-                const edgeColor = `rgba(${edgeBase}, ${alpha})`;
+          return {
+            id: e.id,
+            color: { color: edgeColor, highlight: cfg.edge.highlight },
+            font: {
+              color: edgeColor,
+              strokeWidth: 0,
+              background: "transparent",
+            },
+          };
+        });
 
-                return {
-                    id: e.id,
-                    color: { color: edgeColor, highlight: cfg.edge.highlight },
-                    font: { color: edgeColor, strokeWidth: 0, background: 'transparent' }
-                };
-            });
+        nodes.update(finalNodes);
+        edges.update(finalEdges);
+      }
 
-            nodes.update(finalNodes);
-            edges.update(finalEdges);
-        }
+      function resetHighlight() {
+        if (!isHighlighting) return;
+        isHighlighting = false;
 
-        function resetHighlight() {
-            if (!isHighlighting) return;
-            isHighlighting = false;
+        const allNodes = nodes.get();
+        const allEdges = edges.get();
+        const zoomedIn = isZoomedIn();
 
-            const allNodes = nodes.get();
-            const allEdges = edges.get();
-            const zoomedIn = isZoomedIn();
+        const themeName = THEMES[currentThemeIdx];
+        const cfg = THEME_CONFIG[themeName];
 
-            const themeName = THEMES[currentThemeIdx];
-            const cfg = THEME_CONFIG[themeName];
-
-            const resetNodes = allNodes.map(n => {
-                let shouldShow = n.isHub;
-                if (zoomedIn) {
-                    const pos = network.getPositions([n.id])[n.id];
-                    if (pos) {
-                        const domPos = network.canvasToDOM(pos);
-                        const rect = network.canvas.frame.getBoundingClientRect();
-                        if (domPos.x >= 0 && domPos.x <= rect.width && 
-                            domPos.y >= 0 && domPos.y <= rect.height) {
-                            shouldShow = true;
-                        }
-                    }
-                }
-                
-                const nodeOpacity = n.is_ghost ? 0.2 : 1.0;
-                const fontColor = n.is_ghost ? hexToRgba(cfg.node.font, 0.4) : cfg.node.font;
-
-                return {
-                    id: n.id,
-                    opacity: nodeOpacity,
-                    label: shouldShow ? n.hiddenLabel : " ",
-                    color: { 
-                        background: cfg.node.background, 
-                        border: cfg.node.border,
-                        highlight: { background: cfg.node.background, border: cfg.node.border }
-                    },
-                    font: { color: fontColor }
-                };
-            });
-
-            const resetEdges = allEdges.map(e => ({
-                id: e.id,
-                color: { color: cfg.edge.color, highlight: cfg.edge.highlight },
-                font: { color: cfg.edge.color, background: 'transparent' }
-            }));
-
-            nodes.update(resetNodes);
-            edges.update(resetEdges);
-        }
-
-        function focusNode(nodeId) {
-            network.selectNodes([nodeId]);
-            network.focus(nodeId, {
-                scale: 1.0,
-                animation: { duration: 500, easingFunction: 'easeInOutQuad' }
-            });
-            onNodeClick(nodeId);
-        }
-
-        function searchNode() {
-            // Legacy/Fallback
-            handleSearchInput(document.getElementById('node-search-input').value);
-        }
-
-        // --- New Search & Browser Logic ---
-
-        function handleSearchInput(val) {
-            const container = document.getElementById('search-results');
-            if (!val || !val.trim()) {
-                container.style.display = 'none';
-                return;
+        const resetNodes = allNodes.map((n) => {
+          let shouldShow = n.isHub;
+          if (zoomedIn) {
+            const pos = network.getPositions([n.id])[n.id];
+            if (pos) {
+              const domPos = network.canvasToDOM(pos);
+              const rect = network.canvas.frame.getBoundingClientRect();
+              if (
+                domPos.x >= 0 &&
+                domPos.x <= rect.width &&
+                domPos.y >= 0 &&
+                domPos.y <= rect.height
+              ) {
+                shouldShow = true;
+              }
             }
+          }
 
-            val = val.toLowerCase();
-            const all = nodes.get();
-            const matches = all.filter(n => {
-                const label = n.hiddenLabel || n.label || "";
-                return label.toLowerCase().includes(val) || n.id.toLowerCase().includes(val);
-            }).slice(0, 10);
+          const nodeOpacity = n.is_ghost ? 0.2 : 1.0;
+          const fontColor = n.is_ghost
+            ? hexToRgba(cfg.node.font, 0.4)
+            : cfg.node.font;
 
-            if (matches.length === 0) {
-                container.innerHTML = '<div style="padding:10px; color:var(--text-dim); text-align:center">无匹配结果</div>';
-            } else {
-                container.innerHTML = matches.map(n => {
-                    const displayLabel = n.hiddenLabel || n.label || n.id;
-                    return `
+          return {
+            id: n.id,
+            opacity: nodeOpacity,
+            label: shouldShow ? n.hiddenLabel : " ",
+            color: {
+              background: cfg.node.background,
+              border: cfg.node.border,
+              highlight: {
+                background: cfg.node.background,
+                border: cfg.node.border,
+              },
+            },
+            font: { color: fontColor },
+          };
+        });
+
+        const resetEdges = allEdges.map((e) => ({
+          id: e.id,
+          color: { color: cfg.edge.color, highlight: cfg.edge.highlight },
+          font: { color: cfg.edge.color, background: "transparent" },
+        }));
+
+        nodes.update(resetNodes);
+        edges.update(resetEdges);
+      }
+
+      function focusNode(nodeId) {
+        network.selectNodes([nodeId]);
+        network.focus(nodeId, {
+          scale: 1.0,
+          animation: { duration: 500, easingFunction: "easeInOutQuad" },
+        });
+        onNodeClick(nodeId);
+      }
+
+      function searchNode() {
+        // Legacy/Fallback
+        handleSearchInput(document.getElementById("node-search-input").value);
+      }
+
+      // --- New Search & Browser Logic ---
+
+      function handleSearchInput(val) {
+        const container = document.getElementById("search-results");
+        if (!val || !val.trim()) {
+          container.style.display = "none";
+          return;
+        }
+
+        val = val.toLowerCase();
+        const all = nodes.get();
+        const matches = all
+          .filter((n) => {
+            const label = n.hiddenLabel || n.label || "";
+            return (
+              label.toLowerCase().includes(val) ||
+              n.id.toLowerCase().includes(val)
+            );
+          })
+          .slice(0, 10);
+
+        if (matches.length === 0) {
+          container.innerHTML =
+            '<div style="padding:10px; color:var(--text-dim); text-align:center">无匹配结果</div>';
+        } else {
+          container.innerHTML = matches
+            .map((n) => {
+              const displayLabel = n.hiddenLabel || n.label || n.id;
+              return `
                 <div class="search-item" onclick="selectSearchResult('${n.id}')">
                     <span>${displayLabel}</span>
-                    <span style="font-size:0.7rem; color:var(--text-dim)">${n.isHub ? '核心' : '节点'}</span>
+                    <span style="font-size:0.7rem; color:var(--text-dim)">${n.isHub ? "核心" : "节点"}</span>
                 </div>
               `;
-                }).join('');
-            }
-            container.style.display = 'block';
+            })
+            .join("");
+        }
+        container.style.display = "block";
+      }
+
+      function hideSearchResults() {
+        document.getElementById("search-results").style.display = "none";
+      }
+
+      function selectSearchResult(id) {
+        focusNode(id);
+        const node = nodes.get(id);
+        document.getElementById("node-search-input").value =
+          node.hiddenLabel || node.label || node.id;
+        hideSearchResults();
+      }
+
+      // Browser Panel
+      window.currentBrowserTab = "nodes";
+
+      function switchBrowserTab(tab) {
+        window.currentBrowserTab = tab;
+        // Update UI tabs
+        const tabs = document.querySelectorAll(".browser-tab");
+        tabs.forEach((t) => t.classList.remove("active"));
+        if (tab === "nodes") tabs[0].classList.add("active");
+        else tabs[1].classList.add("active");
+
+        renderBrowserContent();
+      }
+
+      function renderBrowserContent() {
+        const root = document.getElementById("browser-content-root");
+        const filter = document
+          .getElementById("browser-filter")
+          .value.toLowerCase();
+        const tab = window.currentBrowserTab;
+
+        root.innerHTML = "";
+
+        // Collect items
+        let items = [];
+        if (tab === "nodes") {
+          items = nodes.get().map((n) => {
+            const label = n.hiddenLabel || n.label || n.id;
+            return {
+              sortKey: label.toUpperCase(),
+              display: label,
+              data: n,
+            };
+          });
+        } else {
+          items = edges.get().map((e) => ({
+            sortKey: `${e.from} -> ${e.to}`.toUpperCase(),
+            display: `${e.from} -> ${e.to}`,
+            sub: e.label,
+            data: e,
+          }));
         }
 
-        function hideSearchResults() {
-            document.getElementById('search-results').style.display = 'none';
+        // Filter
+        if (filter) {
+          items = items.filter(
+            (i) =>
+              i.display.toLowerCase().includes(filter) ||
+              (i.sub && i.sub.toLowerCase().includes(filter)),
+          );
         }
 
-        function selectSearchResult(id) {
-            focusNode(id);
-            const node = nodes.get(id);
-            document.getElementById('node-search-input').value = node.hiddenLabel || node.label || node.id;
-            hideSearchResults();
-        }
+        // Sort
+        items.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
 
-        // Browser Panel
-        window.currentBrowserTab = 'nodes';
+        // Group (A-Z, #)
+        const groups = {};
+        items.forEach((item) => {
+          let firstChar = item.sortKey.charAt(0);
+          if (!/[A-Z]/.test(firstChar)) firstChar = "#";
+          if (!groups[firstChar]) groups[firstChar] = [];
+          groups[firstChar].push(item);
+        });
 
-        function switchBrowserTab(tab) {
-            window.currentBrowserTab = tab;
-            // Update UI tabs
-            const tabs = document.querySelectorAll('.browser-tab');
-            tabs.forEach(t => t.classList.remove('active'));
-            if (tab === 'nodes') tabs[0].classList.add('active');
-            else tabs[1].classList.add('active');
+        // Render
+        Object.keys(groups)
+          .sort()
+          .forEach((key) => {
+            const groupItems = groups[key];
+            if (key === "#") return; // Render # last
 
-            renderBrowserContent();
-        }
-
-        function renderBrowserContent() {
-            const root = document.getElementById('browser-content-root');
-            const filter = document.getElementById('browser-filter').value.toLowerCase();
-            const tab = window.currentBrowserTab;
-
-            root.innerHTML = '';
-
-            // Collect items
-            let items = [];
-            if (tab === 'nodes') {
-                items = nodes.get().map(n => {
-                    const label = n.hiddenLabel || n.label || n.id;
-                    return {
-                        sortKey: label.toUpperCase(),
-                        display: label,
-                        data: n
-                    };
-                });
-            } else {
-                items = edges.get().map(e => ({
-                    sortKey: `${e.from} -> ${e.to}`.toUpperCase(),
-                    display: `${e.from} -> ${e.to}`,
-                    sub: e.label,
-                    data: e
-                }));
-            }
-
-            // Filter
-            if (filter) {
-                items = items.filter(i => i.display.toLowerCase().includes(filter) || (i.sub && i.sub.toLowerCase().includes(filter)));
-            }
-
-            // Sort
-            items.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
-
-            // Group (A-Z, #)
-            const groups = {};
-            items.forEach(item => {
-                let firstChar = item.sortKey.charAt(0);
-                if (!/[A-Z]/.test(firstChar)) firstChar = '#';
-                if (!groups[firstChar]) groups[firstChar] = [];
-                groups[firstChar].push(item);
-            });
-
-            // Render
-            Object.keys(groups).sort().forEach(key => {
-                const groupItems = groups[key];
-                if (key === '#') return; // Render # last
-
-                root.innerHTML += `<div class="group-header">${key}</div><div class="group-content">
-                    ${groupItems.map(item => renderBrowserItem(item, tab)).join('')}
+            root.innerHTML += `<div class="group-header">${key}</div><div class="group-content">
+                    ${groupItems.map((item) => renderBrowserItem(item, tab)).join("")}
                 </div>`;
-            });
+          });
 
-            if (groups['#']) {
-                root.innerHTML += `<div class="group-header">#</div><div class="group-content">
-                    ${groups['#'].map(item => renderBrowserItem(item, tab)).join('')}
+        if (groups["#"]) {
+          root.innerHTML += `<div class="group-header">#</div><div class="group-content">
+                    ${groups["#"].map((item) => renderBrowserItem(item, tab)).join("")}
                 </div>`;
-            }
         }
+      }
 
-        function renderBrowserItem(item, tab) {
-            if (tab === 'nodes') {
-                return `
+      function renderBrowserItem(item, tab) {
+        if (tab === "nodes") {
+          return `
                 <div class="list-item" style="cursor: pointer; margin-bottom: 4px;" onclick="focusNode('${item.data.id}')">
                     <div style="font-weight: 500;">${item.display}</div>
                 </div>`;
-            } else {
-                return `
+        } else {
+          return `
                 <div class="list-item" style="cursor: pointer; margin-bottom: 4px;" onclick="selectEdge('${item.data.id}')">
                     <div style="font-size: 0.85rem;">${item.display}</div>
-                    <div style="font-size: 0.75rem; color: var(--accent-secondary);">${item.sub || ''}</div>
+                    <div style="font-size: 0.75rem; color: var(--accent-secondary);">${item.sub || ""}</div>
                 </div>`;
-            }
         }
+      }
 
-        function selectEdge(id) {
-            const edge = edges.get(id);
-            if (edge) {
-                // Select and open panel
-                network.selectEdges([id]);
-                onEdgeClick(id);
-                // Also focus camera on source node ? No, usually just selecting is enough.
-                // But edge might be far away. Let's focus on from node.
-                network.focus(edge.from, { scale: 1.0, animation: true });
-            }
+      function selectEdge(id) {
+        const edge = edges.get(id);
+        if (edge) {
+          // Select and open panel
+          network.selectEdges([id]);
+          onEdgeClick(id);
+          // Also focus camera on source node ? No, usually just selecting is enough.
+          // But edge might be far away. Let's focus on from node.
+          network.focus(edge.from, { scale: 1.0, animation: true });
         }
+      }
 
-        function showToast(msg, duration = 3000) {
-            const t = document.getElementById('toast');
-            t.innerText = msg;
-            t.style.display = 'block';
-            setTimeout(() => t.style.display = 'none', duration);
-        }
+      function showToast(msg, duration = 3000) {
+        const t = document.getElementById("toast");
+        t.innerText = msg;
+        t.style.display = "block";
+        setTimeout(() => (t.style.display = "none"), duration);
+      }
 
-        function escapeHtml(text) {
-            const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
-            return text.replace(/[&<>"']/g, m => map[m]);
-        }
+      function escapeHtml(text) {
+        const map = {
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#039;",
+        };
+        return text.replace(/[&<>"']/g, (m) => map[m]);
+      }
     </script>
-</body>
-
+  </body>
 </html>

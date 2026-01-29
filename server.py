@@ -62,7 +62,12 @@ class MemorixServer:
         self.app = FastAPI(title="A_Memorix 可视化编辑器")
         self.server_thread = None
         self._server = None
+        self._server = None
         self.should_exit = False
+        
+        # 缓存 relations predicate map
+        self._relation_cache = None
+        self._relation_cache_timestamp = 0
         
         # 配置 CORS
         self.app.add_middleware(
@@ -232,22 +237,30 @@ class MemorixServer:
             processed_edges = set()
             
             # 预加载所有关系谓语 (MetadataStore)
-            # 为了优化性能，一次性全部查出，构建内存查找表
-            edge_predicates = {} # (source, target) -> [predicate1, predicate2...]
+            # 使用缓存优化性能
+            edge_predicates = {}
+            relation_count = 0
             
             if self.plugin.metadata_store:
                 try:
-                    all_relations = self.plugin.metadata_store.get_relations()
-                    logger.info(f"[DEBUG] Fetched {len(all_relations)} relations from MetadataStore")
-                    for rel in all_relations:
-                        s, p, o = rel['subject'], rel['predicate'], rel['object']
-                        key = (s, o)
-                        if key not in edge_predicates:
-                            edge_predicates[key] = []
-                        edge_predicates[key].append(p)
+                    if self._relation_cache is None:
+                        # Rebuild cache
+                        import time
+                        start_t = time.time()
+                        raw_triples = self.plugin.metadata_store.get_all_triples()
+                        cache = {}
+                        count = 0
+                        for s, p, o in raw_triples:
+                            key = (s, o)
+                            if key not in cache: cache[key] = []
+                            cache[key].append(p)
+                            count += 1
+                        self._relation_cache = cache
+                        logger.info(f"[Cache] Rebuilt relation cache with {count} relations in {time.time() - start_t:.4f}s")
                     
-                    if all_relations:
-                        logger.info(f"[DEBUG] Sample edge_predicates key: {list(edge_predicates.keys())[0]}")
+                    edge_predicates = self._relation_cache
+                    # relation_count = sum(len(x) for x in edge_predicates.values()) # Optimize: don't sum every time if not needed
+                    relation_count = -1 # Skip expensive counting for debug
                         
                 except Exception as e:
                     logger.error(f"Error fetching relations for graph: {e}")
@@ -297,7 +310,7 @@ class MemorixServer:
                         processed_edges.add(edge_key)
             
             debug_info = {
-                "relation_count": len(all_relations) if self.plugin.metadata_store else -1,
+                "relation_count": relation_count,
                 "sample_key": list(edge_predicates.keys())[0] if edge_predicates else None,
                 "edge_count": len(edges),
                 "exclude_leaf": exclude_leaf
@@ -344,6 +357,7 @@ class MemorixServer:
                 
                 # 持久化保存
                 self.plugin.graph_store.save()
+                self._relation_cache = None
                 return {"success": True, "deleted_count": deleted_count}
             except Exception as e:
                 logger.error(f"Delete node failed: {e}")
@@ -363,6 +377,7 @@ class MemorixServer:
                 
                 # 持久化保存
                 self.plugin.graph_store.save()
+                self._relation_cache = None
                 return {"success": True}
             except Exception as e:
                 logger.error(f"Delete edge failed: {e}")
@@ -417,6 +432,7 @@ class MemorixServer:
                 
                 # 持久化保存
                 self.plugin.graph_store.save()
+                self._relation_cache = None
                 return {"success": True, "added_count": added_count, "predicate": data.predicate}
             except Exception as e:
                 logger.error(f"Create edge failed: {e}")
@@ -458,6 +474,7 @@ class MemorixServer:
                 
                 # 持久化保存
                 self.plugin.graph_store.save()
+                self._relation_cache = None
                 return {"success": True, "old_id": data.old_id, "new_id": data.new_id}
             except HTTPException:
                 raise
@@ -573,6 +590,7 @@ class MemorixServer:
                 if errors:
                     msg += f". Errors: {len(errors)} occurred."
                     
+                self._relation_cache = None
                 return {"success": True, "message": msg, "count": deleted_count, "errors": errors}
                 
             except Exception as e:
@@ -624,6 +642,7 @@ class MemorixServer:
                 except Exception as se:
                     logger.warning(f"Auto-save after delete failed: {se}")
                 
+                self._relation_cache = None
                 return {"success": True, "message": msg, "details": cleanup_plan}
                 
             except Exception as e:

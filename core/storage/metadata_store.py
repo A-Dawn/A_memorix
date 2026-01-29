@@ -319,7 +319,7 @@ class MetadataStore:
             logger.debug(f"添加段落: hash={hash_value[:16]}..., words={word_count}, type={knowledge_type}")
             return hash_value
         except sqlite3.IntegrityError:
-            logger.warning(f"段落已存在: {hash_value[:16]}...")
+            logger.debug(f"段落已存在: {hash_value[:16]}...")
             return hash_value
 
     def _canonicalize_name(self, name: str) -> str:
@@ -718,6 +718,15 @@ class MetadataStore:
         cursor.execute(sql, tuple(params))
         
         return [self._row_to_dict(row, "relation") for row in cursor.fetchall()]
+
+    def get_all_triples(self) -> List[Tuple[str, str, str]]:
+        """
+        高效获取所有三元组 (subject, predicate, object)
+        直接返回元组，跳过字典转换和pickle反序列化，用于构建缓存。
+        """
+        cursor = self._conn.cursor()
+        cursor.execute("SELECT subject, predicate, object FROM relations")
+        return list(cursor.fetchall())
 
     def get_paragraphs_by_relation(self, relation_hash: str) -> List[Dict[str, Any]]:
         """
