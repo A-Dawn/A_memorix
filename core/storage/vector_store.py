@@ -62,6 +62,8 @@ class VectorStore:
 
         self.dimension = dimension
         self.data_dir = Path(data_dir) if data_dir else None
+        if self.data_dir:
+            self.data_dir.mkdir(parents=True, exist_ok=True)
         self.quantization_type = QuantizationType.INT8 
         self.index_type = "sq8" 
         self.buffer_size = buffer_size
@@ -625,4 +627,8 @@ class VectorStore:
     @property
     def num_vectors(self) -> int:
         return len(self._known_hashes) - len(self._deleted_ids)
+
+    def __contains__(self, hash_value: str) -> bool:
+        """Check if a hash exists in the store"""
+        return hash_value in self._known_hashes and self._generate_id(hash_value) not in self._deleted_ids
 

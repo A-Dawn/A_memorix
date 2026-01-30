@@ -8,6 +8,9 @@ import asyncio
 import time
 from typing import List, Union, Optional
 import numpy as np
+import openai
+import aiohttp
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type, before_sleep_log, AsyncRetrying
 
 from src.common.logger import get_logger
 from src.chat.utils.utils import get_embedding
@@ -43,6 +46,7 @@ class EmbeddingAPIAdapter:
         default_dimension: int = 1024,
         enable_cache: bool = False,
         model_name: str = "auto",
+        retry_config: Optional[dict] = None,
     ):
         """初始化嵌入 API 适配器"""
         self.batch_size = batch_size
@@ -50,6 +54,12 @@ class EmbeddingAPIAdapter:
         self.default_dimension = default_dimension
         self.enable_cache = enable_cache
         self.model_name = model_name
+        
+        # 重试配置
+        self.retry_config = retry_config or {}
+        self.max_attempts = self.retry_config.get("max_attempts", 3)
+        self.max_wait_seconds = self.retry_config.get("max_wait_seconds", 10)
+        self.min_wait_seconds = self.retry_config.get("min_wait_seconds", 2)
         
         # 嵌入维度（延迟初始化）
         self._dimension: Optional[int] = None
@@ -114,21 +124,24 @@ class EmbeddingAPIAdapter:
             if dimensions is not None:
                 extra_params["dimensions"] = dimensions
                 
-            # 4. 调用 API
-            response = await client.get_embedding(
-                model_info=model_info,
-                embedding_input=text,
-                extra_params=extra_params
-            )
+            # 4. 调用 API (使用动态重试)
+            async for attempt in AsyncRetrying(
+                retry=retry_if_exception_type((openai.APIConnectionError, aiohttp.ClientError, asyncio.TimeoutError)),
+                stop=stop_after_attempt(self.max_attempts),
+                wait=wait_exponential(multiplier=1, min=self.min_wait_seconds, max=self.max_wait_seconds),
+                before_sleep=before_sleep_log(logger, "WARNING")
+            ):
+                with attempt:
+                    response = await client.get_embedding(
+                        model_info=model_info,
+                        embedding_input=text,
+                        extra_params=extra_params
+                    )
             
             return response.embedding
             
         except Exception as e:
             logger.error(f"通过直接 Client 获取 Embedding 失败: {e}")
-            # 降级尝试使用标准接口（不支持 dimensions）
-            if dimensions is None:
-                logger.warning("尝试降级到标准 get_embedding 接口...")
-                return await get_embedding(text)
             return None
     
     async def _detect_dimension(self) -> int:
@@ -275,9 +288,9 @@ class EmbeddingAPIAdapter:
             self._total_errors += 1
             logger.error(f"编码失败: {e}")
             
-            # 降级处理：返回零向量
-            logger.warning(f"返回零向量作为降级处理")
-            fallback = np.zeros((len(texts), target_dim), dtype=np.float32)
+            # 失败处理：返回 NaN 向量以供上层识别跳过
+            logger.warning(f"返回 NaN 向量以供跳过处理")
+            fallback = np.full((len(texts), target_dim), np.nan, dtype=np.float32)
             
             if single_input:
                 return fallback[0]
@@ -316,16 +329,16 @@ class EmbeddingAPIAdapter:
                         embedding = await self._get_embedding_direct(text, dimensions=dimensions)
                         
                         if embedding is None:
-                            # API 返回 None，使用零向量
+                            # API 返回 None，使用 NaN 向量
                             dim = dimensions or self._dimension or self.default_dimension
-                            embedding = [0.0] * dim
-                            logger.warning(f"文本 {index} 编码返回 None，使用零向量")
+                            embedding = [np.nan] * dim
+                            logger.warning(f"文本 {index} 编码返回 None，使用 NaN 向量")
                         return index, np.array(embedding, dtype=np.float32)
                     except Exception as e:
                         logger.error(f"文本 {index} 编码失败: {e}")
-                        # 返回零向量
+                        # 返回 NaN 向量
                         dim = dimensions or self._dimension or self.default_dimension
-                        return index, np.zeros(dim, dtype=np.float32)
+                        return index, np.full(dim, np.nan, dtype=np.float32)
             
             # 并发执行
             tasks = [
@@ -429,6 +442,7 @@ def create_embedding_api_adapter(
     max_concurrent: int = 5,
     default_dimension: int = 1024,
     model_name: str = "auto",
+    retry_config: Optional[dict] = None,
 ) -> EmbeddingAPIAdapter:
     """
     创建嵌入 API 适配器
@@ -447,4 +461,5 @@ def create_embedding_api_adapter(
         max_concurrent=max_concurrent,
         default_dimension=default_dimension,
         model_name=model_name,
+        retry_config=retry_config,
     )

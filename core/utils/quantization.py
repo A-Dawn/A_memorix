@@ -102,9 +102,10 @@ def _scalar_quantize_int8(vector: np.ndarray) -> np.ndarray:
 
     # 归一化到 [0, 255]
     normalized = (vector - min_val) / (max_val - min_val) * 255
-
-    # 转换为 int8
-    quantized = np.round(normalized).astype(np.int8)
+    
+    # 映射到 [-128, 127] 并转换为 int8
+    # np.round might return float, minus 128 then cast
+    quantized = np.round(normalized - 128.0).astype(np.int8)
 
     # 存储归一化参数（用于反量化）
     # 在实际存储中，这些参数需要单独保存

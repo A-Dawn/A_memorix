@@ -33,3 +33,7 @@ pydantic>=2.0.0
 # 1. sqlite3 是 Python 标准库，无需安装
 # 2. json, re, time, pathlib 等都是标准库
 # 3. sentence-transformers 不需要（使用主程序 Embedding API）
+
+# UI 交互
+rich>=14.0.0
+tenacity>=8.0.0

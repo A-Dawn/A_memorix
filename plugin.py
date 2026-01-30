@@ -64,7 +64,7 @@ class A_MemorixPlugin(BasePlugin):
 
     # 插件基本信息（PluginBase要求的抽象属性）
     plugin_name = "A_Memorix"
-    plugin_version = "0.2.0"
+    plugin_version = "0.2.3"
     plugin_description = "轻量级知识库插件 - 完全独立的记忆增强系统"
     plugin_author = "A_Dawn"
     enable_plugin = False  # 默认禁用，需要在config.toml中启用
@@ -82,6 +82,9 @@ class A_MemorixPlugin(BasePlugin):
         "graph": "知识图谱配置",
         "web": "可视化服务器配置",
         "advanced": "高级配置",
+        "summarization": "总结与导入配置",
+        "schedule": "定时任务配置",
+        "filter": "消息过滤配置",
     }
 
     # 配置Schema定义
@@ -89,7 +92,7 @@ class A_MemorixPlugin(BasePlugin):
         "plugin": {
             "config_version": ConfigField(
                 type=str,
-                default="2.0.0",
+                default="2.0.1",
                 description="配置文件版本"
             ),
             "enabled": ConfigField(
@@ -130,6 +133,15 @@ class A_MemorixPlugin(BasePlugin):
                 type=str,
                 default="auto",
                 description="指定嵌入模型名称 (对应 model_config.toml 中的 name)"
+            ),
+            "retry": ConfigField(
+                type=dict,
+                default={
+                    "max_attempts": 5,
+                    "max_wait_seconds": 30,
+                    "min_wait_seconds": 2,
+                },
+                description="嵌入重试配置: max_attempts, max_wait_seconds, min_wait_seconds"
             ),
         },
         "retrieval": {
@@ -763,8 +775,9 @@ class A_MemorixPlugin(BasePlugin):
         self.embedding_manager = create_embedding_api_adapter(
             batch_size=self.get_config("embedding.batch_size", 32),
             max_concurrent=self.get_config("embedding.max_concurrent", 5),
-            default_dimension=self.get_config("embedding.dimension", 384),
+            default_dimension=self.get_config("embedding.dimension", 1024),
             model_name=self.get_config("embedding.model_name", "auto"),
+            retry_config=self.get_config("embedding.retry", {}),
         )
         logger.info("嵌入 API 适配器初始化完成")
 

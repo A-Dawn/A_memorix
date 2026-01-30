@@ -92,12 +92,19 @@ class GraphStore:
         # 状态管理
         self._modification_mode = GraphModificationMode.BATCH
         
-        # 缓存的转置邻接矩阵（用于反向查找）
+        # 状态管理
         self._adjacency_T: Optional[Union[csr_matrix, csc_matrix]] = None
         self._adjacency_dirty: bool = True
+        self._saliency_cache: Optional[Dict[str, float]] = None
 
         logger.info(f"GraphStore 初始化: format={matrix_format}")
-        
+
+    def _canonicalize(self, node: str) -> str:
+        """规范化节点名称 (用于去重和内部索引)"""
+        if not node:
+            return ""
+        return str(node).strip().lower()
+
     @contextlib.contextmanager
     def batch_update(self):
         """
@@ -127,7 +134,7 @@ class GraphStore:
         # 转换逻辑
         if new_mode == GraphModificationMode.INCREMENTAL:
             # 转换为 LIL
-            if not isinstance(self._adjacency, (list, dict)): # crudely check if not lil
+            if not isinstance(self._adjacency, lil_matrix): # crudely check if not lil
                  try:
                      self._adjacency = self._adjacency.tolil()
                      logger.debug("已转换为 LIL 格式")
@@ -161,20 +168,23 @@ class GraphStore:
         """
         added = 0
         for node in nodes:
-            if node in self._node_to_idx:
+            canon = self._canonicalize(node)
+            if canon in self._node_to_idx:
                 logger.debug(f"节点已存在，跳过: {node}")
                 continue
 
             # 添加到节点列表
             idx = len(self._nodes)
-            self._nodes.append(node)
-            self._node_to_idx[node] = idx
+            self._nodes.append(node) # 存储原始节点名
+            self._node_to_idx[canon] = idx # 映射规范化节点名到索引
+            self._adjacency_dirty = True
+            self._saliency_cache = None
 
             # 添加属性
             if attributes and node in attributes:
-                self._node_attrs[node] = attributes[node]
+                self._node_attrs[canon] = attributes[node]
             else:
-                self._node_attrs[node] = {}
+                self._node_attrs[canon] = {}
 
             added += 1
             self._total_nodes_added += 1
@@ -207,9 +217,11 @@ class GraphStore:
         # 确保所有节点存在
         nodes_to_add = set()
         for src, tgt in edges:
-            if src not in self._node_to_idx:
+            src_canon = self._canonicalize(src)
+            tgt_canon = self._canonicalize(tgt)
+            if src_canon not in self._node_to_idx:
                 nodes_to_add.add(src)
-            if tgt not in self._node_to_idx:
+            if tgt_canon not in self._node_to_idx:
                 nodes_to_add.add(tgt)
 
         if nodes_to_add:
@@ -233,8 +245,8 @@ class GraphStore:
              # 尝试直接使用 LIL 索引更新
              try:
                  # 批量获取索引
-                 rows = [self._node_to_idx[src] for src, _ in edges]
-                 cols = [self._node_to_idx[tgt] for _, tgt in edges]
+                 rows = [self._node_to_idx[self._canonicalize(src)] for src, _ in edges]
+                 cols = [self._node_to_idx[self._canonicalize(tgt)] for _, tgt in edges]
                  
                  # 确保矩阵足够大 (如果 add_nodes 没有扩展它) - 通常 add_nodes 会处理
                  # 这里直接赋值
@@ -254,8 +266,8 @@ class GraphStore:
         data_values = []
 
         for (src, tgt), weight in zip(edges, weights):
-            src_idx = self._node_to_idx[src]
-            tgt_idx = self._node_to_idx[tgt]
+            src_idx = self._node_to_idx[self._canonicalize(src)]
+            tgt_idx = self._node_to_idx[self._canonicalize(tgt)]
 
             row_indices.append(src_idx)
             col_indices.append(tgt_idx)
@@ -306,7 +318,10 @@ class GraphStore:
         Returns:
             更新后的权重
         """
-        if source not in self._node_to_idx or target not in self._node_to_idx:
+        src_canon = self._canonicalize(source)
+        tgt_canon = self._canonicalize(target)
+
+        if src_canon not in self._node_to_idx or tgt_canon not in self._node_to_idx:
             logger.warning(f"节点不存在，无法更新权重: {source} -> {target}")
             return 0.0
 
@@ -344,35 +359,60 @@ class GraphStore:
             return 0
 
         # 检查哪些节点存在
-        existing_nodes = [node for node in nodes if node in self._node_to_idx]
+        existing_nodes = [node for node in nodes if self._canonicalize(node) in self._node_to_idx]
         if not existing_nodes:
             logger.warning("所有节点都不存在，无法删除")
             return 0
 
         # 获取要删除的索引
-        indices_to_delete = [self._node_to_idx[node] for node in existing_nodes]
+        indices_to_delete = {self._node_to_idx[self._canonicalize(node)] for node in existing_nodes}
         indices_to_keep = [
             i for i in range(len(self._nodes))
             if i not in indices_to_delete
         ]
 
         # 创建索引映射
-        old_to_new = {old: new for new, old in enumerate(indices_to_keep)}
+        old_to_new = {old_idx: new_idx for new_idx, old_idx in enumerate(indices_to_keep)}
 
-        # 重建节点列表
+        # 重建节点列表 (存储原始节点名)
         self._nodes = [self._nodes[i] for i in indices_to_keep]
-        self._node_to_idx = {node: old_to_new[idx] for node, idx in self._node_to_idx.items() if idx in old_to_new}
+        # 重建规范化节点名到索引的映射
+        self._node_to_idx = {self._canonicalize(self._nodes[new_idx]): new_idx for new_idx in range(len(self._nodes))}
 
-        # 删除节点属性
-        for node in existing_nodes:
-            self._node_attrs.pop(node, None)
+        # 删除并重构节点属性
+        new_node_attrs = {}
+        for idx, node_name in enumerate(self._nodes):
+            canon = self._canonicalize(node_name)
+            if canon in self._node_attrs:
+                new_node_attrs[canon] = self._node_attrs[canon]
+        self._node_attrs = new_node_attrs
 
         # 重建邻接矩阵
         if self._adjacency is not None:
-            self._adjacency = self._adjacency[indices_to_keep, :][:, indices_to_keep]
+            # 转换为COO格式以进行切片，然后转换回原始格式
+            self._adjacency = self._adjacency.tocoo()
+            mask_rows = np.isin(self._adjacency.row, list(indices_to_keep))
+            mask_cols = np.isin(self._adjacency.col, list(indices_to_keep))
+            
+            # 筛选出保留的行和列
+            new_rows = self._adjacency.row[mask_rows & mask_cols]
+            new_cols = self._adjacency.col[mask_rows & mask_cols]
+            new_data = self._adjacency.data[mask_rows & mask_cols]
+
+            # 更新索引
+            new_rows = np.array([old_to_new[r] for r in new_rows])
+            new_cols = np.array([old_to_new[c] for c in new_cols])
+
+            n = len(self._nodes)
+            if self.matrix_format == "csr":
+                self._adjacency = csr_matrix((new_data, (new_rows, new_cols)), shape=(n, n))
+            else: # csc
+                self._adjacency = csc_matrix((new_data, (new_rows, new_cols)), shape=(n, n))
+
 
         deleted_count = len(existing_nodes)
         self._total_nodes_deleted += deleted_count
+        self._adjacency_dirty = True
 
         logger.info(f"删除 {deleted_count} 个节点")
         return deleted_count
@@ -404,9 +444,11 @@ class GraphStore:
         # 构建要删除的边的索引集合
         edges_to_delete = set()
         for src, tgt in edges:
-            if src in self._node_to_idx and tgt in self._node_to_idx:
-                src_idx = self._node_to_idx[src]
-                tgt_idx = self._node_to_idx[tgt]
+            src_canon = self._canonicalize(src)
+            tgt_canon = self._canonicalize(tgt)
+            if src_canon in self._node_to_idx and tgt_canon in self._node_to_idx:
+                src_idx = self._node_to_idx[src_canon]
+                tgt_idx = self._node_to_idx[tgt_canon]
                 edges_to_delete.add((src_idx, tgt_idx))
 
         # 过滤要删除的边
@@ -455,32 +497,22 @@ class GraphStore:
         Args:
             node: 节点名称
         """
-        return node in self._node_to_idx
+        return self._canonicalize(node) in self._node_to_idx
 
     def find_node(self, node: str, ignore_case: bool = False) -> Optional[str]:
         """
-        查找节点（支持大小写不敏感）
+        查找节点 (由于底层已统一规范化，ignore_case 始终有效)
         
         Args:
             node: 节点名称
-            ignore_case: 是否忽略大小写
+            ignore_case: 是否忽略大小写 (已默认忽略)
             
         Returns:
             真实节点名称 (如果存在)，否则 None
         """
-        if node in self._node_to_idx:
-            return node
-            
-        if not ignore_case:
-            return None
-            
-        # 大小写不敏感查找 (Slow fallback)
-        # TODO: Optimize with a cached lower->original map if this becomes a bottleneck
-        node_lower = node.lower()
-        for original_node in self._nodes:
-            if original_node.lower() == node_lower:
-                return original_node
-                
+        canon = self._canonicalize(node)
+        if canon in self._node_to_idx:
+            return self._nodes[self._node_to_idx[canon]]
         return None
 
     def get_node_attributes(self, node: str) -> Optional[Dict[str, Any]]:
@@ -493,7 +525,8 @@ class GraphStore:
         Returns:
             节点属性字典，不存在则返回None
         """
-        return self._node_attrs.get(node)
+        canon = self._canonicalize(node)
+        return self._node_attrs.get(canon)
 
     def get_neighbors(self, node: str) -> List[str]:
         """
@@ -505,10 +538,11 @@ class GraphStore:
         Returns:
             邻居节点列表
         """
-        if node not in self._node_to_idx or self._adjacency is None:
+        canon = self._canonicalize(node)
+        if canon not in self._node_to_idx or self._adjacency is None:
             return []
 
-        idx = self._node_to_idx[node]
+        idx = self._node_to_idx[canon]
 
         # 获取邻接行
         if self.matrix_format == "csr":
@@ -525,22 +559,18 @@ class GraphStore:
     def get_edge_weight(self, source: str, target: str) -> float:
         """
         获取边的权重
-
-        Args:
-            source: 源节点
-            target: 目标节点
-
-        Returns:
-            边权重，不存在则返回0.0
         """
-        if source not in self._node_to_idx or target not in self._node_to_idx:
+        src_canon = self._canonicalize(source)
+        tgt_canon = self._canonicalize(target)
+
+        if src_canon not in self._node_to_idx or tgt_canon not in self._node_to_idx:
             return 0.0
 
         if self._adjacency is None:
             return 0.0
 
-        src_idx = self._node_to_idx[source]
-        tgt_idx = self._node_to_idx[target]
+        src_idx = self._node_to_idx[src_canon]
+        tgt_idx = self._node_to_idx[tgt_canon]
 
         return float(self._adjacency[src_idx, tgt_idx])
 
@@ -697,10 +727,12 @@ class GraphStore:
 
         # 处理悬挂节点（出度为0）
         dangling = (out_degrees == 0)
-        out_degrees[dangling] = 1.0  # 避免除零
+        out_degrees_inv = np.zeros_like(out_degrees)
+        out_degrees_inv[~dangling] = 1.0 / out_degrees[~dangling]
 
-        # 归一化
-        D_inv = csr_matrix(np.diag(1.0 / out_degrees))
+        # 归一化 (使用稀疏对角阵避免内存溢出)
+        from scipy.sparse import diags
+        D_inv = diags(out_degrees_inv)
         M = adj.T @ D_inv  # 转移矩阵
 
         # 初始化个性化向量
@@ -723,8 +755,15 @@ class GraphStore:
                 p = p / p.sum()
 
         # 幂迭代法
+        p_orig = p.copy()
         for i in range(max_iter):
-            p_new = (1 - alpha) * p + alpha * (M @ p)
+            # p_new = alpha * M * p + (1-alpha) * personalization
+            p_new = alpha * (M @ p) + (1 - alpha) * p_orig
+            
+            # 处理因为悬挂节点导致的概率流失
+            current_sum = p_new.sum()
+            if current_sum < 1.0:
+                p_new += (1.0 - current_sum) * p_orig
 
             # 检查收敛
             diff = np.linalg.norm(p_new - p, 1)
@@ -732,14 +771,24 @@ class GraphStore:
                 logger.debug(f"PageRank在 {i+1} 次迭代后收敛")
                 p = p_new
                 break
-
             p = p_new
         else:
             logger.warning(f"PageRank未在 {max_iter} 次迭代内收敛")
 
-        # 转换为字典
-        scores = {node: float(p[idx]) for node, idx in self._node_to_idx.items()}
+        # 转换为真实节点名称字典
+        return {self._nodes[idx]: float(val) for idx, val in enumerate(p)}
 
+    def get_saliency_scores(self) -> Dict[str, float]:
+        """
+        获取节点显著性得分 (带有缓存机制)
+        """
+        if self._saliency_cache is not None and not self._adjacency_dirty:
+            return self._saliency_cache
+
+        logger.debug("正在计算节点显著性得分 (PageRank)...")
+        scores = self.compute_pagerank()
+        self._saliency_cache = scores
+        # 注意：这里我们不把 _adjacency_dirty 设为 False，因为其它逻辑(如_adjacency_T)也依赖它
         return scores
 
     def connect_synonyms(
@@ -870,10 +919,22 @@ class GraphStore:
         with open(metadata_path, "rb") as f:
             metadata = pickle.load(f)
 
-        # 恢复状态
+        # 恢复状态，并通过规范化处理旧数据中的重复项
         self._nodes = metadata["nodes"]
-        self._node_to_idx = metadata["node_to_idx"]
-        self._node_attrs = metadata["node_attrs"]
+        self._node_attrs = {} # 重新构建以确保 key 规范化
+        self._node_to_idx = {} # 重新构建以确保 key 规范化
+
+        # 重新构建映射，处理旧数据中的碰撞
+        for idx, node_name in enumerate(self._nodes):
+            canon = self._canonicalize(node_name)
+            if canon not in self._node_to_idx:
+                self._node_to_idx[canon] = idx
+            
+            # 处理属性 (优先保留已有的)
+            orig_attrs = metadata.get("node_attrs", {})
+            if node_name in orig_attrs and canon not in self._node_attrs:
+                self._node_attrs[canon] = orig_attrs[node_name]
+
         self.matrix_format = metadata["matrix_format"]
         self._total_nodes_added = metadata["total_nodes_added"]
         self._total_edges_added = metadata["total_edges_added"]

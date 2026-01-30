@@ -193,6 +193,10 @@ class MetadataStore:
             CREATE INDEX IF NOT EXISTS idx_entities_name
             ON entities(name)
         """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_paragraphs_source
+            ON paragraphs(source)
+        """)
 
         self._conn.commit()
         logger.debug("数据库表结构初始化完成")
@@ -242,6 +246,31 @@ class MetadataStore:
             except sqlite3.OperationalError as e:
                 logger.warning(f"Schema迁移失败: {e}")
 
+        # 数据修复: 检查是否存在 source/vector_index 列错位的情况
+        # 症状: vector_index (本应是int) 变成了文件名字符串, source (本应是文件名) 变成了类型字符串
+        try:
+            cursor.execute("""
+                SELECT count(*) FROM paragraphs 
+                WHERE typeof(vector_index) = 'text' 
+                AND source IN ('mixed', 'factual', 'narrative', 'structured', 'auto')
+            """)
+            count = cursor.fetchone()[0]
+            if count > 0:
+                logger.warning(f"检测到 {count} 条数据存在列错位（文件名误存入vector_index），正在自动修复...")
+                cursor.execute("""
+                    UPDATE paragraphs
+                    SET 
+                        knowledge_type = source,
+                        source = vector_index,
+                        vector_index = NULL
+                    WHERE typeof(vector_index) = 'text' 
+                    AND source IN ('mixed', 'factual', 'narrative', 'structured', 'auto')
+                """)
+                self._conn.commit()
+                logger.info(f"自动修复完成: 已校正 {cursor.rowcount} 条数据")
+        except Exception as e:
+            logger.error(f"数据自动修复失败: {e}")
+
     def add_paragraph(
         self,
         content: str,
@@ -290,7 +319,7 @@ class MetadataStore:
             logger.debug(f"添加段落: hash={hash_value[:16]}..., words={word_count}, type={knowledge_type}")
             return hash_value
         except sqlite3.IntegrityError:
-            logger.warning(f"段落已存在: {hash_value[:16]}...")
+            logger.debug(f"段落已存在: {hash_value[:16]}...")
             return hash_value
 
     def _canonicalize_name(self, name: str) -> str:
@@ -690,6 +719,15 @@ class MetadataStore:
         
         return [self._row_to_dict(row, "relation") for row in cursor.fetchall()]
 
+    def get_all_triples(self) -> List[Tuple[str, str, str]]:
+        """
+        高效获取所有三元组 (subject, predicate, object)
+        直接返回元组，跳过字典转换和pickle反序列化，用于构建缓存。
+        """
+        cursor = self._conn.cursor()
+        cursor.execute("SELECT subject, predicate, object FROM relations")
+        return list(cursor.fetchall())
+
     def get_paragraphs_by_relation(self, relation_hash: str) -> List[Dict[str, Any]]:
         """
         获取支持指定关系的所有段落
@@ -721,6 +759,32 @@ class MetadataStore:
             段落列表
         """
         return self.query("SELECT * FROM paragraphs WHERE source = ?", (source,))
+
+    def get_all_sources(self) -> List[Dict[str, Any]]:
+        """
+        获取所有来源文件统计信息
+        
+        Returns:
+            来源列表 [{'source': 'name', 'count': int, 'last_updated': timestamp}]
+        """
+        cursor = self._conn.cursor()
+        # 排除 source 为 NULL 或空的记录
+        cursor.execute("""
+            SELECT source, COUNT(*) as count, MAX(created_at) as last_updated 
+            FROM paragraphs 
+            WHERE source IS NOT NULL AND source != ''
+            GROUP BY source
+            ORDER BY last_updated DESC
+        """)
+        
+        results = []
+        for row in cursor.fetchall():
+            results.append({
+                "source": row[0],
+                "count": row[1],
+                "last_updated": row[2]
+            })
+        return results
 
 
     def search_paragraphs_by_content(self, content_query: str) -> List[Dict[str, Any]]:
@@ -773,15 +837,24 @@ class MetadataStore:
             entity_name = row[0]
             entity_hash = row[1]
         else:
-            # 尝试作为 Name 查询
+            # 尝试作为 Name 查询 (原始匹配)
             cursor.execute("SELECT name, hash FROM entities WHERE name = ?", (hash_or_name,))
             row = cursor.fetchone()
             if row:
                 entity_name = row[0]
                 entity_hash = row[1]
+            else:
+                # 最后的最后：尝试规范化名称 (Canonical) 查询，解决大小写或 WebUI 手动输入导致的不匹配
+                name_canon = self._canonicalize_name(hash_or_name)
+                canon_hash = compute_hash(name_canon)
+                cursor.execute("SELECT name, hash FROM entities WHERE hash = ?", (canon_hash,))
+                row = cursor.fetchone()
+                if row:
+                    entity_name = row[0]
+                    entity_hash = row[1]
                 
         if not entity_name or not entity_hash:
-            logger.warning(f"删除实体失败，未找到实体: {hash_or_name}")
+            logger.debug(f"删除实体请求跳过：未在元数据记录中找到 {hash_or_name}")
             return False
 
         logger.info(f"开始删除实体: {entity_name} (Hash: {entity_hash[:8]}...)")

@@ -1,7 +1,7 @@
 {
   "manifest_version": 1,
   "name": "A_Memorix",
-  "version": "0.2.0",
+  "version": "0.2.3",
   "description": "轻量级知识库插件 - 基于双路检索的完全独立的记忆增强系统，优化低资源环境下的知识存储与检索",
   "author": {
     "name": "A_Dawn"
@@ -34,7 +34,7 @@
     "embedding": {
       "dimension": {
         "type": "integer",
-        "default": 384,
+        "default": 1024,
         "description": "嵌入向量维度"
       },
       "quantization_type": {
@@ -61,6 +61,24 @@
         "type": "string",
         "default": "auto",
         "description": "指定嵌入模型名称 (对应 model_config.toml 中的 name)"
+      },
+      "retry": {
+        "type": "object",
+        "properties": {
+          "max_attempts": {
+            "type": "integer",
+            "default": 5
+          },
+          "max_wait_seconds": {
+            "type": "integer",
+            "default": 30
+          },
+          "min_wait_seconds": {
+            "type": "integer",
+            "default": 2
+          }
+        },
+        "description": "嵌入重试配置"
       }
     },
     "retrieval": {
