@@ -666,6 +666,10 @@
         <div class="dock-icon">📖</div>
         <span>内容字典</span>
       </div>
+      <div class="dock-btn" onclick="openPanel('recycle-bin-panel')">
+        <div class="dock-icon">♻️</div>
+        <span>回收站</span>
+      </div>
       <div class="divider"></div>
       <div class="dock-btn" onclick="openPanel('add-node-panel')">
         <div class="dock-icon">➕</div>
@@ -797,7 +801,7 @@
         <div id="sources-list-root" style="margin-top: 24px"></div>
       </div>
 
-      <!-- Edge Panel -->
+      <!-- 边面板 (Edge Panel) -->
       <div id="edge-editor-tpl">
         <div style="text-align: center; margin-bottom: 24px">
           <div style="font-size: 0.8rem; color: var(--text-dim)">关系详情</div>
@@ -836,9 +840,24 @@
         </button>
 
         <div id="edge-sources-list-root" style="margin-top: 24px"></div>
-      </div>
+        
+        <!-- V5 记忆控制 (V5 Memory Controls) -->
+        <div style="border-top: 1px solid var(--glass-border); margin-top: 20px; padding-top: 15px;">
+           <label style="font-size: 0.8rem; color: var(--text-dim); margin-bottom: 10px; display: block;">记忆全生命周期管理</label>
+           <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;">
+               <button class="btn btn-ghost" onclick="reinforceEdge()" title="强化记忆 (重置衰退)">
+                 💪 强化
+               </button>
+               <button class="btn btn-ghost" onclick="protectEdge()" title="保护/置顶 (防止遗忘)">
+                 📌 保护
+               </button>
+               <button class="btn btn-ghost" onclick="freezeEdge()" title="冷冻 (转为非活跃)">
+                 ❄️ 冷冻
+               </button>
+           </div>
+        </div>
 
-      <!-- Add Node Panel -->
+      <!-- 新增节点面板 (Add Node Panel) -->
       <div id="add-node-tpl">
         <div class="form-group">
           <label>实体名称</label>
@@ -853,7 +872,7 @@
         </button>
       </div>
 
-      <!-- Add Edge Panel -->
+      <!-- 新增关系面板 (Add Edge Panel) -->
       <div id="add-edge-tpl">
         <div class="form-group">
           <label>源实体</label>
@@ -886,7 +905,7 @@
         </button>
       </div>
 
-      <!-- Source Manager Panel -->
+      <!-- 溯源管理面板 (Source Manager Panel) -->
       <div id="source-manager-tpl">
         <div class="switch-row">
           <span style="font-size: 0.85rem">自动保存 (Runtime)</span>
@@ -907,7 +926,7 @@
         </div>
       </div>
 
-      <!-- Content Browser Panel -->
+      <!-- 内容浏览器面板 (Content Browser Panel) -->
       <div id="content-browser-tpl">
         <div class="browser-tabs">
           <div class="browser-tab active" onclick="switchBrowserTab('nodes')">
@@ -946,7 +965,23 @@
         </div>
       </div>
 
-      <!-- Help Panel -->
+      <!-- 回收站面板 (Recycle Bin Panel) -->
+      <div id="recycle-bin-tpl">
+        <div style="text-align: center; margin-bottom: 24px">
+           <div style="font-size: 0.8rem; color: var(--text-dim)">回收站</div>
+           <div style="font-size: 1.1rem; color: var(--text-main)">已删除记忆</div>
+        </div>
+        
+        <div style="margin-bottom: 12px; font-size: 0.85rem; color: var(--text-dim); text-align: center;">
+           ℹ️ 仅保留最近删除的50条记录
+        </div>
+
+        <div id="recycle-list-root" style="overflow-y: auto; height: calc(100vh - 250px); padding-right: 4px;">
+           <div style="text-align:center; padding:20px; color:var(--text-dim)">加载中...</div>
+        </div>
+      </div>
+
+      <!-- 帮助面板 (Help Panel) -->
       <div id="help-tpl">
         <div class="help-section">
           <div class="help-title"><span>🖱️</span> 基础交互</div>
@@ -1034,7 +1069,7 @@
         </p>
       </div>
 
-      <!-- View Settings Panel -->
+      <!-- 视图设置面板 (View Settings Panel) -->
       <div id="view-settings-tpl">
         <div class="group-header">视觉外观</div>
         <div class="group-content">
@@ -1179,7 +1214,7 @@
       let isSimulationRunning = true; // Physics simulation state
       let _freezeTimer = null;
 
-      // Loading Control
+      // 加载控制 (Loading Control)
       function showLoader(text = "正在同步全景知识图谱...", isSync = false) {
         const loader = document.getElementById("loader");
         const textEl = loader.querySelector(".loader-text");
@@ -1205,7 +1240,7 @@
         }, 500);
       }
 
-      // Theme Config
+      // 主题配置 (Theme Config)
       const THEMES = ["dark", "light", "neon"];
       let currentThemeIdx = 0;
       const THEME_CONFIG = {
@@ -1213,16 +1248,31 @@
           background: "#0f172a",
           node: { background: "#38bdf8", border: "#0ea5e9", font: "#f1f5f9" },
           edge: { color: "rgba(148, 163, 184, 0.4)", highlight: "#38bdf8" },
+          v5: {
+             inactive: "rgba(203, 213, 225, 0.4)", // Slate-300
+             pinned: "rgba(251, 191, 36, 0.8)",    // Amber-400
+             protected: "rgba(52, 211, 153, 0.8)"  // Emerald-400
+          }
         },
         light: {
           background: "#f8fafc",
           node: { background: "#0284c7", border: "#0369a1", font: "#1e293b" },
           edge: { color: "rgba(100, 116, 139, 0.4)", highlight: "#0284c7" },
+          v5: {
+             inactive: "rgba(148, 163, 184, 0.4)", // Slate-400
+             pinned: "rgba(245, 158, 11, 0.8)",    // Amber-500
+             protected: "rgba(16, 185, 129, 0.8)"  // Emerald-500
+          }
         },
         neon: {
           background: "#13001f",
           node: { background: "#d946ef", border: "#c026d3", font: "#e9d5ff" },
           edge: { color: "rgba(217, 70, 239, 0.4)", highlight: "#d946ef" },
+          v5: {
+             inactive: "rgba(255, 255, 255, 0.2)",
+             pinned: "rgba(252, 211, 77, 0.9)",
+             protected: "rgba(110, 231, 183, 0.9)"
+          }
         },
       };
 
@@ -1231,7 +1281,7 @@
         const theme = THEMES[currentThemeIdx];
         document.documentElement.setAttribute("data-theme", theme);
 
-        // Re-apply options if network exists
+        // 如果网络已存在，则重新应用选项
         if (network) applyThemeToNetwork(theme);
         showToast(`已切换主题: ${theme}`);
       }
@@ -1250,7 +1300,6 @@
               edges: { smooth: { enabled: false } }, // Straight lines
             });
           }
-          // Don't show toast here if called programmatically, handle in caller or use optional param
         } else {
           // Restore defaults
           if (network) {
@@ -1269,7 +1318,7 @@
 
       function applyThemeToNetwork(theme) {
         const cfg = THEME_CONFIG[theme];
-        document.body.style.backgroundColor = cfg.background; // ensure body matches
+        document.body.style.backgroundColor = cfg.background; // 确保 body 背景色匹配
 
         network.setOptions({
           nodes: {
@@ -1289,7 +1338,7 @@
           },
         });
 
-        // If we are not highlighting, we should force update dataset colors to new defaults
+        // 如果当前没有处于高亮状态，我们应该强制更新数据集颜色为新的默认值
         if (!isHighlighting) {
           const allNodes = nodes.get();
           const updates = allNodes.map((n) => ({
@@ -1300,11 +1349,31 @@
           nodes.update(updates);
 
           const allEdges = edges.get();
-          const edgeUpdates = allEdges.map((e) => ({
-            id: e.id,
-            color: { color: cfg.edge.color, highlight: cfg.edge.highlight },
-            font: { color: cfg.edge.color },
-          }));
+          const edgeUpdates = allEdges.map((e) => {
+            // 应用 V5 逻辑 (Apply V5 Logic)
+            let color = cfg.edge.color;
+            let dashes = false;
+            let shadow = false;
+            let width = 1;
+            
+            if (e.is_active === false) { // Explicitly False (backend sends is_active=False)
+                 color = cfg.v5.inactive;
+                 dashes = true;
+            } else if (e.is_pinned || e.is_protected) {
+                 width = 2;
+                 const shadowColor = e.is_pinned ? cfg.v5.pinned : cfg.v5.protected;
+                 shadow = { enabled: true, color: shadowColor, size: 5 };
+            }
+            
+            return {
+                id: e.id,
+                color: { color: color, highlight: cfg.edge.highlight },
+                font: { color: cfg.edge.color },
+                dashes: dashes,
+                width: width,
+                shadow: shadow
+            };
+          });
           edges.update(edgeUpdates);
         } else {
           // If highlighting, just reset to apply new base colors
@@ -1376,8 +1445,8 @@
             tooltipDelay: 300,
           },
           layout: {
-            improvedLayout: false, // Performance: Disable default layout algo, use random scatter
-            randomSeed: 42 // Deterministic fallback
+            improvedLayout: false, // 性能优化：禁用默认布局算法，使用随机散点
+            randomSeed: 42 // 确定性回退方案 (Deterministic fallback)
           }
         };
 
@@ -1394,8 +1463,8 @@
           }
         });
 
-        // Removed premature hideLoader. 
-        // Loader control is now fully managed by loadData() to ensure it waits for API response.
+        // 移除了过早的 hideLoader。
+        // 加载控制现在完全由 loadData() 管理，以确保等待 API 响应。
 
         // LOD Events
         network.on("hoverNode", function (params) {
@@ -1456,14 +1525,14 @@
       }
 
       function updateLabelsByZoom() {
-        if (isHighlighting) return; // Don't interfere with focus mode
+        if (isHighlighting) return; // 不要干扰聚焦模式
 
         const scale = network.getScale();
         const zoomedIn = scale > 0.8;
         const allNodes = nodes.get();
         const updates = [];
 
-        // Optimization: Only check visibility if zoomed in enough to care
+        // 优化：仅在缩放足够大时检查可见性
         const viewRect = zoomedIn
           ? network.canvas.frame.getBoundingClientRect()
           : null;
@@ -1507,14 +1576,14 @@
             url += `&source=${encodeURIComponent(currentSource)}`;
           }
           const res = await axios.get(url);
-          // Data fetched, now processing/rendering
+          // 数据已获取，正在处理并渲染
           showLoader("正在解析拓扑结构...", true);
           const data = res.data;
 
-          // --- Adaptive Performance Logic ---
+          // --- 自适应性能逻辑 (Adaptive Performance Logic) ---
           const nodeCount = data.nodes.length;
           const edgeCount = data.edges.length;
-          // Heuristic complexity: Edges cost less than nodes but matter for physics
+          // 启发式复杂度：边的成本比节点低，但对物理引擎很重要
           const complexity = nodeCount + edgeCount * 0.2;
 
           applyAdaptiveSettings(complexity, nodeCount);
@@ -1533,7 +1602,7 @@
             const isHub = deg > 5;
             const realLabel = n.label || n.id;
 
-            // Apply ghosting style if flagged
+            // 如果标记了幽灵化 (ghost)，则应用幽灵样式 (Ghosting Style)
             const opacity = n.is_ghost ? 0.2 : 1.0;
 
             // Use theme font color as base
@@ -1554,14 +1623,14 @@
               font: { color: fontColor },
             };
 
-            // If new node, assign position using spiral layout
-            // Spiral avoids overlapping and scales with node count
+            // 如果是新节点，使用螺旋布局 (Spiral Layout) 分配位置
+            // 螺旋布局可避免重叠，并随节点数量扩展
             if (!exists) {
                 const nodeIndex = processedNodeIndex++;
-                // Spiral layout: r = a + b*theta, (x,y) = (r*cos(theta), r*sin(theta))
-                const spacing = 80; // Base spacing between spiral arms
-                const theta = nodeIndex * 0.5; // Angular increment
-                const r = spacing * Math.sqrt(nodeIndex); // Expanding radius
+                // 螺旋布局公式: r = a + b*theta, (x,y) = (r*cos(theta), r*sin(theta))
+                const spacing = 80; // 螺旋臂之间的基础间距
+                const theta = nodeIndex * 0.5; // 角度增量
+                const r = spacing * Math.sqrt(nodeIndex); // 扩展半径
                 baseNode.x = r * Math.cos(theta);
                 baseNode.y = r * Math.sin(theta);
             }
@@ -1593,7 +1662,7 @@
           if (edgesToRemove.length > 0) edges.remove(edgesToRemove);
           edges.update(data.edges);
 
-          // Update datalist
+          // 更新建议列表 (Update datalist)
           const datalist = document.getElementById("node-list-suggestions");
           datalist.innerHTML = data.nodes
             .map((n) => `<option value="${n.id}">`)
@@ -1603,17 +1672,17 @@
           if (processedNodes.length === 0) {
             hideLoader();
           } else if (network) {
-            // Wait for next draw to ensure no flickering
+            // 等待下一次绘制以确保无闪烁 (Wait for next draw to ensure no flickering)
             network.once("afterDrawing", () => hideLoader());
-            // Fallback for cases where afterDrawing doesn't fire or graph is too small/stable
+            // 防止 afterDrawing 未触发或图谱过于稳定的回退方案
             setTimeout(() => hideLoader(), 2000);
           }
 
-          // For large graphs, auto zoom-out to prevent close-up lag
+          // 对于大规模图谱，自动缩小视角以防止特写导致的性能卡顿
           if (complexity > 600 && network) {
             setTimeout(() => {
-              // Calculate appropriate scale based on node count
-              // More nodes = zoom out more
+              // 根据节点数量计算合适的缩放比例
+              // 节点越多，缩放越小
               const targetScale = Math.max(0.1, 0.5 / Math.log10(nodeCount));
               network.moveTo({
                 scale: targetScale,
@@ -1664,7 +1733,7 @@
         if (perfCheckbox) perfCheckbox.checked = isLowPerfMode;
 
         if (densityControl) {
-          // Info Density only relevant in non-detailed (simplified) mode
+          // 信息密度仅在非详细（简化）模式下相关 (Info Density only relevant in non-detailed mode)
           if (detailedMode) {
             densityControl.style.opacity = "0.3";
             densityControl.style.pointerEvents = "none";
@@ -1700,13 +1769,20 @@
 
           renderNodeRelations(data);
           fetchSources({ node_id: data }, "sources-list-root");
-          // Trigger Highlight
+          // 触发高亮提示 (Trigger Highlight)
           highlightNeighborhood(data);
         } else if (type === "edge-editor") {
           title.innerText = "关系属性";
           body.innerHTML = document.getElementById("edge-editor-tpl").innerHTML;
-          document.getElementById("edge-title-display").innerText =
-            `${data.from} ➔ ${data.to}`;
+          window.viewedEdgeId = data.id; // Correctly track viewed edge ID for actions
+          
+          // Display Source -> Target
+          // And Relation Name below it
+          const relationName = data.label || (data.predicates ? data.predicates.join(", ") : "关联");
+          
+          document.getElementById("edge-title-display").innerHTML =
+            `<div style="font-weight: bold;">${data.from} <span style="color: var(--text-dim)">➔</span> ${data.to}</div>
+             <div style="font-size: 0.9rem; color: var(--accent-primary); margin-top: 4px;">${relationName}</div>`;
           document.getElementById("weight-slider").value = data.value || 1.0;
           document.getElementById("weight-val-display").innerText = (
             data.value || 1.0
@@ -1721,6 +1797,11 @@
         } else if (type === "add-edge-panel") {
           title.innerText = "建立新关系";
           body.innerHTML = document.getElementById("add-edge-tpl").innerHTML;
+        } else if (type === "recycle-bin-panel") {
+          const tpl = document.getElementById("recycle-bin-tpl");
+          title.innerText = "记忆回收站";
+          body.innerHTML = tpl ? tpl.innerHTML : "Error: Template missing";
+          loadRecycleBin();
         } else if (type === "source-manager-panel") {
           title.innerText = "记忆溯源管理";
           body.innerHTML =
@@ -1912,7 +1993,7 @@
       function toggleSimulation() {
         if (!network) return;
         if (isSimulationRunning) {
-          network.stopSimulation();
+          network.setOptions({ physics: { enabled: false } }); // Strong pause
           isSimulationRunning = false;
           showToast("物理模拟已暂停");
 
@@ -1981,8 +2062,9 @@
           if (network) {
             network.setOptions({
               physics: {
+                enabled: isSimulationRunning,
                 solver: "forceAtlas2Based",
-                stabilization: { enabled: true, iterations: 200 },
+                stabilization: { enabled: isSimulationRunning, iterations: 200 },
                 forceAtlas2Based: {
                   theta: 0.5,
                   gravitationalConstant: -50,
@@ -1997,10 +2079,11 @@
           if (network) {
             network.setOptions({
               physics: {
+                enabled: isSimulationRunning,
                 solver: "forceAtlas2Based",
-                // High iterations but distributed over frames to avoid freeze
+                // 迭代次数较高，但分帧执行以避免浏览器假死
                 stabilization: {
-                  enabled: true,
+                  enabled: isSimulationRunning,
                   iterations: 1000,
                   updateInterval: 50,
                   onlyDynamicEdges: false,
@@ -2037,7 +2120,7 @@
         }
       }
 
-      // --- Utils ---
+      // --- 工具函数 (Utils) ---
 
       function hexToRgba(hex, alpha) {
         let c;
@@ -2058,7 +2141,7 @@
         return hex;
       }
 
-      // --- Fetch Helpers ---
+      // --- 数据拉取辅助 (Fetch Helpers) ---
 
       async function fetchSources(params, rootId) {
         const root = document.getElementById(rootId);
@@ -2123,7 +2206,7 @@
           const res = await axios.post("/api/source/list", {});
           const sources = res.data.sources;
 
-          // Filter status display
+          // 筛选状态显示 (Filter status display)
           let header = "";
           if (currentSource) {
             header = `<div style="padding: 10px; background: rgba(56, 189, 248, 0.2); border-radius: 8px; margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center;">
@@ -2213,9 +2296,9 @@
         const themeName = THEMES[currentThemeIdx];
         const cfg = THEME_CONFIG[themeName];
 
-        // 2. Apply opacity
-        // Vis.js doesn't support direct opacity prop easily for all shapes without RGBA.
-        // We will use a simpler approach: color alpha
+        // 2. 应用透明度控制 (Apply opacity)
+        // Vis.js 对所有形状直接支持透明度属性并不容易（除非使用 RGBA）。
+        // 我们使用更简单的方法：调整颜色的 alpha 值。
         const hexToRgba = (hex, alpha) => {
           // Assuming hex is #RRGGBB
           if (!hex) return `rgba(128, 128, 128, ${alpha})`; // Neutral fallback
@@ -2234,7 +2317,7 @@
             : cfg.node.background;
           let showLabel = n.isHub; // Default
 
-          // Check sets (Order matters: main -> d1 -> d2)
+          // 检查集合 (顺序很重要：选中 -> 一度邻居 -> 二度邻居)
           if (mainSet.has(n.id)) {
             opacity = 1.0;
             showLabel = true;
@@ -2276,7 +2359,7 @@
           if (connectedToMain) alpha = 0.8;
           else if (connectedToD1) alpha = 0.2;
 
-          // Use theme edge colors
+          // 使用主题边颜色 (Use theme edge colors)
           // Extract R,G,B from theme edge color?
           // Theme edge color is usually rgba... e.g. 'rgba(148, 163, 184, 0.4)'
           // Complexity: parsing the rgba string from config to change alpha.
@@ -2302,6 +2385,8 @@
               strokeWidth: 0,
               background: "transparent",
             },
+            dashes: e.dashes, // Preserve dashes status
+            shadow: e.shadow  // Preserve shadow status
           };
         });
 
@@ -2338,32 +2423,65 @@
             }
           }
 
-          const nodeOpacity = n.is_ghost ? 0.2 : 1.0;
-          const fontColor = n.is_ghost
-            ? hexToRgba(cfg.node.font, 0.4)
-            : cfg.node.font;
+          // 应用幽灵 (非活跃) 或删除样式 (Apply Ghost or Deleted styling)
+          let nodeOpacity = n.is_ghost ? 0.2 : 1.0;
+          let fontColor = cfg.node.font;
+          
+          let bgColor = cfg.node.background;
+          let borderColor = cfg.node.border;
+          
+          if (n.is_ghost) {
+               fontColor = hexToRgba(cfg.node.font, 0.4);
+          }
+          
+          if (n.is_deleted) {
+               bgColor = '#ef4444'; // Red
+               borderColor = '#b91c1c';
+               fontColor = '#ffffff';
+               nodeOpacity = 0.8;
+          }
 
           return {
             id: n.id,
             opacity: nodeOpacity,
             label: shouldShow ? n.hiddenLabel : " ",
             color: {
-              background: cfg.node.background,
-              border: cfg.node.border,
+              background: bgColor,
+              border: borderColor,
               highlight: {
-                background: cfg.node.background,
-                border: cfg.node.border,
+                background: bgColor, // Keep red on highlight
+                border: borderColor,
               },
             },
             font: { color: fontColor },
           };
         });
 
-        const resetEdges = allEdges.map((e) => ({
-          id: e.id,
-          color: { color: cfg.edge.color, highlight: cfg.edge.highlight },
-          font: { color: cfg.edge.color, background: "transparent" },
-        }));
+        const resetEdges = allEdges.map((e) => {
+            // 应用 V5 逻辑 (Apply V5 Logic)
+            let color = cfg.edge.color;
+            let dashes = false;
+            let shadow = false;
+            let width = 1;
+            
+            if (e.is_active === false) {
+                 color = cfg.v5.inactive;
+                 dashes = true;
+            } else if (e.is_pinned || e.is_protected) {
+                 width = 2;
+                 const shadowColor = e.is_pinned ? cfg.v5.pinned : cfg.v5.protected;
+                 shadow = { enabled: true, color: shadowColor, size: 5 };
+            }
+
+            return {
+              id: e.id,
+              color: { color: color, highlight: cfg.edge.highlight },
+              font: { color: cfg.edge.color, background: "transparent" },
+              dashes: dashes,
+              width: width,
+              shadow: shadow
+            };
+        });
 
         nodes.update(resetNodes);
         edges.update(resetEdges);
@@ -2383,7 +2501,7 @@
         handleSearchInput(document.getElementById("node-search-input").value);
       }
 
-      // --- New Search & Browser Logic ---
+      // --- 新的搜索与浏览器逻辑 (New Search & Browser Logic) ---
 
       function handleSearchInput(val) {
         const container = document.getElementById("search-results");
@@ -2435,7 +2553,7 @@
         hideSearchResults();
       }
 
-      // Browser Panel
+      // 知识字典浏览器面板 (Browser Panel)
       window.currentBrowserTab = "nodes";
 
       function switchBrowserTab(tab) {
@@ -2561,6 +2679,109 @@
           "'": "&#039;",
         };
         return text.replace(/[&<>"']/g, (m) => map[m]);
+      }
+
+      // --- V5 记忆功能函数 (V5 Memory Functions) ---
+
+      async function restoreMemory(hash, type) {
+          try {
+             type = type || 'relation'; // fallback
+             const res = await axios.post("/api/memory/restore", { hash, type });
+             showToast("记忆恢复成功");
+             loadRecycleBin(); // Refresh list
+             loadData(); // Refresh graph to show restored link (if nodes exist)
+          } catch(err) {
+             showToast("恢复失败: " + (err.response?.data?.detail || err.message));
+          }
+      }
+      
+      async function loadRecycleBin() {
+          const root = document.getElementById("recycle-list-root");
+          if(!root) return;
+          root.innerHTML = '<div style="text-align:center; padding:20px; color:var(--text-dim)">加载中...</div>';
+          
+          try {
+              const res = await axios.get("/api/memory/recycle_bin?limit=50");
+              const items = res.data.items || [];
+              
+              if(items.length === 0) {
+                 root.innerHTML = '<div style="text-align:center; padding:20px; color:var(--text-dim)">暂无删除记录</div>';
+                 return;
+              }
+              
+              root.innerHTML = items.map(item => {
+                  let displayHtml = '';
+                  let typeIcon = '';
+                  const itemType = item.type || 'relation'; // default
+                  
+                  if (itemType === 'entity') {
+                      displayHtml = `<div style="font-size:0.9rem; font-weight:600; color:var(--text-main);">${escapeHtml(item.name)} <span style="font-size:0.75rem; color:#ef4444; border:1px solid #ef4444; border-radius:4px; padding:0 4px;">实体</span></div>`;
+                  } else {
+                      displayHtml = `
+                          <div style="font-size:0.9rem; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:var(--text-main);">${item.subject} ➔ ${item.object}</div>
+                          <div style="font-size:0.75rem; color:var(--text-dim); margin-top:4px;">${item.predicate || '关联'}</div>`;
+                  }
+                  
+                  return `
+                  <div class="list-item" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; padding:10px; background:rgba(255,255,255,0.05); border-radius:8px;">
+                      <div style="flex:1; overflow:hidden;">
+                          ${displayHtml}
+                          <div style="font-size:0.7rem; color:var(--text-dim); margin-top:2px;">删于: ${new Date(item.deleted_at * 1000).toLocaleString()}</div>
+                      </div>
+                      <button class="btn btn-ghost" style="padding:4px 8px; color:var(--accent-primary);" onclick="restoreMemory('${item.hash}', '${itemType}')" title="恢复">♻️</button>
+                  </div>
+              `}).join("");
+          } catch(err) {
+              root.innerHTML = `<div style="padding:10px; color:rgba(239, 68, 68, 0.8)">加载失败: ${err.message}</div>`;
+          }
+      }
+
+      async function reinforceEdge() {
+         if(!window.viewedEdgeId) return;
+         try {
+             await axios.post("/api/memory/reinforce", { id: window.viewedEdgeId });
+             showToast("记忆强化成功");
+             loadData();
+         } catch(err) {
+             showToast("操作失败: " + (err.response?.data?.detail || err.message));
+         }
+      }
+
+      async function protectEdge() {
+         if(!window.viewedEdgeId) return;
+         
+         const edge = edges.get(window.viewedEdgeId);
+         const isPinned = !!edge.is_pinned;
+         const newPinState = !isPinned; // Toggle
+         
+         // Server logic: is_pinned = (data.type == "pin")
+         const typeArg = newPinState ? "pin" : "unpin";
+         
+         try {
+             await axios.post("/api/memory/protect", { 
+                 id: window.viewedEdgeId, 
+                 type: typeArg, 
+                 duration: 0 
+             });
+
+             showToast(newPinState ? "记忆已保护 (Pinned)" : "保护已取消");
+             loadData();
+         } catch(err) {
+             showToast("操作失败: " + (err.response?.data?.detail || err.message));
+         }
+      }
+
+      async function freezeEdge() {
+         if(!window.viewedEdgeId) return;
+         if(!confirm("确定要冷冻此记忆吗？这将使其变为非活跃状态 (虚线显示)。")) return;
+         
+         try {
+             await axios.post("/api/memory/freeze", { id: window.viewedEdgeId });
+             showToast("记忆已冷冻");
+             loadData();
+         } catch(err) {
+             showToast("操作失败: " + (err.response?.data?.detail || err.message));
+         }
       }
     </script>
   </body>

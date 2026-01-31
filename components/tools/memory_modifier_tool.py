@@ -1,3 +1,4 @@
+import datetime
 from typing import Any, List, Tuple, Optional, Dict
 from src.plugin_system.base.base_tool import BaseTool
 from src.plugin_system.base.component_types import ToolParamType
@@ -93,6 +94,7 @@ class MemoryModifierTool(BaseTool):
              return {
                  "success": False,
                  "error": "存储组件未初始化",
+                 "content": "❌ 存储组件未初始化",
                  "results": []
              }
 
@@ -116,6 +118,7 @@ class MemoryModifierTool(BaseTool):
             return {
                 "success": False,
                 "error": f"未找到与 '{query}' 相关的记忆 ({target_type})",
+                "content": f"未找到与 '{query}' 相关的记忆 ({target_type})",
                 "results": []
             }
             
@@ -129,15 +132,39 @@ class MemoryModifierTool(BaseTool):
             if action == "forget":
                 delta = -2.0 * strength # Heavy penalty
                 
+            hashes_to_update = []
+            
             for item in found_items:
                 if "subject" in item and "object" in item:
                     src = item["subject"]
                     tgt = item["object"]
+                    h = item["hash"]
                     
                     # Update A->B
                     w1 = self.graph_store.update_edge_weight(src, tgt, delta)
                     count += 1
                     details.append(f"{src}->{tgt} ({w1:.2f})")
+                    hashes_to_update.append(h)
+            
+            # V5 Metadata Updates
+            if hashes_to_update:
+                if action == "reinforce":
+                    # Reinforce implies protection/revival
+                    # Get config defaults from Global Plugin Instance if available? 
+                    # Or just hardcode reasonable defaults for Tool usage.
+                    now = datetime.datetime.now().timestamp()
+                    self.metadata_store.update_relations_protection(
+                        hashes_to_update,
+                        protected_until=now + 24*3600, # 24h default protection
+                        last_reinforced=now
+                    )
+                    # Force active
+                    self.metadata_store.mark_relations_active(hashes_to_update)
+                    
+                elif action == "forget":
+                    # Forget implies un-pinning and maybe manual freeze?
+                    # For now just unpin
+                    self.metadata_store.update_relations_protection(hashes_to_update, is_pinned=False)
             
             verb = "强化" if delta > 0 else "弱化"
             return {
@@ -147,16 +174,18 @@ class MemoryModifierTool(BaseTool):
             }
 
         elif action == "remember_forever":
-            # Set Permanence
-            is_perm = True
+            # Set Permanence (V5: is_pinned=True)
+            hashes = [item["hash"] for item in found_items]
+            
+            self.metadata_store.update_relations_protection(hashes, is_pinned=True)
+            
             for item in found_items:
-                self.metadata_store.set_permanence(item["hash"], "relation", is_perm)
-                count += 1
-                details.append(f"{item['subject']}->{item['object']} (Permanent)")
+                context = f"{item['subject']}->{item['object']}"
+                details.append(f"{context} (Pinned)")
                 
             return {
                 "success": True, 
-                "content": f"✅ 已标记 {count} 条记忆为永久 (Query: {query})",
+                "content": f"✅ 已标记 {len(hashes)} 条记忆为永久 (Query: {query})",
                 "results": details
             }
             
@@ -164,5 +193,6 @@ class MemoryModifierTool(BaseTool):
             return {
                 "success": False,
                 "error": f"未知动作: {action}",
+                "content": f"❌ 未知动作: {action}",
                 "results": []
             }

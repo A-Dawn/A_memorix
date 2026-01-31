@@ -64,7 +64,7 @@ class A_MemorixPlugin(BasePlugin):
 
     # 插件基本信息（PluginBase要求的抽象属性）
     plugin_name = "A_Memorix"
-    plugin_version = "0.2.3"
+    plugin_version = "0.3.0"
     plugin_description = "轻量级知识库插件 - 完全独立的记忆增强系统"
     plugin_author = "A_Dawn"
     enable_plugin = False  # 默认禁用，需要在config.toml中启用
@@ -85,6 +85,7 @@ class A_MemorixPlugin(BasePlugin):
         "summarization": "总结与导入配置",
         "schedule": "定时任务配置",
         "filter": "消息过滤配置",
+        "memory": "记忆衰减与强化配置",
     }
 
     # 配置Schema定义
@@ -92,7 +93,7 @@ class A_MemorixPlugin(BasePlugin):
         "plugin": {
             "config_version": ConfigField(
                 type=str,
-                default="2.0.1",
+                default="3.0.0",
                 description="配置文件版本"
             ),
             "enabled": ConfigField(
@@ -325,6 +326,26 @@ class A_MemorixPlugin(BasePlugin):
                 description="聊天流 ID 列表。支持填写: 1. 群号 (group_id, 如: 123456); 2. 私聊用户ID (user_id, 如: 10001); 3. 聊天流唯一标识 (stream_id, MD5格式)。"
             ),
         },
+        "memory": {
+             "half_life_hours": ConfigField(type=float, default=24.0, description="记忆强度半衰期 (小时)"),
+             "base_decay_interval_hours": ConfigField(type=float, default=1.0, description="衰减任务执行间隔 (小时)"),
+             "prune_threshold": ConfigField(type=float, default=0.1, description="记忆遗忘(冷冻)阈值"),
+             "freeze_duration_hours": ConfigField(type=float, default=0.01, description="记忆冷冻保留期 (小时), 过期物理删除"), # 默认可以设小点便于测试，或者保留24h
+             "enable_auto_reinforce": ConfigField(type=bool, default=True, description="是否启用自动强化"),
+             "reinforce_buffer_max_size": ConfigField(type=int, default=1000, description="强化缓冲区最大大小"),
+             "reinforce_cooldown_hours": ConfigField(type=float, default=1.0, description="同一记忆强化的冷却时间"),
+             "max_weight": ConfigField(type=float, default=10.0, description="记忆最大权重限制"),
+             "revive_boost_weight": ConfigField(type=float, default=0.5, description="复活时的基础增强权重"),
+             "auto_protect_ttl_hours": ConfigField(type=float, default=24.0, description="复活/强化后的自动保护时长"),
+             "min_active_weight_protected": ConfigField(type=float, default=0.5, description="保护期内记忆的最低权重地板"),
+             "enabled": ConfigField(type=bool, default=True, description="V5记忆系统总开关"),
+             "orphan": {
+                 "enable_soft_delete": ConfigField(type=bool, default=True, description="是否启用软删除"),
+                 "entity_retention_days": ConfigField(type=float, default=7.0, description="实体保留期(天)"),
+                 "paragraph_retention_days": ConfigField(type=float, default=7.0, description="段落保留期(天)"),
+                 "sweep_grace_hours": ConfigField(type=float, default=24.0, description="软删除宽限期(小时)"),
+             }
+        }
     }
 
     def __init__(self, *args, **kwargs):
@@ -346,6 +367,10 @@ class A_MemorixPlugin(BasePlugin):
         
         # 运行时自动保存开关（可通过WebUI修改）
         self._runtime_auto_save: Optional[bool] = None
+
+        # V5 记忆系统
+        self.reinforce_buffer: Set[str] = set() # 存储待强化的关系哈希
+        self._memory_lock = asyncio.Lock()
 
     @property
     def debug_enabled(self) -> bool:
@@ -594,6 +619,20 @@ class A_MemorixPlugin(BasePlugin):
             )
         )
 
+        # MemoryMaintenanceCommand
+        from .components.commands.memory_command import MemoryMaintenanceCommand
+        components.append(
+            (
+                CommandInfo(
+                    name="memory",
+                    component_type="command",
+                    description="记忆维护指令 (Status, Protect, Reinforce, Restore)",
+                    command_pattern=r"^\/memory(?:\s+(?P<action>\w+))?(?:\s+(?P<args>.+))?$",
+                ),
+                MemoryMaintenanceCommand,
+            )
+        )
+
         # DebugServerCommand (临时)
         from .components.commands.debug_server_command import DebugServerCommand
         components.append(
@@ -623,6 +662,26 @@ class A_MemorixPlugin(BasePlugin):
                 logger.info("A_Memorix 插件正在开始同步初始化存储组件...")
                 self._initialize_storage()
                 self._initialized = True
+                
+                # --- V5 迁移：如果缺失则重建边映射 ---
+                if self.graph_store and self.metadata_store:
+                    # 检查映射是否为空但元数据存在（迁移场景）
+                    if not self.graph_store._edge_hash_map:
+                         # 确保元数据存储已连接/就绪（在 _initialize_storage 后应当如此）
+                         if self.metadata_store.has_data():
+                             logger.info("[V5 Migration] Detecting missing Edge Map. Attempting rebuild from Metadata...")
+                             try:
+                                 triples = self.metadata_store.get_all_triples()
+                                 if triples:
+                                     cnt = self.graph_store.rebuild_edge_hash_map(triples)
+                                     logger.info(f"[V5 Migration] Rebuilt {cnt} edge mappings.")
+                                     # Save immediately to persist the migration
+                                     self.graph_store.save() 
+                                 else:
+                                     logger.info("[V5 Migration] No triples found in MetadataStore.")
+                             except Exception as e:
+                                 logger.error(f"[V5 Migration] Failed to rebuild edge map: {e}")
+                
                 logger.info("A_Memorix 插件同步初始化成功")
 
                 # 更新插件配置
@@ -658,6 +717,9 @@ class A_MemorixPlugin(BasePlugin):
         if self.get_config("summarization.enabled", True) and self.get_config("schedule.enabled", True):
             import asyncio
             asyncio.create_task(self._scheduled_import_loop())
+
+        # V5 Memory Maintenance
+        asyncio.create_task(self._memory_maintenance_loop())
 
     async def on_disable(self):
         """插件禁用时调用"""
@@ -1110,6 +1172,320 @@ class A_MemorixPlugin(BasePlugin):
             logger.info("自动保存任务已取消")
         except Exception as e:
             logger.error(f"自动保存循环发生错误: {e}")
+
+    # =========================================================================
+    # V5 Memory System Logic
+    # =========================================================================
+
+    async def reinforce_access(self, relation_hashes: List[str]):
+        """
+        触发记忆强化 (Thread-safe push to buffer)
+        """
+        if not self.get_config("memory.enable_auto_reinforce", True):
+            return
+            
+        async with self._memory_lock:
+            self.reinforce_buffer.update(relation_hashes)
+            
+            # 如果缓冲区过大，可以考虑触发立即处理（可选，目前依赖定时循环即可） (TODO)
+
+    async def _memory_maintenance_loop(self):
+        """
+        记忆维护循环 (Decay, Reinforce, Freeze, Prune)
+        """
+        logger.info("A_Memorix 记忆维护循环已启动 (V5)")
+        
+        while True:
+            try:
+                # 获取间隔 (默认1小时)
+                interval_hours = self.get_config("memory.base_decay_interval_hours", 1.0)
+                interval_seconds = max(60, int(interval_hours * 3600))
+                
+                await asyncio.sleep(interval_seconds)
+                
+                if not self.metadata_store or not self.graph_store:
+                    continue
+                    
+                # Master Switch Check
+                if not self.get_config("memory.enabled", True):
+                    continue
+                    
+                async with self._memory_lock:
+                    # 1. Process Reinforce Buffer
+                    current_buffer = list(self.reinforce_buffer)
+                    self.reinforce_buffer.clear()
+                    
+                    if current_buffer:
+                        await self._process_reinforce_batch(current_buffer)
+                        
+                    # 2. 全局衰减 (Global Decay)
+                    half_life = self.get_config("memory.half_life_hours", 24.0)
+                    if half_life > 0:
+                        # factor = (1/2) ^ (dt / half_life)
+                        factor = 0.5 ** (interval_hours / half_life)
+                        # 保护地板值由 prune 逻辑处理，decay 只负责乘法
+                        self.graph_store.decay(factor)
+                        logger.debug(f"执行记忆衰减: factor={factor:.4f}")
+                        
+                    # 3. 冷冻与修剪 (Freeze & Prune) (检查候选记忆)
+                    await self._process_freeze_and_prune()
+                    
+                    # 4. 孤儿节点回收 (Orphan GC) (标记与清除)
+                    await self._orphan_gc_phase()
+
+            except asyncio.CancelledError:
+                logger.info("记忆维护循环已取消")
+                break
+            except Exception as e:
+                logger.error(f"记忆维护循环发生错误: {e}")
+                import traceback
+                traceback.print_exc()
+                await asyncio.sleep(60)
+
+    async def _process_reinforce_batch(self, hashes: List[str]):
+        """处理强化批次"""
+        try:
+            # 获取当前状态
+            status_map = self.metadata_store.get_relation_status_batch(hashes)
+            
+            now = datetime.datetime.now().timestamp()
+            cooldown = self.get_config("memory.reinforce_cooldown_hours", 1.0) * 3600
+            max_weight = self.get_config("memory.max_weight", 10.0)
+            revive_boost = self.get_config("memory.revive_boost_weight", 0.5)
+            auto_protect = self.get_config("memory.auto_protect_ttl_hours", 24.0) * 3600
+            
+            hashes_to_update = []
+            hashes_to_revive = []
+            updates_protect = []
+            
+            # 需要查出 subject, object, predicate 来更新 GraphStore (因为 update_edge_weight 需要 u, v)
+            # 这里稍微有点低效，因为 status_map 没包含 s, o。
+            # 为了准确性，我们需要查询。
+            cursor = self.metadata_store._conn.cursor()
+            placeholders = ",".join(["?"] * len(hashes))
+            cursor.execute(f"SELECT hash, subject, object FROM relations WHERE hash IN ({placeholders})", hashes)
+            relation_info = {row[0]: (row[1], row[2]) for row in cursor.fetchall()}
+            
+            for h in hashes:
+                if h not in status_map: continue
+                s = status_map[h]
+                info = relation_info.get(h)
+                if not info: continue
+                
+                src, tgt = info
+                
+                # 冷却检查 (Cooldown Check)
+                last_re = s.get("last_reinforced") or 0
+                if (now - last_re) < cooldown and not s["is_inactive"]:
+                    continue # 如果仍在冷却中且处于活跃状态，则跳过
+                    
+                # 计算增量权重 (Calculate Delta)
+                current_w = s["weight"]
+                # Delta = amount * (1 - w/max)
+                delta = 1.0 * (1.0 - (current_w / max_weight))
+                if delta < 0: delta = 0
+                
+                # 逻辑:
+                # 1. 更新图权重 (Update Graph Weight)
+                self.graph_store.update_edge_weight(src, tgt, delta, max_weight=max_weight)
+                
+                # 2. 元数据更新 (Metadata Updates)
+                # 如果是不活跃状态，复活需要进行显式处理？
+                # 实际上 update_edge_weight 会添加缺失的边，但我们需要更新元数据标志。
+                if s["is_inactive"]:
+                    hashes_to_revive.append(h)
+                else:
+                    hashes_to_update.append(h)
+                    
+            # 批量更新元数据 (Batch update Metadata)
+            if hashes_to_revive:
+                self.metadata_store.mark_relations_active(hashes_to_revive, boost_weight=revive_boost)
+                self.metadata_store.update_relations_protection(
+                    hashes_to_revive, 
+                    protected_until=now + auto_protect, 
+                    last_reinforced=now
+                )
+                logger.info(f"复活记忆: {len(hashes_to_revive)} 条")
+                
+            if hashes_to_update:
+                self.metadata_store.update_relations_protection(
+                    hashes_to_update, 
+                    protected_until=now + auto_protect, 
+                    last_reinforced=now
+                )
+                
+        except Exception as e:
+            logger.error(f"处理强化批次失败: {e}")
+
+    async def _process_freeze_and_prune(self):
+        """处理冷冻与修剪"""
+        try:
+            prune_threshold = self.get_config("memory.prune_threshold", 0.1)
+            freeze_duration = self.get_config("memory.freeze_duration_hours", 24.0) * 3600
+            now = datetime.datetime.now().timestamp()
+            
+            # 1. 冷冻阶段 (FREEZE PASS) (不活跃逻辑)
+            # 策略：如果一条边权重过低，且其下所有关系均无保护，则冻结该边。
+            # "冻结" = 在元数据中标记为不活跃 + 从邻接矩阵中移除 (但保留在 Map 中)。
+            # 只有当边被移除，该记忆才不会参与 PageRank，符合 "不活跃" 定义。
+            
+            # 从图中获取低权重边 (邻居矩阵)
+            low_edges = self.graph_store.get_low_weight_edges(prune_threshold)
+            
+            hashes_to_freeze = [] # 元数据更新列表
+            edges_to_deactivate = [] # 图邻域更新列表
+            
+            for src, tgt in low_edges:
+                src_canon = self.graph_store._canonicalize(src)
+                tgt_canon = self.graph_store._canonicalize(tgt)
+                if src_canon in self.graph_store._node_to_idx and tgt_canon in self.graph_store._node_to_idx:
+                    s_idx = self.graph_store._node_to_idx[src_canon]
+                    t_idx = self.graph_store._node_to_idx[tgt_canon]
+                    
+                    associated_hashes = self.graph_store._edge_hash_map.get((s_idx, t_idx), set())
+                    if not associated_hashes: continue
+                    
+                    # 检查保护状态 (Check Protection)
+                    statuses = self.metadata_store.get_relation_status_batch(list(associated_hashes))
+                    
+                    is_edge_protected = False
+                    current_edge_hashes = []
+                    
+                    for h, st in statuses.items():
+                        # 保护规则: 已置顶 (Pinned) 或 TTL 有效
+                        if st["is_pinned"] or (st["protected_until"] or 0) > now:
+                            is_edge_protected = True
+                            break
+                        # 如果已是不活跃状态则跳过 (虽然在已停用的低权重边中不应出现，但为了安全进行检查)
+                        if st["is_inactive"]:
+                            pass 
+                        current_edge_hashes.append(h)
+                            
+                    if not is_edge_protected and current_edge_hashes:
+                        # Freeze the whole edge
+                        hashes_to_freeze.extend(current_edge_hashes)
+                        edges_to_deactivate.append((src, tgt))
+                        
+            if hashes_to_freeze:
+                self.metadata_store.mark_relations_inactive(hashes_to_freeze, inactive_since=now)
+                # 仅从矩阵中移除 (保留在 Map 中)
+                self.graph_store.deactivate_edges(edges_to_deactivate)
+                logger.info(f"冷冻记忆: {len(hashes_to_freeze)} 条关系, 冻结 {len(edges_to_deactivate)} 条边")
+
+            # 2. 修剪阶段 (PRUNE PASS) (删除逻辑)
+            # 从元数据和 Map 中移除过期的不活跃关系。
+            cutoff = now - freeze_duration
+            expired_hashes = self.metadata_store.get_prune_candidates(cutoff)
+            
+            if expired_hashes:
+                cursor = self.metadata_store._conn.cursor()
+                placeholders = ",".join(["?"] * len(expired_hashes))
+                cursor.execute(f"SELECT hash, subject, object FROM relations WHERE hash IN ({placeholders})", expired_hashes)
+                
+                ops_to_prune = [] # List[(src, tgt, hash)] for GraphStore
+                actually_deleted_hashes = []
+                
+                for r in cursor.fetchall():
+                    h, s, o = r[0], r[1], r[2]
+                    # We need to remove this specific hash from map
+                    ops_to_prune.append((s, o, h))
+                    actually_deleted_hashes.append(h)
+                
+                # Update GraphStore (Map -> if empty -> Matrix)
+                # Note: Matrix entry should be already gone via Freeze, but prune_relation_hashes handles that safety.
+                if ops_to_prune:
+                    self.graph_store.prune_relation_hashes(ops_to_prune)
+                    
+                # 从元数据中备份并删除 (Backup and Delete in Metadata)
+                count = self.metadata_store.backup_and_delete_relations(actually_deleted_hashes)
+                logger.info(f"物理修剪: {count} 条记忆 (已清理映射)")
+
+        except Exception as e:
+            logger.error(f"处理冷冻与修剪失败: {e}")
+
+    async def _orphan_gc_phase(self):
+        """
+        孤儿节点回收阶段 (Orphan GC Phase)
+        策略: Mark & Sweep (标记-清除)
+        逻辑:
+        1. Mark: 找出孤儿(Active Degree=0 & 未冻结)，同时满足 Retention 要求的，标记为 is_deleted=1.
+        2. Sweep: 找出 is_deleted=1 且 deleted_at < now - grace 的，物理删除.
+        """
+        # Feature Toggle
+        orphan_config = self.get_config("memory.orphan", {})
+        if not orphan_config.get("enable_soft_delete", True):
+            return
+
+        try:
+            logger.debug("开始孤儿节点回收阶段 (GC Phase)...")
+            
+            # Configs
+            entity_retention = orphan_config.get("entity_retention_days", 7.0) * 86400
+            para_retention = orphan_config.get("paragraph_retention_days", 7.0) * 86400
+            grace_period = orphan_config.get("sweep_grace_hours", 24.0) * 3600
+            
+            # ==========================================================
+            # 1. MARK PHASE (标记)
+            # ==========================================================
+            
+            # 1.1 标记实体 (Mark Entities)
+            # 从图中获取孤儿候选者 (活跃但孤立)
+            # 注意: include_inactive=True (默认) 会排除掉那些虽然度为 0 但参与了冻结边的节点 -> 保护冻结节点不被删除
+            isolated_candidates = self.graph_store.get_isolated_nodes(include_inactive=True)
+            
+            if isolated_candidates:
+                # 通过元数据过滤 (保留时长与引用检查)
+                final_entity_candidates = self.metadata_store.get_entity_gc_candidates(
+                    isolated_candidates, 
+                    retention_seconds=entity_retention
+                )
+                
+                if final_entity_candidates:
+                    cnt = self.metadata_store.mark_as_deleted(final_entity_candidates, "entity")
+                    if cnt > 0:
+                        logger.info(f"[GC-Mark] 标记删除实体: {cnt} 个")
+
+            # 1.2 标记段落 (Mark Paragraphs)
+            # 通过元数据过滤 (保留时长 & 无关系 & 无实体)
+            para_candidates = self.metadata_store.get_paragraph_gc_candidates(retention_seconds=para_retention)
+            if para_candidates:
+                cnt = self.metadata_store.mark_as_deleted(para_candidates, "paragraph")
+                if cnt > 0:
+                    logger.info(f"[GC-Mark] 标记删除段落: {cnt} 个")
+                    
+            # ==========================================================
+            # 2. SWEEP PHASE (物理清理)
+            # ==========================================================
+            
+            # 2.1 清理段落 (Sweep Paragraphs)
+            dead_paragraphs_tuples = self.metadata_store.sweep_deleted_items("paragraph", grace_period)
+            if dead_paragraphs_tuples:
+                dead_para_hashes = [t[0] for t in dead_paragraphs_tuples]
+                count = self.metadata_store.physically_delete_paragraphs(dead_para_hashes)
+                if count > 0:
+                    logger.info(f"[GC-Sweep] 物理删除段落: {count} 个")
+
+            # 2.2 清理实体 (Sweep Entities)
+            dead_entities_tuples = self.metadata_store.sweep_deleted_items("entity", grace_period)
+            if dead_entities_tuples:
+                dead_entity_hashes = [t[0] for t in dead_entities_tuples]
+                dead_entity_names = [t[1] for t in dead_entities_tuples]
+                
+                # 关键顺序：先从图存储中删除 (内存/矩阵)，然后再从元数据中删除。
+                
+                # 1. 图存储删除 (需要名称) (GraphStore Delete)
+                self.graph_store.delete_nodes(dead_entity_names)
+                
+                # 2. 元数据存储删除 (需要哈希) (MetadataStore Delete)
+                count = self.metadata_store.physically_delete_entities(dead_entity_hashes)
+                if count > 0:
+                   logger.info(f"[GC-Sweep] 物理删除实体: {count} 个")
+
+        except Exception as e:
+            logger.error(f"孤儿节点回收失败: {e}")
+            import traceback
+            traceback.print_exc()
+
 
 
 # 插件导出

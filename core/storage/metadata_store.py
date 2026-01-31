@@ -231,12 +231,12 @@ class MetadataStore:
         if "is_permanent" not in columns:
             logger.info("正在迁移: 添加记忆动态字段...")
             try:
-                # Paragraphs table
+                # 段落表
                 cursor.execute("ALTER TABLE paragraphs ADD COLUMN is_permanent BOOLEAN DEFAULT 0")
                 cursor.execute("ALTER TABLE paragraphs ADD COLUMN last_accessed REAL")
                 cursor.execute("ALTER TABLE paragraphs ADD COLUMN access_count INTEGER DEFAULT 0")
                 
-                # Relations table
+                # 关系表
                 cursor.execute("ALTER TABLE relations ADD COLUMN is_permanent BOOLEAN DEFAULT 0")
                 cursor.execute("ALTER TABLE relations ADD COLUMN last_accessed REAL")
                 cursor.execute("ALTER TABLE relations ADD COLUMN access_count INTEGER DEFAULT 0")
@@ -245,6 +245,69 @@ class MetadataStore:
                 logger.info("Schema迁移完成：已添加记忆动态字段")
             except sqlite3.OperationalError as e:
                 logger.warning(f"Schema迁移失败: {e}")
+
+        # 检查relations表是否有is_inactive列 (V5 Memory System)
+        cursor.execute("PRAGMA table_info(relations)")
+        columns = [row[1] for row in cursor.fetchall()]
+        
+        if "is_inactive" not in columns:
+            logger.info("正在迁移: 添加V5记忆动态字段 (inactive, protected)...")
+            try:
+                # 关系表 V5 新增字段
+                cursor.execute("ALTER TABLE relations ADD COLUMN is_inactive BOOLEAN DEFAULT 0")
+                cursor.execute("ALTER TABLE relations ADD COLUMN inactive_since REAL")
+                cursor.execute("ALTER TABLE relations ADD COLUMN is_pinned BOOLEAN DEFAULT 0")
+                cursor.execute("ALTER TABLE relations ADD COLUMN protected_until REAL")
+                cursor.execute("ALTER TABLE relations ADD COLUMN last_reinforced REAL")
+                
+                # 为回收站创建 deleted_relations 表
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS deleted_relations (
+                        hash TEXT PRIMARY KEY,
+                        subject TEXT NOT NULL,
+                        predicate TEXT NOT NULL,
+                        object TEXT NOT NULL,
+                        vector_index INTEGER,
+                        confidence REAL DEFAULT 1.0,
+                        created_at REAL,
+                        source_paragraph TEXT,
+                        metadata TEXT,
+                        is_permanent BOOLEAN DEFAULT 0,
+                        last_accessed REAL,
+                        access_count INTEGER DEFAULT 0,
+                        is_inactive BOOLEAN DEFAULT 0,
+                        inactive_since REAL,
+                        is_pinned BOOLEAN DEFAULT 0,
+                        protected_until REAL,
+                        last_reinforced REAL,
+                        deleted_at REAL  -- 用于记录删除时间的额外列
+                    )
+                """)
+                
+                self._conn.commit()
+                logger.info("Schema迁移完成：已添加V5记忆动态字段及回收站表")
+            except sqlite3.OperationalError as e:
+                logger.warning(f"Schema迁移失败 (V5): {e}")
+
+        # 检查 entities 表是否有 is_deleted 列 (Soft Delete System)
+        cursor.execute("PRAGMA table_info(entities)")
+        columns = [row[1] for row in cursor.fetchall()]
+        
+        if "is_deleted" not in columns:
+            logger.info("正在迁移: 添加软删除字段 (Soft Delete)...")
+            try:
+                # 实体表
+                cursor.execute("ALTER TABLE entities ADD COLUMN is_deleted INTEGER DEFAULT 0")
+                cursor.execute("ALTER TABLE entities ADD COLUMN deleted_at REAL")
+                
+                # 段落表
+                cursor.execute("ALTER TABLE paragraphs ADD COLUMN is_deleted INTEGER DEFAULT 0")
+                cursor.execute("ALTER TABLE paragraphs ADD COLUMN deleted_at REAL")
+                
+                self._conn.commit()
+                logger.info("Schema迁移完成：已添加软删除字段")
+            except sqlite3.OperationalError as e:
+                logger.warning(f"Schema迁移失败 (Soft Delete): {e}")
 
         # 数据修复: 检查是否存在 source/vector_index 列错位的情况
         # 症状: vector_index (本应是int) 变成了文件名字符串, source (本应是文件名) 变成了类型字符串
@@ -320,6 +383,8 @@ class MetadataStore:
             return hash_value
         except sqlite3.IntegrityError:
             logger.debug(f"段落已存在: {hash_value[:16]}...")
+            # 尝试复活
+            self.revive_if_deleted(paragraph_hashes=[hash_value])
             return hash_value
 
     def _canonicalize_name(self, name: str) -> str:
@@ -378,29 +443,18 @@ class MetadataStore:
         
         try:
             cursor.execute("""
-                INSERT OR IGNORE INTO entities
+                INSERT INTO entities
                 (hash, name, vector_index, appearance_count, created_at, metadata)
                 VALUES (?, ?, ?, 1, ?, ?)
             """, (
                 hash_value,
-                name,  # 存储原始名称 (Display Name)
+                name,
                 vector_index,
                 now,
                 pickle.dumps(metadata or {}),
             ))
             
-            # 检查是否插入成功 (rowcount > 0)
-            if cursor.rowcount == 0:
-                # 实体已存在，更新计数
-                cursor.execute("""
-                    UPDATE entities
-                    SET appearance_count = appearance_count + 1
-                    WHERE hash = ?
-                """, (hash_value,))
-                logger.debug(f"实体已存在，增加计数: {name} ({hash_value[:8]})")
-            else:
-                logger.debug(f"添加实体: {name} ({hash_value[:8]})")
-                
+            logger.debug(f"添加实体: {name} ({hash_value[:8]})")
             self._conn.commit()
             
             # 3. 建立来源关联
@@ -409,16 +463,25 @@ class MetadataStore:
                 
             return hash_value
             
-        except sqlite3.IntegrityError as e:
-            # 这种情况通常不应该发生，因为用了 INSERT OR IGNORE 且 hash 是主键
-            # 除非 name 字段有 UNIQUE 约束且 hash 不同 (不太可能，除非 hash 碰撞)
-            # 或者 name 相同但 hash 不同 (也不可能)
-            # 唯一可能是：canonical name 不同，但原始 name 相同? (也不可能，因为 canonical 是确定的)
-            # 还有一种情况：name 字段有 UNIQUE 约束。
-            # 比如 DB 里已有 "Apple" (hash A)，现在插入 "apple" (hash A)。 hash 冲突，IGNORE。
-            # 比如 DB 里已有 "Apple" (hash A)，现在插入 "Apple " (hash A)。IGNORE。
-            # 比如 DB 里已有 "Apple" (hash A)，现在插入 "Banana" (hash B)。OK。
-            logger.warning(f"添加实体失败 (IntegrityError): {name} - {e}")
+        except sqlite3.IntegrityError:
+            # 实体已存在
+            # 1. 尝试复活 (自动复活)
+            self.revive_if_deleted(entity_hashes=[hash_value])
+            
+            # 2. 更新计数
+            cursor.execute("""
+                UPDATE entities
+                SET appearance_count = appearance_count + 1
+                WHERE hash = ?
+            """, (hash_value,))
+            self._conn.commit()
+            
+            logger.debug(f"实体已存在(复活/计数+1): {name}")
+            
+            # 3. 建立来源关联
+            if source_paragraph:
+                self.link_paragraph_entity(source_paragraph, hash_value)
+                
             return hash_value
 
     def add_relation(
@@ -719,14 +782,59 @@ class MetadataStore:
         
         return [self._row_to_dict(row, "relation") for row in cursor.fetchall()]
 
-    def get_all_triples(self) -> List[Tuple[str, str, str]]:
+    def get_all_triples(self) -> List[Tuple[str, str, str, str]]:
         """
-        高效获取所有三元组 (subject, predicate, object)
-        直接返回元组，跳过字典转换和pickle反序列化，用于构建缓存。
+        高效获取所有三元组 (subject, predicate, object, hash)
+        直接返回元组，跳过字典转换和pickle反序列化，用于构建 V5 Map 缓存。
         """
         cursor = self._conn.cursor()
-        cursor.execute("SELECT subject, predicate, object FROM relations")
+        cursor.execute("SELECT subject, predicate, object, hash FROM relations")
         return list(cursor.fetchall())
+
+    def get_relation_status_batch(self, hashes: List[str]) -> Dict[str, Dict[str, Any]]:
+        """
+        批量获取关系的状态信息 (V5 Memory)
+        
+        Args:
+            hashes: 关系哈希列表
+            
+        Returns:
+            Dict[hash, status_dict]
+            status_dict 包含: is_inactive, is_pinned, protected_until, last_reinforced
+        """
+        if not hashes:
+            return {}
+            
+        # SQLite 变量限制通常为 999 个，如有需要请分割。
+        # 此处假设批大小合理或实施分割逻辑？
+        # 简单起见，使用 500 个一组的切片
+        
+        result = {}
+        chunk_size = 500
+        
+        cursor = self._conn.cursor()
+        
+        for i in range(0, len(hashes), chunk_size):
+            chunk = hashes[i : i + chunk_size]
+            placeholders = ",".join(["?"] * len(chunk))
+            sql = f"""
+                SELECT hash, is_inactive, is_pinned, protected_until, last_reinforced
+                FROM relations
+                WHERE hash IN ({placeholders})
+            """
+            
+            cursor.execute(sql, chunk)
+            rows = cursor.fetchall()
+            
+            for row in rows:
+                result[row['hash']] = {
+                    "is_inactive": bool(row['is_inactive']),
+                    "is_pinned": bool(row['is_pinned']),
+                    "protected_until": row['protected_until'],
+                    "last_reinforced": row['last_reinforced']
+                }
+                
+        return result
 
     def get_paragraphs_by_relation(self, relation_hash: str) -> List[Dict[str, Any]]:
         """
@@ -1098,7 +1206,7 @@ class MetadataStore:
         cleanup_plan = {
             "paragraph_hash": paragraph_hash,
             "vector_id_to_remove": None,
-            "edges_to_remove": []  # list of (src, tgt) tuples
+            "edges_to_remove": []  # (src, tgt) 元组列表
         }
 
         cursor = self._conn.cursor()
@@ -1165,6 +1273,375 @@ class MetadataStore:
         logger.info("元数据存储所有表已清空")
 
 
+
+    def update_relation_timestamp(self, hash_value: str, access_count_delta: int = 1) -> None:
+        """更新关系的访问时间和计数"""
+        now = datetime.now().timestamp()
+        
+        # 同时更新 last_accessed (旧) 和 last_reinforced (V5)
+        
+        cursor = self._conn.cursor()
+        cursor.execute("""
+            UPDATE relations
+            SET last_accessed = ?,
+                access_count = access_count + ?
+            WHERE hash = ?
+        """, (now, access_count_delta, hash_value))
+        self._conn.commit()
+
+    # =========================================================================
+    # V5 Memory System Methods
+    # =========================================================================
+
+    def get_relation_status_batch(self, hashes: List[str]) -> Dict[str, Dict[str, Any]]:
+        """
+        批量获取关系状态 (V5)
+        
+        Args:
+            hashes: 关系哈希列表
+            
+        Returns:
+            Dict[hash, status_dict]
+            status_dict 包含: is_inactive, weight(confidence), is_pinned, protected_until, last_reinforced, inactive_since
+        """
+        if not hashes:
+            return {}
+            
+        placeholders = ",".join(["?"] * len(hashes))
+        cursor = self._conn.cursor()
+        cursor.execute(f"""
+            SELECT hash, is_inactive, confidence, is_pinned, protected_until, last_reinforced, inactive_since
+            FROM relations
+            WHERE hash IN ({placeholders})
+        """, hashes)
+        
+        result = {}
+        for row in cursor.fetchall():
+            result[row["hash"]] = {
+                "is_inactive": bool(row["is_inactive"]),
+                "weight": row["confidence"],
+                "is_pinned": bool(row["is_pinned"]),
+                "protected_until": row["protected_until"],
+                "last_reinforced": row["last_reinforced"],
+                "inactive_since": row["inactive_since"]
+            }
+        return result
+
+    def mark_relations_inactive(self, hashes: List[str], inactive_since: float) -> None:
+        """
+        批量标记关系为冷冻 (Inactive)
+        """
+        if not hashes:
+            return
+            
+        placeholders = ",".join(["?"] * len(hashes))
+        cursor = self._conn.cursor()
+        cursor.execute(f"""
+            UPDATE relations
+            SET is_inactive = 1,
+                inactive_since = ?
+            WHERE hash IN ({placeholders})
+        """, (inactive_since, *hashes))
+        self._conn.commit()
+        
+    def mark_relations_active(self, hashes: List[str], boost_weight: Optional[float] = None) -> None:
+        """
+        批量标记关系为活跃 (Active/Revive)
+        
+        Args:
+            hashes: 关系哈希列表
+            boost_weight: 如果提供，将设置 confidence = max(confidence, boost_weight)
+        """
+        if not hashes:
+            return
+            
+        placeholders = ",".join(["?"] * len(hashes))
+        cursor = self._conn.cursor()
+        
+        if boost_weight is not None:
+            cursor.execute(f"""
+                UPDATE relations
+                SET is_inactive = 0,
+                    inactive_since = NULL,
+                    confidence = MAX(confidence, ?)
+                WHERE hash IN ({placeholders})
+            """, (boost_weight, *hashes))
+        else:
+             cursor.execute(f"""
+                UPDATE relations
+                SET is_inactive = 0,
+                    inactive_since = NULL
+                WHERE hash IN ({placeholders})
+            """, hashes)
+            
+        self._conn.commit()
+
+    def update_relations_protection(
+        self, 
+        hashes: List[str], 
+        protected_until: Optional[float] = None, 
+        is_pinned: Optional[bool] = None,
+        last_reinforced: Optional[float] = None
+    ) -> None:
+        """
+        批量更新关系保护状态
+        """
+        if not hashes:
+            return
+            
+        updates = []
+        params = []
+        
+        if protected_until is not None:
+            updates.append("protected_until = ?")
+            params.append(protected_until)
+        if is_pinned is not None:
+            updates.append("is_pinned = ?")
+            params.append(1 if is_pinned else 0)
+        if last_reinforced is not None:
+            updates.append("last_reinforced = ?")
+            params.append(last_reinforced)
+            
+        if not updates:
+            return
+
+        sql_set = ", ".join(updates)
+        placeholders = ",".join(["?"] * len(hashes))
+        
+        params.extend(hashes)
+        
+        cursor = self._conn.cursor()
+        cursor.execute(f"""
+            UPDATE relations
+            SET {sql_set}
+            WHERE hash IN ({placeholders})
+        """, params)
+        self._conn.commit()
+
+    def get_prune_candidates(self, cutoff_time: float, limit: int = 1000) -> List[str]:
+        """
+        获取待修剪候选 (已过冷冻保留期)
+        
+        Args:
+            cutoff_time: 截止时间 (now - 冷冻时长)
+            limit: 限制数量
+        """
+        cursor = self._conn.cursor()
+        cursor.execute("""
+            SELECT hash FROM relations
+            WHERE is_inactive = 1 
+            AND inactive_since < ?
+            LIMIT ?
+        """, (cutoff_time, limit))
+        return [row[0] for row in cursor.fetchall()]
+
+    def backup_and_delete_relations(self, hashes: List[str]) -> int:
+        """
+        备份并删除关系 (Prune)
+        
+        Returns:
+            删除的数量
+        """
+        if not hashes:
+            return 0
+            
+        placeholders = ",".join(["?"] * len(hashes))
+        now = datetime.now().timestamp()
+        
+        cursor = self._conn.cursor()
+        try:
+            # 1. 备份
+            cursor.execute(f"""
+                INSERT OR REPLACE INTO deleted_relations 
+                (hash, subject, predicate, object, vector_index, confidence, created_at, 
+                 source_paragraph, metadata, is_permanent, last_accessed, access_count,
+                 is_inactive, inactive_since, is_pinned, protected_until, last_reinforced, deleted_at)
+                SELECT 
+                 hash, subject, predicate, object, vector_index, confidence, created_at, 
+                 source_paragraph, metadata, is_permanent, last_accessed, access_count,
+                 is_inactive, inactive_since, is_pinned, protected_until, last_reinforced, ?
+                FROM relations
+                WHERE hash IN ({placeholders})
+            """, (now, *hashes))
+            
+            # 2. 删除 (级联删除会自动处理 paragraph_relations 关联)
+            cursor.execute(f"""
+                DELETE FROM relations
+                WHERE hash IN ({placeholders})
+            """, hashes)
+            
+            deleted_count = cursor.rowcount
+            self._conn.commit()
+            return deleted_count
+            
+        except Exception as e:
+            logger.error(f"备份删除失败: {e}")
+            self._conn.rollback()
+            return 0
+
+    def restore_relation_metadata(self, hash_value: str) -> Optional[Dict[str, Any]]:
+        """
+        从回收站恢复关系元数据
+        
+        Returns:
+            恢复后的关系数据 (字典)，失败返回 None
+        """
+        cursor = self._conn.cursor()
+        try:
+            # 1. 查询备份数据
+            cursor.execute("SELECT * FROM deleted_relations WHERE hash = ?", (hash_value,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+                
+            data = dict(row)
+            # 移除 deleted_at 字段
+            if "deleted_at" in data:
+                del data["deleted_at"]
+                
+            # 2. 插入回 relations 表
+            # 动态构建 SQL 以适应字段变化
+            columns = list(data.keys())
+            placeholders = ",".join(["?"] * len(columns))
+            cols_str = ",".join(columns)
+            values = list(data.values())
+            
+            cursor.execute(f"""
+                INSERT OR REPLACE INTO relations ({cols_str})
+                VALUES ({placeholders})
+            """, values)
+            
+            # 3. 从备份表删除
+            cursor.execute("DELETE FROM deleted_relations WHERE hash = ?", (hash_value,))
+            
+            self._conn.commit()
+            return self._row_to_dict(row, "relation") # 使用助手函数将原始行转换为字典
+            
+        except Exception as e:
+            logger.error(f"恢复关系失败: {hash_value} - {e}")
+            self._conn.rollback()
+            return None
+            
+    def get_protected_relations_hashes(self) -> List[str]:
+        """获取所有受保护关系的哈希 (Pinned 或 Protected Until > Now)"""
+        now = datetime.now().timestamp()
+        
+        cursor = self._conn.cursor()
+        cursor.execute("""
+            SELECT hash FROM relations
+            WHERE is_pinned = 1 OR protected_until > ?
+        """, (now,))
+        
+        return [row[0] for row in cursor.fetchall()]
+
+
+    
+    def get_deleted_relations(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """获取回收站中的关系记录"""
+        cursor = self._conn.cursor()
+        cursor.execute("SELECT * FROM deleted_relations ORDER BY deleted_at DESC LIMIT ?", (limit,))
+        data = []
+        for row in cursor.fetchall():
+             d = dict(row)
+             # 是否需要解码元数据？是的，与普通行相同
+             if "metadata" in d and d["metadata"]:
+                 try:
+                     d["metadata"] = pickle.loads(d["metadata"])
+                 except Exception:
+                     d["metadata"] = {}
+             data.append(d)
+        return data
+
+    def get_deleted_relation(self, hash_value: str) -> Optional[Dict[str, Any]]:
+        """获取单条回收站记录"""
+        cursor = self._conn.cursor()
+        cursor.execute("SELECT * FROM deleted_relations WHERE hash = ?", (hash_value,))
+        row = cursor.fetchone()
+        if not row: return None
+        
+        d = dict(row)
+        if "metadata" in d and d["metadata"]:
+             try:
+                 d["metadata"] = pickle.loads(d["metadata"])
+             except Exception:
+                 d["metadata"] = {}
+        return d
+
+    def reinforce_relations(self, hashes: List[str]) -> None:
+        """强化关系 (更新 last_reinforced, is_inactive=0)"""
+        if not hashes: return
+        now = datetime.now().timestamp()
+        
+        cursor = self._conn.cursor()
+        # Batch update? chunking
+        chunk_size = 500
+        for i in range(0, len(hashes), chunk_size):
+            chunk = hashes[i:i+chunk_size]
+            placeholders = ",".join(["?"] * len(chunk))
+            sql = f"""
+                UPDATE relations 
+                SET last_reinforced = ?, is_inactive = 0, inactive_since = NULL
+                WHERE hash IN ({placeholders})
+            """
+            cursor.execute(sql, [now] + chunk)
+            
+        self._conn.commit()
+
+    def mark_relations_inactive(self, hashes: List[str]) -> None:
+        """标记关系为非活跃 (Freeze)"""
+        if not hashes: return
+        now = datetime.now().timestamp()
+        
+        cursor = self._conn.cursor()
+        chunk_size = 500
+        for i in range(0, len(hashes), chunk_size):
+            chunk = hashes[i:i+chunk_size]
+            placeholders = ",".join(["?"] * len(chunk))
+            sql = f"""
+                UPDATE relations 
+                SET is_inactive = 1, inactive_since = ?
+                WHERE hash IN ({placeholders})
+            """
+            cursor.execute(sql, [now] + chunk)
+            
+        self._conn.commit()
+
+    def protect_relations(
+        self, 
+        hashes: List[str], 
+        is_pinned: bool = False, 
+        ttl_seconds: float = 0
+    ) -> None:
+        """
+        设置保护状态
+        """
+        if not hashes: return
+        now = datetime.now().timestamp()
+        protected_until = (now + ttl_seconds) if ttl_seconds > 0 else 0
+        
+        cursor = self._conn.cursor()
+        chunk_size = 500
+        for i in range(0, len(hashes), chunk_size):
+            chunk = hashes[i:i+chunk_size]
+            placeholders = ",".join(["?"] * len(chunk))
+            
+            # 由于 is_pinned 和 protected_until 是分开的，如果请求固定（pin），我们会同时更新这两项，
+            # 但通常用户要么切换固定状态，要么设置 TTL。
+            # 如果 is_pinned=True，TTL 通常就不重要了。
+            # 但目前的逻辑是正交处理它们的。
+            
+            # 如果用户取消固定 (is_pinned=False)，我们是否应该尊重已设置的 TTL？
+            # 当前的 API 会同时设置这两项。
+            
+            sql = f"""
+                UPDATE relations 
+                SET is_pinned = ?, protected_until = ?
+                WHERE hash IN ({placeholders})
+            """
+            cursor.execute(sql, [is_pinned, protected_until] + chunk)
+            
+        self._conn.commit()
+
     def vacuum(self) -> None:
         """优化数据库"""
         cursor = self._conn.cursor()
@@ -1207,6 +1684,289 @@ class MetadataStore:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """上下文管理器出口"""
         self.close()
+
+    # =========================================================================
+    # V5 Soft Delete & Garbage Collection
+    # =========================================================================
+
+    def get_entity_gc_candidates(self, isolated_hashes: List[str], retention_seconds: float) -> List[str]:
+        """
+        获取实体 GC 候选列表 (Soft Delete Candidates)
+        条件:
+        1. 在 isolated_hashes 列表中 (由 GraphStore 提供, 确保 active degree=0 & not frozen)
+        2. is_deleted = 0 (未被标记)
+        3. created_at < now - retention (过了新手保护期)
+        4. 不被任何 active paragraph 引用 (paragraph_entities check)
+        
+        Args:
+            isolated_hashes: 孤儿实体 Hash 列表
+            retention_seconds: 保留时间 (秒)
+        """
+        if not isolated_hashes:
+            return []
+            
+        now = datetime.now().timestamp()
+        cutoff = now - retention_seconds
+        
+        candidates = []
+        batch_size = 900
+        
+        # 分批处理 IN 查询
+        for i in range(0, len(isolated_hashes), batch_size):
+            batch = isolated_hashes[i:i+batch_size]
+            placeholders = ",".join(["?"] * len(batch))
+            
+            # 使用 NOT EXISTS 子查询检查引用
+            # 注意: paragraph_entities 中引用的 paragraph 如果被软删了，是否算引用？
+            # 这里的语义: 只要有 rows 存在于 paragraph_entities 且该 row 对应的 paragraph 没被彻底物理删除，就算引用。
+            # 更严格: ... OR (EXISTS ... AND entity_hash=... AND is_deleted=0)
+            # 但 paragraph_entities 表没有 is_deleted 字段(它是关联表). 我们检查关联是否存在。
+            # 如果 paragraph 本身 soft deleted, 它的引用应该失效吗？
+            # 策略: 只有当 paragraph 也是 active 时，引用才有效。
+            # JOIN paragraphs p ON pe.paragraph_hash = p.hash WHERE p.is_deleted = 0
+            
+            query = f"""
+                SELECT e.hash FROM entities e
+                WHERE e.hash IN ({placeholders})
+                AND e.is_deleted = 0
+                AND (e.created_at IS NULL OR e.created_at < ?)
+                AND NOT EXISTS (
+                    SELECT 1 FROM paragraph_entities pe
+                    JOIN paragraphs p ON pe.paragraph_hash = p.hash
+                    WHERE pe.entity_hash = e.hash
+                    AND p.is_deleted = 0
+                )
+            """
+            
+            cursor = self._conn.cursor()
+            cursor.execute(query, batch + [cutoff])
+            candidates.extend([row[0] for row in cursor.fetchall()])
+            
+        return candidates
+
+    def get_paragraph_gc_candidates(self, retention_seconds: float) -> List[str]:
+        """
+        获取段落 GC 候选列表
+        条件:
+        1. is_deleted = 0
+        2. created_at < cutoff
+        3. 没有 Relations (paragraph_relations empty)
+        4. 没有 Entities 引用 (paragraph_entities empty) 
+           OR 引用的 Entities 全是软删状态? (太复杂，简单点: 无引用)
+           
+        Refined Strategy: 
+        段落孤儿判定 = 
+          (Left Join paragraph_relations -> NULL) AND 
+          (Left Join paragraph_entities -> NULL)
+        """
+        now = datetime.now().timestamp()
+        cutoff = now - retention_seconds
+        
+        query = """
+            SELECT p.hash FROM paragraphs p
+            LEFT JOIN paragraph_relations pr ON p.hash = pr.paragraph_hash
+            LEFT JOIN paragraph_entities pe ON p.hash = pe.paragraph_hash
+            WHERE p.is_deleted = 0
+            AND (p.created_at IS NULL OR p.created_at < ?)
+            AND pr.relation_hash IS NULL
+            AND pe.entity_hash IS NULL
+        """
+        
+        cursor = self._conn.cursor()
+        cursor.execute(query, (cutoff,))
+        return [row[0] for row in cursor.fetchall()]
+
+    def mark_as_deleted(self, hashes: List[str], type_: str) -> int:
+        """
+        标记为软删除 (Mark Phase)
+        
+        Args:
+            hashes: Hash 列表
+            type_: 'entity' | 'paragraph'
+        """
+        if not hashes:
+            return 0
+            
+        table = "entities" if type_ == "entity" else "paragraphs"
+        now = datetime.now().timestamp()
+        
+        count = 0
+        batch_size = 900
+        for i in range(0, len(hashes), batch_size):
+            batch = hashes[i:i+batch_size]
+            placeholders = ",".join(["?"] * len(batch))
+            
+            # 幂等更新: 只更那些 is_deleted=0 的
+            cursor = self._conn.cursor()
+            cursor.execute(f"""
+                UPDATE {table}
+                SET is_deleted = 1, deleted_at = ?
+                WHERE is_deleted = 0 AND hash IN ({placeholders})
+            """, [now] + batch)
+            count += cursor.rowcount
+            
+        self._conn.commit()
+        if count > 0:
+            logger.info(f"软删除标记 ({table}): {count} 项")
+        return count
+
+    def sweep_deleted_items(self, type_: str, grace_period_seconds: float) -> List[Tuple[str, str]]:
+        """
+        扫描可物理清理的项目 (Sweep Phase - Selection)
+        
+        Args:
+            type_: 'entity' | 'paragraph'
+            grace_period_seconds: 宽限期
+            
+        Returns:
+            List[(hash, name)]: 待删除项列表 (paragraph name为空)
+        """
+        table = "entities" if type_ == "entity" else "paragraphs"
+        now = datetime.now().timestamp()
+        cutoff = now - grace_period_seconds
+        
+        cols = "hash, name" if type_ == "entity" else "hash, '' as name"
+        
+        cursor = self._conn.cursor()
+        cursor.execute(f"""
+            SELECT {cols} FROM {table}
+            WHERE is_deleted = 1
+            AND deleted_at < ?
+        """, (cutoff,))
+        
+        return [(row[0], row[1]) for row in cursor.fetchall()]
+
+    def physically_delete_entities(self, hashes: List[str]) -> int:
+        """物理删除实体 (批量)"""
+        if not hashes: return 0
+        
+        count = 0
+        batch_size = 900
+        for i in range(0, len(hashes), batch_size):
+            batch = hashes[i:i+batch_size]
+            placeholders = ",".join(["?"] * len(batch))
+            
+            cursor = self._conn.cursor()
+            cursor.execute(f"DELETE FROM entities WHERE hash IN ({placeholders})", batch)
+            count += cursor.rowcount
+            
+        self._conn.commit()
+        return count
+
+    def physically_delete_paragraphs(self, hashes: List[str]) -> int:
+        """物理删除段落 (批量)"""
+        if not hashes: return 0
+        
+        count = 0
+        batch_size = 900
+        for i in range(0, len(hashes), batch_size):
+            batch = hashes[i:i+batch_size]
+            placeholders = ",".join(["?"] * len(batch))
+            
+            cursor = self._conn.cursor()
+            cursor.execute(f"DELETE FROM paragraphs WHERE hash IN ({placeholders})", batch)
+            count += cursor.rowcount
+            
+        self._conn.commit()
+        return count
+
+    def revive_if_deleted(self, entity_hashes: List[str] = None, paragraph_hashes: List[str] = None) -> int:
+        """
+        复活已软删的项目 (Auto Revival)
+        当数据被再次访问、引用或导入时调用。
+        """
+        count = 0
+        
+        if entity_hashes:
+            batch_size = 900
+            for i in range(0, len(entity_hashes), batch_size):
+                batch = entity_hashes[i:i+batch_size]
+                placeholders = ",".join(["?"] * len(batch))
+                
+                cursor = self._conn.cursor()
+                cursor.execute(f"""
+                    UPDATE entities
+                    SET is_deleted = 0, deleted_at = NULL
+                    WHERE is_deleted = 1 AND hash IN ({placeholders})
+                """, batch)
+                count += cursor.rowcount
+                
+        if paragraph_hashes:
+            batch_size = 900
+            for i in range(0, len(paragraph_hashes), batch_size):
+                batch = paragraph_hashes[i:i+batch_size]
+                placeholders = ",".join(["?"] * len(batch))
+                
+                cursor = self._conn.cursor()
+                cursor.execute(f"""
+                    UPDATE paragraphs
+                    SET is_deleted = 0, deleted_at = NULL
+                    WHERE is_deleted = 1 AND hash IN ({placeholders})
+                """, batch)
+                count += cursor.rowcount
+        
+        if count > 0:
+            self._conn.commit()
+            logger.info(f"自动复活: {count} 项 (Soft Delete Revived)")
+            
+        return count
+
+    def revive_entities_by_names(self, names: List[str]) -> int:
+        """
+        根据名称复活实体 (Convenience wrapper)
+        """
+        if not names: return 0
+        
+        # 使用内部方法计算哈希
+        hashes = [compute_hash(self._canonicalize_name(n)) for n in names]
+        return self.revive_if_deleted(entity_hashes=hashes)
+
+    def get_entity_status_batch(self, hashes: List[str]) -> Dict[str, Dict[str, Any]]:
+        """批量获取实体状态 (WebUI用)"""
+        if not hashes: return {}
+        
+        result = {}
+        batch_size = 900
+        for i in range(0, len(hashes), batch_size):
+            batch = hashes[i:i+batch_size]
+            placeholders = ",".join(["?"] * len(batch))
+            
+            cursor = self._conn.cursor()
+            cursor.execute(f"""
+                SELECT hash, is_deleted, deleted_at 
+                FROM entities 
+                WHERE hash IN ({placeholders})
+            """, batch)
+            
+            for row in cursor.fetchall():
+                result[row[0]] = {
+                    "is_deleted": bool(row[1]),
+                    "deleted_at": row[2]
+                }
+        return result
+
+    def get_deleted_entities(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """获取已软删除的实体 (回收站用)"""
+        if not self.has_table("entities"): return []
+        
+        cursor = self._conn.cursor()
+        cursor.execute("""
+            SELECT hash, name, deleted_at 
+            FROM entities 
+            WHERE is_deleted = 1 
+            ORDER BY deleted_at DESC 
+            LIMIT ?
+        """, (limit,))
+        
+        items = []
+        for row in cursor.fetchall():
+            items.append({
+                "hash": row[0],
+                "name": row[1],
+                "type": "entity", # 标记为实体
+                "deleted_at": row[2]
+            })
+        return items
 
     def __repr__(self) -> str:
         stats = self.get_statistics() if self.is_connected else {}
