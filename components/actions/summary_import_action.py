@@ -91,10 +91,10 @@ class SummaryImportAction(BaseAction):
         if context_length <= 0:
             context_length = None
 
-        if not self.message or not self.message.chat_stream:
+        if not self.chat_stream:
             return False, "无法获取当前聊天上下文"
 
-        stream_id = self.message.chat_stream.stream_id
+        stream_id = self.chat_stream.stream_id
         group_id = self.group_id
         user_id = self.user_id
         
