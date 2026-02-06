@@ -108,7 +108,7 @@ class MemorixServer:
                         for e in p_entities:
                             raw_name = e['name']
                             lower_id = raw_name.strip().lower()
-                            node_map[lower_id] = raw_name # Use the name from entity table as preferred label
+                            node_map[lower_id] = raw_name # 优先使用实体表中的名称作为显示标签
                             found_nodes.add(lower_id)
                             
                         # 收集关系
@@ -117,7 +117,7 @@ class MemorixServer:
                             s_raw, t_raw = r['subject'], r['object']
                             s_id, t_id = s_raw.strip().lower(), t_raw.strip().lower()
                             
-                            # Update labels if not present (prefer entity table, but relation raw text is fallback)
+                            # 如果不存在则更新标签（优先使用实体表，关系原始文本作为备选）
                             if s_id not in node_map: node_map[s_id] = s_raw
                             if t_id not in node_map: node_map[t_id] = t_raw
                             
@@ -244,28 +244,28 @@ class MemorixServer:
             if self.plugin.metadata_store:
                 try:
                     if self._relation_cache is None:
-                        # Rebuild cache
+                        # 重新构建缓存
                         import time
                         start_t = time.time()
                         raw_triples = self.plugin.metadata_store.get_all_triples()
                         cache = {}
                         count = 0
-                        for s, p, o in raw_triples:
+                        for s, p, o, _ in raw_triples: # _ 用于忽略 hash 字段
                             key = (s, o)
                             if key not in cache: cache[key] = []
                             cache[key].append(p)
                             count += 1
                         self._relation_cache = cache
-                        logger.info(f"[Cache] Rebuilt relation cache with {count} relations in {time.time() - start_t:.4f}s")
+                        logger.info(f"[Cache] 重新构建关系缓存，共 {count} 条关系，耗时 {time.time() - start_t:.4f}s")
                     
                     edge_predicates = self._relation_cache
-                    # relation_count = sum(len(x) for x in edge_predicates.values()) # Optimize: don't sum every time if not needed
-                    relation_count = -1 # Skip expensive counting for debug
+                    # relation_count = sum(len(x) for x in edge_predicates.values()) # 优化：仅在需要时求和，避免每次都计算
+                    relation_count = -1 # 调试用，跳过耗时的计数逻辑
                         
                 except Exception as e:
                     logger.error(f"Error fetching relations for graph: {e}")
             else:
-                logger.warning("[DEBUG] MetadataStore is NOT initialized or available")
+                logger.warning("[DEBUG] MetadataStore 未初始化或不可用")
 
             for source in filtered_nodes: # 关键修复：只从过滤后的节点开始搜索
                 neighbors = self.plugin.graph_store.get_neighbors(source)
@@ -281,7 +281,7 @@ class MemorixServer:
                         # 尝试精确匹配
                         predicates = edge_predicates.get((source, target), [])
                         
-                        # 如果没有找到，尝试不区分大小写的匹配 (slow path, but helpful for debugging)
+                        # 如果没有找到，尝试不区分大小写的匹配 (慢速路径，但有助于调试)
                         if not predicates:
                             for (ks, ko), preds in edge_predicates.items():
                                 if ks.lower() == source.lower() and ko.lower() == target.lower():
@@ -308,7 +308,179 @@ class MemorixServer:
                             "arrows": "to"
                         })
                         processed_edges.add(edge_key)
+
+            # --- V5: 恢复非活跃边 (已冷冻/已衰减) ---
+            # 遍历持久化存储中的所有边，找出虽然权重为 0（非活跃）但连接着两个可见节点的边
+            if self.plugin.graph_store:
+                gst = self.plugin.graph_store
+                idx_to_node = gst._nodes
+                
+                # O(E) 遍历 - 对于可视化端点是可以接受的
+                for (s_idx, t_idx), hashes in gst._edge_hash_map.items():
+                    if not hashes: continue
+                    
+                    # 确保索引有效
+                    if s_idx < len(idx_to_node) and t_idx < len(idx_to_node):
+                        s_name = idx_to_node[s_idx]
+                        t_name = idx_to_node[t_idx]
+                        
+                        # 仅当两个节点都在当前过滤视图中时显示
+                        if s_name in filtered_node_set and t_name in filtered_node_set:
+                            edge_key = (s_name, t_name)
+                            if edge_key not in processed_edges:
+                                # 找到一条非活跃边
+                                predicates = edge_predicates.get(edge_key, [])
+                                display_label = ", ".join(predicates[:3]) if predicates else "(冷冻)"
+                                
+                                edges.append({
+                                    "id": f"{s_name}_{t_name}",
+                                    "from": s_name, 
+                                    "to": t_name, 
+                                    "value": 0.05, # 最小视觉权重
+                                    "physics": False, # 不影响布局
+                                    "label": display_label,
+                                    "predicates": predicates,
+                                    "arrows": "to",
+                                    "is_active": False,
+                                    "dashes": True, # 视觉提示
+                                    "color": {"color": "rgba(203, 213, 225, 0.4)"} # 默认 Slate-300
+                                })
+                                processed_edges.add(edge_key)
             
+            # --- V5: 注入节点状态 (软删除) ---
+            if self.plugin.metadata_store and nodes:
+                try:
+                   # 1. 为所有可见节点计算哈希
+                   # 映射 hash -> node_index/node_id
+                   node_hash_map = {}
+                   node_hashes = []
+                   
+                   # 我们需要规范化的哈希。GraphStore 知道如何规范化？
+                   # 通常应与 MetadataStore.compute_hash(node_id) 相同？
+                   # 如果可用，让我们使用 MetadataStore.compute_hash 逻辑，或者直接使用 GraphStore 逻辑。
+                   # GraphStore 使用 _canonicalize (lower().strip())。MetadataStore 使用 compute_hash(name)。
+                   # 它们应该匹配。
+                   
+                   for i, n in enumerate(nodes):
+                       # 注意：在某些分支中 node['id'] 是显示名称，或者是规范化的 ID？
+                       # 在分支 2 (filtered_nodes) 中，'id' 是来自 GraphStore 的名称。
+                       nid = n['id']
+                       # MetadataStore 期望规范化的哈希
+                       # 假设 compute_hash 封装了简单的逻辑？
+                       # 我们可以导入或重用逻辑。
+                       # 安全的做法：如果可用则使用 GraphStore 规范化，然后哈希。
+                       # 或者直接尝试按原样对 ID 进行哈希，假设它就是名称。
+                       
+                       # 更好的做法：尽可能使用实用程序。
+                       from src.utils.hash_util import compute_hash
+                       
+                       # GraphStore 节点名称保留了大小写，但为了键值进行了规范化。
+                       # MetadataStore 的删除基于规范化哈希。
+                       # 所以我们应该对规范化名称进行哈希。
+                       
+                       # 如果不容易获取规范化器，则将其转换为小写。
+                       canon_name = nid.strip().lower() 
+                       h = compute_hash(canon_name)
+                       
+                       node_hashes.append(h)
+                       node_hash_map[h] = i
+                       
+                   # 2. 批量查询
+                   if node_hashes:
+                       node_status_map = self.plugin.metadata_store.get_entity_status_batch(node_hashes)
+                       
+                       # 3. 应用到节点
+                       for h, status in node_status_map.items():
+                           if h in node_hash_map:
+                               idx = node_hash_map[h]
+                               node_ref = nodes[idx]
+                               if status.get('is_deleted'):
+                                   node_ref['is_deleted'] = True
+                                   node_ref['color'] = {'background': '#ef4444', 'border': '#fee2e2'} # 红色警告
+                                   node_ref['shape'] = 'box' # 不同的形状？
+                                   node_ref['label'] += ' (已删除)'
+                except Exception as e:
+                    logger.warning(f"Failed to inject node status: {e}")
+
+            # --- V5: 注入记忆状态 (批量) ---
+            if self.plugin.metadata_store:
+                try:
+                    import datetime
+                    now = datetime.datetime.now().timestamp()
+                    
+                    # 元数据查询收集器
+                    # 我们需要查询所有边的关系状态。
+                    # 如果一条一条查询会很重。理想情况下我们需要批量查询。
+                    # MetadataStore.get_relation_status_batch 接收 [hashes]。
+                    # 但这里我们只有边 (s,t)。我们需要先将 (s,t) 映射到哈希。
+                    
+                    # GraphStore 拥有 `_edge_hash_map`。
+                    # 让我们遍历边并收集哈希。
+                    
+                    all_graph_hashes = []
+                    edge_hash_mapping = {} # 边索引 -> [hashes]
+                    
+                    gst = self.plugin.graph_store
+                    
+                    for i, edge in enumerate(edges):
+                        s, t = edge['from'], edge['to']
+                        # 从 GraphStore 映射中获取哈希
+                        # 使用内部方法还是需要公开 API？
+                        # _edge_hash_map 使用索引。
+                        s_canon = gst._canonicalize(s)
+                        t_canon = gst._canonicalize(t)
+                        if s_canon in gst._node_to_idx and t_canon in gst._node_to_idx:
+                            s_idx = gst._node_to_idx[s_canon]
+                            t_idx = gst._node_to_idx[t_canon]
+                            hashes = gst._edge_hash_map.get((s_idx, t_idx), set())
+                            if hashes:
+                                h_list = list(hashes)
+                                all_graph_hashes.extend(h_list)
+                                edge_hash_mapping[i] = h_list
+ 
+                    if all_graph_hashes:
+                        # 批量查询元数据
+                        status_map = self.plugin.metadata_store.get_relation_status_batch(all_graph_hashes)
+                        
+                        # 应用到边
+                        for i, h_list in edge_hash_mapping.items():
+                            # 聚合边的状态
+                            # 规则:
+                            # - 置顶 (Pinned): 如果任一哈希已置顶 -> 边置顶
+                            # - 保护 (Protected): 最大 protected_until
+                            # - 非活跃 (Inactive): 如果所有哈希皆非活跃 -> 边非活跃 (仅视觉显示，逻辑上图应该处理此情况)
+                            # - 健康 (Health): 平均值还是最小值？让我们使用最大安全性。
+                            
+                            is_pinned = False
+                            max_protected = 0
+                            all_inactive = True
+                            
+                            for h in h_list:
+                                st = status_map.get(h)
+                                if st:
+                                    if st.get('is_pinned'): is_pinned = True
+                                    p_until = st.get('protected_until') or 0
+                                    if p_until > max_protected: max_protected = p_until
+                                    if not st.get('is_inactive'): all_inactive = False
+                                    
+                            edge_ref = edges[i]
+                            edge_ref['is_pinned'] = is_pinned
+                            edge_ref['protected_until'] = max_protected
+                            edge_ref['is_protected'] = (max_protected > now)
+                            edge_ref['is_active'] = not all_inactive
+                            
+                            # 非活跃/已冷冻的视觉线索
+                            if all_inactive:
+                                edge_ref['color'] = {'color': 'rgba(203, 213, 225, 0.4)'} # Slate-300
+                                edge_ref['dashes'] = True
+                                
+                            # 已保护的视觉线索
+                            if is_pinned or (max_protected > now):
+                                edge_ref['shadow'] = {'enabled': True, 'color': 'rgba(251, 191, 36, 0.6)', 'size': 5} # 琥珀色阴影
+
+                except Exception as e:
+                    logger.warning(f"Failed to inject V5 metadata: {e}")
+
             debug_info = {
                 "relation_count": relation_count,
                 "sample_key": list(edge_predicates.keys())[0] if edge_predicates else None,
@@ -334,7 +506,7 @@ class MemorixServer:
                 delta = data.weight - current_weight
                 
                 new_weight = self.plugin.graph_store.update_edge_weight(data.source, data.target, delta)
-                # 持久化保存
+                # 持久化保存到磁盘
                 self.plugin.graph_store.save()
                 return {"success": True, "new_weight": new_weight}
             except Exception as e:
@@ -631,16 +803,16 @@ class MemorixServer:
                         errors.append(f"Graph cleanup error: {ge}")
                 
                 # 如果有非致命错误，记录并在响应中提示
-                msg = "Source deleted successfully"
+                msg = "来源删除成功"
                 if errors:
-                    msg += f", but with cleanup warnings: {'; '.join(errors)}"
+                    msg += f"，但带有清理警告: {'; '.join(errors)}"
                     
-                # 触发保存以持久化内存变更
+                # 触发保存以持久化内存中的变更
                 try:
                     self.plugin.vector_store.save()
                     self.plugin.graph_store.save()
                 except Exception as se:
-                    logger.warning(f"Auto-save after delete failed: {se}")
+                    logger.warning(f"删除来源后的自动保存失败: {se}")
                 
                 self._relation_cache = None
                 return {"success": True, "message": msg, "details": cleanup_plan}
@@ -648,6 +820,178 @@ class MemorixServer:
             except Exception as e:
                 logger.error(f"Delete source failed: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
+
+        # --- V5 记忆管理端点 ---
+        
+        class MemoryProtectRequest(BaseModel):
+            id: str # 边 ID "s_t"
+            type: str # "pin" (置顶) 或 "ttl" (时间限制)
+            duration: Optional[float] = 0.0 # TTL 的小时数
+            
+        class MemoryActionRequest(BaseModel):
+            id: str # 边 ID "s_t"
+            
+        class MemoryRestoreRequest(BaseModel):
+            hash: str
+            type: Optional[str] = "relation" # relation (关系) | entity (实体)
+        
+        @self.app.get("/api/memory/recycle_bin")
+        async def get_recycle_bin(limit: int = 50):
+            """获取回收站中的记忆 (Entities + Relations)"""
+            if not self.plugin.metadata_store:
+                raise HTTPException(status_code=503, detail="Metadata store missing")
+            
+            try:
+                # 1. 关系
+                deleted_rels = self.plugin.metadata_store.get_deleted_relations(limit)
+                for x in deleted_rels: x['type'] = 'relation'
+                
+                # 2. 实体
+                deleted_ents = self.plugin.metadata_store.get_deleted_entities(limit)
+                
+                # 3. 合并
+                combined = deleted_rels + deleted_ents
+                combined.sort(key=lambda x: x.get('deleted_at', 0) or 0, reverse=True)
+                
+                return {"items": combined[:limit]}
+            except Exception as e:
+                logger.error(f"Recycle bin fetch failed: {e}")
+                return {"items": [], "error": str(e)}
+
+        @self.app.post("/api/memory/restore")
+        async def restore_memory(data: MemoryRestoreRequest):
+            """从回收站恢复记忆"""
+            if not self.plugin.metadata_store or not self.plugin.graph_store:
+                raise HTTPException(status_code=503, detail="Stores missing")
+             
+            try:
+                if data.type == "entity":
+                    # 复活实体
+                    cursor = self.plugin.metadata_store._conn.cursor()
+                    cursor.execute("UPDATE entities SET is_deleted=0, deleted_at=NULL WHERE hash=?", (data.hash,))
+                    self.plugin.metadata_store._conn.commit()
+                    return {"success": True, "type": "entity", "hash": data.hash}
+                
+                else:
+                    # 1. 从删除表中获取记录
+                    record = self.plugin.metadata_store.get_deleted_relation(data.hash)
+                    if not record:
+                        raise HTTPException(status_code=404, detail="回收站中未找到该记忆")
+                    
+                    # 2. 重新插入到元数据 (恢复元数据)
+                    self.plugin.metadata_store.restore_relation(data.hash)
+                    
+                    # 3. 恢复到 GraphStore (仅当节点存在/对图安全时)
+                    s, t = record['subject'], record['object']
+                    
+                    # 确保节点存在 (如果需要则复活，或创建)
+                    # 修复：如果实体在元数据中处于软删除状态，则自动复活它们
+                    self.plugin.metadata_store.revive_entities_by_names([s, t])
+                    
+                    self.plugin.graph_store.add_nodes([s, t])
+                    
+                    self.plugin.graph_store.add_edges(
+                        [(s, t)],
+                        weights=[record['confidence']],
+                        relation_hashes=[data.hash]
+                    )
+                    self.plugin.graph_store.save()
+                    
+                    return {"success": True, "type": "relation", "hash": data.hash} 
+                    # 目前仅恢复元数据并发出警告。
+                    logger.warning(f"正在恢复记忆 {data.hash}，但节点 {s}/{t} 可能在图中缺失。")
+                
+                # 4. Save
+                self.plugin.graph_store.save()
+                self._relation_cache = None
+                
+                return {"success": True}
+            except Exception as e:
+                logger.error(f"Restore failed: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.post("/api/memory/reinforce")
+        async def reinforce_memory(data: MemoryActionRequest):
+            """强化记忆 (Reset decay)"""
+            if "_" not in data.id: raise HTTPException(400, "Invalid ID format")
+            s, t = data.id.split("_", 1) 
+            
+            if not self.plugin.graph_store: raise HTTPException(503, "Graph store missing")
+            
+            try:
+                gst = self.plugin.graph_store
+                s_idx = gst._node_to_idx.get(gst._canonicalize(s))
+                t_idx = gst._node_to_idx.get(gst._canonicalize(t))
+                
+                if s_idx is not None and t_idx is not None:
+                     hashes = gst._edge_hash_map.get((s_idx, t_idx), set())
+                     if hashes:
+                         self.plugin.metadata_store.reinforce_relations(list(hashes))
+                
+                # 稍微提升权重
+                self.plugin.graph_store.update_edge_weight(s, t, 0.1) 
+                self.plugin.graph_store.save()
+                
+                return {"success": True}
+            except Exception as e:
+                logger.error(f"Reinforce failed: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.post("/api/memory/freeze")
+        async def freeze_memory(data: MemoryActionRequest):
+            """手动冷冻记忆"""
+            if "_" not in data.id: raise HTTPException(400, "Invalid ID format")
+            s, t = data.id.split("_", 1)
+            
+            if not self.plugin.graph_store: raise HTTPException(503, "Graph store missing")
+
+            try:
+                gst = self.plugin.graph_store
+                s_idx = gst._node_to_idx.get(gst._canonicalize(s))
+                t_idx = gst._node_to_idx.get(gst._canonicalize(t))
+                
+                # 1. 在元数据中标记为不活跃
+                if s_idx is not None and t_idx is not None:
+                     hashes = gst._edge_hash_map.get((s_idx, t_idx), set())
+                     if hashes:
+                         self.plugin.metadata_store.mark_relations_inactive(list(hashes))
+                
+                # 2. 在图中停用 (移除边但保留映射)
+                gst.deactivate_edges([(s, t)])
+                gst.save()
+                
+                return {"success": True}
+            except Exception as e:
+                 logger.error(f"Freeze failed: {e}")
+                 raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.post("/api/memory/protect")
+        async def protect_memory(data: MemoryProtectRequest):
+            """设置保护 (Pin/TTL)"""
+            if "_" not in data.id: raise HTTPException(400, "Invalid ID format")
+            s, t = data.id.split("_", 1)
+            
+            if not self.plugin.graph_store: raise HTTPException(503, "Graph store missing")
+
+            try:
+                gst = self.plugin.graph_store
+                s_idx = gst._node_to_idx.get(gst._canonicalize(s))
+                t_idx = gst._node_to_idx.get(gst._canonicalize(t))
+                
+                if s_idx is not None and t_idx is not None:
+                     hashes = gst._edge_hash_map.get((s_idx, t_idx), set())
+                     if hashes:
+                         h_list = list(hashes)
+                         is_pinned = (data.type == "pin")
+                         ttl = data.duration * 3600 if data.type == "ttl" else 0
+                         
+                         self.plugin.metadata_store.protect_relations(h_list, is_pinned=is_pinned, ttl_seconds=ttl)
+                
+                return {"success": True}
+            except Exception as e:
+                 logger.error(f"Protect failed: {e}")
+                 raise HTTPException(status_code=500, detail=str(e))
+
 
         @self.app.post("/api/save")
         async def manual_save():
@@ -691,7 +1035,7 @@ class MemorixServer:
 
     def run(self):
         """运行服务器 (阻塞)"""
-        logger.info(f"Starting A_Memorix WebUI on {self.host}:{self.port}")
+        logger.info(f"正在启动 A_Memorix WebUI，地址：{self.host}:{self.port}")
         config = uvicorn.Config(self.app, host=self.host, port=self.port, log_level="info")
         self._server = uvicorn.Server(config)
         self._server.run()
@@ -710,4 +1054,4 @@ class MemorixServer:
             self._server.should_exit = True
         if self.server_thread:
             self.server_thread.join(timeout=2)
-            logger.info("A_Memorix WebUI Stopped")
+            logger.info("A_Memorix WebUI 已停止")

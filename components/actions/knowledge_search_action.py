@@ -249,6 +249,16 @@ class KnowledgeSearchAction(BaseAction):
                 if threshold_filter:
                     results = threshold_filter.filter(results)
 
+            # V5: Hook for Memory Reinforcement
+            from ...plugin import A_MemorixPlugin
+            plugin_instance = A_MemorixPlugin.get_global_instance()
+            if plugin_instance:
+                 # Reinforce only relations that survived filtering
+                 relation_hashes = [r.id for r in results if r.result_type == "relation"]
+                 if relation_hashes:
+                     # Fire and forget (it pushes to buffer)
+                     await plugin_instance.reinforce_access(relation_hashes)
+
             return results
 
         finally:

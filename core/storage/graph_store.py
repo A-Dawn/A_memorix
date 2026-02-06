@@ -8,6 +8,9 @@ import pickle
 from enum import Enum
 from pathlib import Path
 from typing import Optional, Union, Tuple, List, Dict, Set, Any
+from collections import defaultdict
+import threading
+import asyncio
 
 import numpy as np
 
@@ -97,6 +100,11 @@ class GraphStore:
         self._adjacency_dirty: bool = True
         self._saliency_cache: Optional[Dict[str, float]] = None
 
+        # V5: 多关系映射 (src_idx, dst_idx) -> Set[relation_hash]
+        self._edge_hash_map: Dict[Tuple[int, int], Set[str]] = defaultdict(set)
+        # V5: 简单的异步锁 (实际上 asyncio 环境下单线程主循环可能不需要，但为了安全保留)
+        self._lock = asyncio.Lock()
+
         logger.info(f"GraphStore 初始化: format={matrix_format}")
 
     def _canonicalize(self, node: str) -> str:
@@ -133,8 +141,8 @@ class GraphStore:
         
         # 转换逻辑
         if new_mode == GraphModificationMode.INCREMENTAL:
-            # 转换为 LIL
-            if not isinstance(self._adjacency, lil_matrix): # crudely check if not lil
+            # 转换为 LIL 格式
+            if not isinstance(self._adjacency, lil_matrix): # 粗略检查是否非 lil
                  try:
                      self._adjacency = self._adjacency.tolil()
                      logger.debug("已转换为 LIL 格式")
@@ -200,6 +208,7 @@ class GraphStore:
         self,
         edges: List[Tuple[str, str]],
         weights: Optional[List[float]] = None,
+        relation_hashes: Optional[List[str]] = None, # V5: 支持关系哈希映射 (Relation Hash Mapping)
     ) -> int:
         """
         添加边
@@ -253,6 +262,15 @@ class GraphStore:
                  self._adjacency[rows, cols] = weights
                  
                  self._total_edges_added += len(edges)
+                 
+                 # V5: Update edge hash map
+                 if relation_hashes:
+                     for (src, tgt), r_hash in zip(edges, relation_hashes):
+                         if r_hash:
+                             s_idx = self._node_to_idx[self._canonicalize(src)]
+                             t_idx = self._node_to_idx[self._canonicalize(tgt)]
+                             self._edge_hash_map[(s_idx, t_idx)].add(r_hash)
+
                  logger.debug(f"增量添加 {len(edges)} 条边 (LIL)")
                  return len(edges)
              except Exception as e:
@@ -293,7 +311,20 @@ class GraphStore:
             self._adjacency = self._adjacency.tocsr()
 
         self._total_edges_added += len(edges)
+        self._total_edges_added += len(edges)
         self._adjacency_dirty = True  # 标记脏位
+        
+        # V5: 更新边哈希映射 (Edge Hash Map)
+        if relation_hashes:
+            for (src, tgt), r_hash in zip(edges, relation_hashes):
+                if r_hash:
+                    try:
+                        s_idx = self._node_to_idx[self._canonicalize(src)]
+                        t_idx = self._node_to_idx[self._canonicalize(tgt)]
+                        self._edge_hash_map[(s_idx, t_idx)].add(r_hash)
+                    except KeyError:
+                        pass # 正常情况下节点已在上方添加，此处仅作防错处理
+
         logger.debug(f"添加 {len(edges)} 条边")
         return len(edges)
 
@@ -574,6 +605,30 @@ class GraphStore:
 
         return float(self._adjacency[src_idx, tgt_idx])
 
+    def deactivate_edges(self, edges: List[Tuple[str, str]]) -> int:
+        """
+        冻结边 (将权重设为0.0，使其在计算意义上消失，但保留在Map中)
+        
+        Args:
+            edges: [(s1, t1), (s2, t2)...]
+        """
+        if not edges or self._adjacency is None:
+            return 0
+            
+        with self.batch_update():
+            # 我们需要 explicit set to 0.
+            # 使用增量更新模式覆盖
+            for s, t in edges:
+                 s_canon = self._canonicalize(s)
+                 t_canon = self._canonicalize(t)
+                 if s_canon in self._node_to_idx and t_canon in self._node_to_idx:
+                     idx_s = self._node_to_idx[s_canon]
+                     idx_t = self._node_to_idx[t_canon]
+                     self._adjacency[idx_s, idx_t] = 0.0
+                     
+        self._adjacency_dirty = True
+        return len(edges)
+
     def _ensure_adjacency_T(self):
         """确保转置邻接矩阵是最新的"""
         if self._adjacency is None:
@@ -838,6 +893,199 @@ class GraphStore:
             return count
         return 0
 
+
+    # =========================================================================
+    # V5 Memory System Methods (Graph Level)
+    # =========================================================================
+
+    def decay(self, factor: float, min_active_weight: float = 0.0) -> None:
+        """
+        全图衰减 (Atomic Decay)
+        
+        Args:
+            factor: 衰减因子 (0.0 < factor < 1.0)
+            min_active_weight: 最小活跃权重 (低于此值可能被视为无效，但在物理修剪前仍保留)
+        """
+        if self._adjacency is None or factor >= 1.0 or factor <= 0.0:
+            return
+            
+        logger.debug(f"正在执行全图衰减，因子: {factor}")
+        
+        # 直接矩阵乘法，SciPy CSR/CSC 非常高效
+        self._adjacency *= factor
+        
+        # 如果需要处理极小值 (可选，防止下溢，但通常浮点数足够小)
+        # if min_active_weight > 0:
+        #    ... (复杂操作，暂不需要，由 prune 逻辑处理)
+            
+        self._adjacency_dirty = True
+
+    def deactivate_edges(self, edges: List[Tuple[str, str]]) -> None:
+        """
+        冻结边 (从邻接矩阵移除，但保留 _edge_hash_map 里的记录)
+        
+        Args:
+            edges: 要冻结的边列表 [(src, tgt), ...]
+        """
+        if not edges or self._adjacency is None:
+            return
+            
+        edges_to_remove_indices = []
+        for src, tgt in edges:
+            src_canon = self._canonicalize(src)
+            tgt_canon = self._canonicalize(tgt)
+            if src_canon in self._node_to_idx and tgt_canon in self._node_to_idx:
+                s_idx = self._node_to_idx[src_canon]
+                t_idx = self._node_to_idx[tgt_canon]
+                edges_to_remove_indices.append((s_idx, t_idx))
+                
+        if not edges_to_remove_indices:
+            return
+
+        # 物理删除邻接矩阵中的边 (在稀疏矩阵中将权重设为 0。如果重新构建或掩码，则生效) -> 实际上是将其从矩阵拓扑中"移除"
+        # 为了效率，复用掩码逻辑 (Masking Logic) 重新构建矩阵
+        adj_coo = self._adjacency.tocoo()
+        remove_set = set(edges_to_remove_indices)
+        
+        mask = []
+        for i, j in zip(adj_coo.row, adj_coo.col):
+            if (int(i), int(j)) in remove_set:
+                mask.append(False)
+            else:
+                mask.append(True)
+        
+        mask = np.array(mask)
+        
+        new_row = adj_coo.row[mask]
+        new_col = adj_coo.col[mask]
+        new_data = adj_coo.data[mask]
+        
+        n = len(self._nodes)
+        if self.matrix_format == "csr":
+            self._adjacency = csr_matrix((new_data, (new_row, new_col)), shape=(n, n))
+        else:
+            self._adjacency = csc_matrix((new_data, (new_row, new_col)), shape=(n, n))
+            
+        self._adjacency_dirty = True
+        logger.debug(f"已冻结(Deactivate) {len(edges_to_remove_indices)} 条边 (Mapping保留)")
+
+    def prune_relation_hashes(self, operations: List[Tuple[str, str, str]]) -> None:
+        """
+        修剪特定关系哈希 (从 _edge_hash_map 移除; 如果边变空则从矩阵移除)
+        
+        Args:
+           operations: List[(src, tgt, relation_hash)]
+        """
+        if not operations:
+            return
+            
+        edges_to_check_removal = set()
+        
+        # 1. 更新映射 (Update Map)
+        for src, tgt, h in operations:
+             src_canon = self._canonicalize(src)
+             tgt_canon = self._canonicalize(tgt)
+             if src_canon in self._node_to_idx and tgt_canon in self._node_to_idx:
+                 s_idx = self._node_to_idx[src_canon]
+                 t_idx = self._node_to_idx[tgt_canon]
+                 
+                 key = (s_idx, t_idx)
+                 if key in self._edge_hash_map:
+                     if h in self._edge_hash_map[key]:
+                         self._edge_hash_map[key].remove(h)
+                         
+                     if not self._edge_hash_map[key]:
+                         del self._edge_hash_map[key]
+                         edges_to_check_removal.add((src, tgt))
+                         
+        # 2. 从矩阵中移除空边 (Remove Empty Edges from Matrix)
+        if edges_to_check_removal:
+            self.deactivate_edges(list(edges_to_check_removal))
+            self._total_edges_deleted += len(edges_to_check_removal)
+
+    def get_low_weight_edges(self, threshold: float) -> List[Tuple[str, str]]:
+        """
+        获取低于阈值的边 (candidates for pruning/freezing)
+        
+        Args:
+            threshold: 权重阈值
+            
+        Returns:
+            List[(src, tgt)]: 边列表
+        """
+        if self._adjacency is None:
+            return []
+            
+        # 获取所有非零元素
+        rows, cols = self._adjacency.nonzero()
+        data = self._adjacency.data
+        
+        low_weight_indices = np.where(data < threshold)[0]
+        
+        results = []
+        for idx in low_weight_indices:
+            r = rows[idx]
+            c = cols[idx]
+            src = self._nodes[r]
+            tgt = self._nodes[c]
+            results.append((src, tgt))
+            
+        return results
+
+    def get_isolated_nodes(self, include_inactive: bool = True) -> List[str]:
+        """
+        获取孤儿节点 (Active Degree = 0)
+        
+        Args:
+            include_inactive: 是否包含参与了inactive边(冻结边)的节点。
+                              如果 True (默认推荐): 排除掉虽然active degree=0但存在于_edge_hash_map(冻结边)中的节点。
+                              如果 False: 只要在 active matrix 里度为0就返回 (可能会误删冻结节点)。
+                              
+        Returns:
+            孤儿节点名称列表
+        """
+        if self._adjacency is None:
+            # 如果全空，则所有节点都是孤儿
+            return self._nodes.copy()
+            
+        n = len(self._nodes)
+        
+        # 计算 Active Degree (In + Out)
+        # 用 sum(axis) 会得到 dense matrix/array
+        active_adj = self._adjacency
+        out_degrees = np.array(active_adj.sum(axis=1)).flatten()
+        in_degrees = np.array(active_adj.sum(axis=0)).flatten()
+        
+        # 处理悬挂节点 (dangling node check not really needed here, just sum)
+        total_degrees = out_degrees + in_degrees
+        
+        # 找到 active degree = 0 的索引
+        isolated_indices = np.where(total_degrees == 0)[0]
+        
+        if len(isolated_indices) == 0:
+            return []
+            
+        isolated_nodes_set = {self._nodes[i] for i in isolated_indices}
+        
+        # 如果需要排除 Inactive 参与者
+        if include_inactive and self._edge_hash_map:
+            # 收集所有在冻结边中的 unique 节点索引
+            frozen_participant_indices = set()
+            for (u_idx, v_idx), hashes in self._edge_hash_map.items():
+                if hashes: # 只要有 hash 存在 (哪怕 inactive)
+                    frozen_participant_indices.add(u_idx)
+                    frozen_participant_indices.add(v_idx)
+            
+            # 过滤
+            final_isolated = []
+            for idx in isolated_indices:
+                if idx not in frozen_participant_indices:
+                    final_isolated.append(self._nodes[idx])
+            return final_isolated
+            
+        else:
+            return list(isolated_nodes_set)
+
     def clear(self) -> None:
         """清空所有数据"""
         self._nodes.clear()
@@ -885,6 +1133,7 @@ class GraphStore:
             "total_edges_added": self._total_edges_added,
             "total_nodes_deleted": self._total_nodes_deleted,
             "total_edges_deleted": self._total_edges_deleted,
+            "edge_hash_map": dict(self._edge_hash_map), # 持久化 V5 映射 (将 defaultdict 转换为普通 dict)
         }
 
         metadata_path = data_dir / "graph_metadata.pkl"
@@ -921,8 +1170,8 @@ class GraphStore:
 
         # 恢复状态，并通过规范化处理旧数据中的重复项
         self._nodes = metadata["nodes"]
-        self._node_attrs = {} # 重新构建以确保 key 规范化
-        self._node_to_idx = {} # 重新构建以确保 key 规范化
+        self._node_attrs = {} # 重新构建以确保键名 (Key) 规范化
+        self._node_to_idx = {} # 重新构建以确保键名 (Key) 规范化
 
         # 重新构建映射，处理旧数据中的碰撞
         for idx, node_name in enumerate(self._nodes):
@@ -940,6 +1189,14 @@ class GraphStore:
         self._total_edges_added = metadata["total_edges_added"]
         self._total_nodes_deleted = metadata["total_nodes_deleted"]
         self._total_edges_deleted = metadata["total_edges_deleted"]
+        
+        # 恢复 V5 边哈希映射 (Restore V5 edge hash map)
+        edge_map_data = metadata.get("edge_hash_map", {})
+        # 重新初始化为 defaultdict(set)
+        self._edge_hash_map = defaultdict(set)
+        if edge_map_data:
+            for k, v in edge_map_data.items():
+                self._edge_hash_map[k] = set(v) # 确保类型为 set
 
         # 加载邻接矩阵
         matrix_path = data_dir / "graph_adjacency.npz"
@@ -978,6 +1235,7 @@ class GraphStore:
         if self._adjacency is None:
             n = len(self._nodes)
             # 根据模式初始化
+
             if self._modification_mode == GraphModificationMode.INCREMENTAL:
                  self._adjacency = lil_matrix((n, n), dtype=np.float32)
             else:
@@ -1082,3 +1340,36 @@ class GraphStore:
             f"GraphStore(nodes={self.num_nodes}, edges={self.num_edges}, "
             f"density={self.density:.4f}, format={self.matrix_format})"
         )
+
+    def rebuild_edge_hash_map(self, triples: List[Tuple[str, str, str, str]]) -> int:
+        """
+        从元数据重建 V5 边哈希映射 (Migration Tool)
+        
+        Args:
+            triples: List of (s, p, o, hash)
+            
+        Returns:
+            count of mapped hashes
+        """
+        count = 0
+        self._edge_hash_map = defaultdict(set)
+        
+        for s, p, o, h in triples:
+            if not h: continue
+            
+            s_canon = self._canonicalize(s)
+            o_canon = self._canonicalize(o)
+            
+            if s_canon in self._node_to_idx and o_canon in self._node_to_idx:
+                u = self._node_to_idx[s_canon]
+                v = self._node_to_idx[o_canon]
+                
+                # 如果是双向的，通常在元数据中存储为有向，而 GraphStore 也通常是有向的。
+                # 映射键对应特定的边方向。
+                self._edge_hash_map[(u, v)].add(h)
+                count += 1
+                
+        self._adjacency_dirty = True
+        logger.info(f"已从 {count} 条哈希重建边哈希映射，覆盖 {len(self._edge_hash_map)} 条边")
+        return count
+

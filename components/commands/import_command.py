@@ -770,9 +770,8 @@ JSON格式: {{ "entities": ["e1"], "relations": [{{"subject": "s", "predicate": 
 
         # 2. 生成向量并存入向量库
         try:
-            # 检查是否已存在于向量库 (通过 get 检查有效性)
-            existing_vectors = self.vector_store.get([hash_value])
-            if not existing_vectors or existing_vectors[0] is None:
+            # 检查是否已存在于向量库
+            if hash_value not in self.vector_store:
                 embedding = await self.embedding_manager.encode(name)
                 # 尝试添加。如果ID已存在（例如被标记删除），add会抛出ValueError
                 try:

@@ -1,6 +1,6 @@
 # A_Memorix
 
-**轻量级知识图谱插件** - 基于双路检索的完全独立的记忆增强系统 (v0.2.3)
+**轻量级知识图谱插件** - 基于双路检索的完全独立的记忆增强系统 (v0.3.0)
 
 > 消えていかない感覚 , まだまだ足りてないみたい !
 
@@ -13,6 +13,7 @@
 ## ✨ 特性
 
 - **🧠 双路检索** - 关系图谱 + 向量语义并行检索，结合 Personalized PageRank 智能排序。
+- **🧬 生物学记忆 (V5)** - 模拟人类记忆的**衰减 (Decay)**、**强化 (Reinforce)** 与 **结构化重组 (Prune)** 机制，实现记忆的动态生命周期管理。
 - **🔄 智能回退** - 当直接检索结果弱时，自动触发多跳路径搜索，增强间接关系召回。
 - **🛡️ 网络鲁棒性** - 内置指数退避重试机制，支持自定义嵌入请求的重试策略，从容应对网络波动。
 - **📊 知识图谱可视化** - 全新 Glassmorphism 风格 Web 编辑器，支持基于 **PageRank** 的信息密度筛选、记忆溯源管理及全量图谱探索。
@@ -102,7 +103,17 @@ python plugins/A_memorix/scripts/import_lpmm_json.py <path_to_json_file_or_dir>
 | `/import`    | `text`, `paragraph`, `relation`, `file`, `json`  | 导入知识            | `/import text 人工智能是...` |
 | `/query`     | `search(s)`, `entity(e)`, `relation(r)`, `stats` | 查询知识            | `/query s 什么是AI?`         |
 | `/delete`    | `paragraph`, `entity`, `clear`                   | 删除知识            | `/delete paragraph <hash>`   |
+| `/memory`    | `status`, `protect`, `reinforce`, `restore`      | 记忆系统维护 (V5)   | `/memory status`             |
 | `/visualize` | -                                                | 启动可视化 Web 面板 | `/visualize`                 |
+
+#### 🧠 记忆系统维护 (`/memory`)
+
+- **查看状态**: `/memory status` - 显示活跃/冷冻/保护记忆数量及系统参数。
+- **保护记忆**: `/memory protect <query> [hours]` - 保护相关记忆不被衰减/修剪。
+  - 不填时间 = **永久锁定 (Pin)**
+  - 填时间 = **临时保护 (TTL)** (e.g., `/memory protect 昨天的会议 24`)
+- **手动强化**: `/memory reinforce <query>` - 手动触发检索强化（绕过冷却时间），提升记忆权重。
+- **恢复记忆**: `/memory restore <hash>` - 从回收站恢复误删记忆（仅当节点存在时有效）。
 
 #### 📂 导入知识 (`/import`)
 
@@ -152,6 +163,13 @@ python plugins/A_memorix/scripts/import_lpmm_json.py <path_to_json_file_or_dir>
 - **`enable_ppr`**: 是否启用 Personalized PageRank 算法优化排序。
 - **`top_k_relations` / `top_k_paragraphs`**: 分别控制单路检索召回数量。
 - **`relation_semantic_fallback`**: 是否允许关系检索回退到语义搜索。
+
+#### 🧬 记忆系统 (V5) `[memory]`
+
+- **`half_life_hours`**: 记忆半衰期（小时）。图谱连接权重每经过一个半衰期会衰减 50%。(默认 24.0)
+- **`enable_auto_reinforce`**: 是否开启检索强化。开启后，被搜索命中的记忆会自动恢复活跃并增加权重。(默认 true)
+- **`prune_threshold`**: 冻结/修剪阈值。权重低于此值的非保护记忆将被冻结。(默认 0.1)
+- **`freeze_duration_hours`**: 冷冻期时长。记忆冻结超过此时长后将被移入回收站。(默认 24.0)
 
 #### 🎯 动态阈值 `[threshold]`
 

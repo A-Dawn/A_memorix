@@ -1,7 +1,7 @@
 {
   "manifest_version": 1,
   "name": "A_Memorix",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "description": "轻量级知识库插件 - 基于双路检索的完全独立的记忆增强系统，优化低资源环境下的知识存储与检索",
   "author": {
     "name": "A_Dawn"
@@ -116,6 +116,16 @@
         "type": "boolean",
         "default": true,
         "description": "是否启用并行检索"
+      },
+      "relation_semantic_fallback": {
+        "type": "boolean",
+        "default": true,
+        "description": "是否启用关系查询的语义回退"
+      },
+      "relation_fallback_min_score": {
+        "type": "number",
+        "default": 0.3,
+        "description": "关系语义回退的最小相似度阈值"
       }
     },
     "threshold": {
@@ -271,6 +281,90 @@
         },
         "default": [],
         "description": "聊天流 ID 列表。支持格式: 1. 纯数字 (兼容模式); 2. 显式指定: 'group:12345'(群号), 'user:10001'(私聊), 'stream:hash'(流ID)"
+      }
+    },
+    "memory": {
+      "half_life_hours": {
+        "type": "number",
+        "default": 24.0,
+        "description": "记忆强度半衰期 (小时)"
+      },
+      "base_decay_interval_hours": {
+        "type": "number",
+        "default": 1.0,
+        "description": "衰减任务执行间隔 (小时)"
+      },
+      "prune_threshold": {
+        "type": "number",
+        "default": 0.1,
+        "description": "记忆遗忘(冷冻)阈值"
+      },
+      "freeze_duration_hours": {
+        "type": "number",
+        "default": 0.01,
+        "description": "记忆冷冻保留期 (小时)"
+      },
+      "enable_auto_reinforce": {
+        "type": "boolean",
+        "default": true,
+        "description": "是否启用自动强化"
+      },
+      "reinforce_buffer_max_size": {
+        "type": "integer",
+        "default": 1000,
+        "description": "强化缓冲区最大大小"
+      },
+      "reinforce_cooldown_hours": {
+        "type": "number",
+        "default": 1.0,
+        "description": "同一记忆强化的冷却时间"
+      },
+      "max_weight": {
+        "type": "number",
+        "default": 10.0,
+        "description": "记忆最大权重限制"
+      },
+      "revive_boost_weight": {
+        "type": "number",
+        "default": 0.5,
+        "description": "复活时的基础增强权重"
+      },
+      "auto_protect_ttl_hours": {
+        "type": "number",
+        "default": 24.0,
+        "description": "复活/强化后的自动保护时长"
+      },
+      "min_active_weight_protected": {
+        "type": "number",
+        "default": 0.5,
+        "description": "保护期内记忆的最低权重地板"
+      },
+      "enabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "V5记忆系统总开关"
+      },
+      "orphan": {
+        "type": "object",
+        "properties": {
+          "enable_soft_delete": {
+            "type": "boolean",
+            "default": true
+          },
+          "entity_retention_days": {
+            "type": "number",
+            "default": 7.0
+          },
+          "paragraph_retention_days": {
+            "type": "number",
+            "default": 7.0
+          },
+          "sweep_grace_hours": {
+            "type": "number",
+            "default": 24.0
+          }
+        },
+        "description": "孤立数据管理配置 (软删除与自动清理)"
       }
     }
   },
