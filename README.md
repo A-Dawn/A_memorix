@@ -1,12 +1,18 @@
 # A_Memorix
 
-**轻量级知识图谱插件** - 基于双路检索的完全独立的记忆增强系统 (v0.3.0)
+**轻量级知识图谱插件** - 基于双路检索的完全独立的记忆增强系统 (v0.3.1)
 
 > 消えていかない感覚 , まだまだ足りてないみたい !
 
 > [!WARNING]
 > **重要提示**：v0.2.0 版本由于底层存储架构重构（引入 SciPy 稀疏矩阵与 Faiss SQ8 量化），**与 v0.1.3 及早期版本的导入数据不完全兼容**。
 > 升级后，虽然系统会尝试自动迁移部分数据，但为确保知识图谱的检索精度和完整性，强烈建议在升级后使用 `process_knowledge.py` 脚本重新导入原始文本。
+
+> [!NOTE]
+> **v0.3.1 补丁更新**：
+> 1. 修复 `import_lpmm_json.py -> process_knowledge.py` 公共导入接口链路；
+> 2. 修复按来源删除时的关系边误删风险，并增加保守的孤儿实体清理；
+> 3. 修复 `convert_lpmm.py` 的向量 ID 与元数据 hash 一致性问题。
 
 ---
 
@@ -93,6 +99,19 @@ python plugins/A_memorix/scripts/import_lpmm_json.py <path_to_json_file_or_dir>
 
 - `path`: JSON 文件路径或包含 `*-openie.json` 的目录。
 - `--force`: 强制重新导入。
+
+### 1.2 转换 LPMM 存储文件 (`convert_lpmm.py`)  [新增]
+
+如果你有 LPMM 导出的 parquet/graph 文件，可使用该脚本直接转换为 A_Memorix 存储结构：
+
+```bash
+python plugins/A_memorix/scripts/convert_lpmm.py -i <lpmm_data_dir> -o <output_data_dir> --dim 384
+```
+
+**说明：**
+
+- 输入目录支持 `paragraph.parquet`、`entity.parquet` 以及 `rag-graph.graphml/graph.graphml/graph_structure.pkl`。
+- 当前版本优先保证 ID 与元数据一致性，关系向量不做直接导入（避免检索反查不一致）。
 
 ### 2. 指令交互
 

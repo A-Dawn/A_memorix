@@ -1,5 +1,39 @@
 # 更新日志 (Changelog)
 
+## [0.3.1] - 2026-02-07
+
+本次更新为 **稳定性补丁版本**，主要修复脚本导入链路、删除安全性与 LPMM 转换一致性问题。
+
+### 🛠️ 关键修复
+
+#### 新增功能
+
+- 新增 `scripts/convert_lpmm.py`：
+  - 支持将 LPMM 的 `parquet + graph` 数据直接转换为 A_Memorix 存储结构；
+  - 提供 LPMM ID 到 A_Memorix ID 的映射能力，用于图节点/边重写；
+  - 当前实现优先保证检索一致性，关系向量采用安全策略（不直接导入）。
+
+#### 导入链路
+
+- 修复 `import_lpmm_json.py` 依赖的 `AutoImporter.import_json_data` 公共入口缺失/不稳定问题，确保外部脚本可稳定调用 JSON 直导入流程。
+
+#### 删除安全
+
+- 修复按来源删除时“同一 `(subject, object)` 存在多关系”场景下的误删风险：
+  - `MetadataStore.delete_paragraph_atomic` 新增 `relation_prune_ops`；
+  - 仅在无兄弟关系时才回退删除整条边。
+- `delete_knowledge.py` 新增保守孤儿实体清理（仅对本次候选实体执行，且需同时满足无段落引用、无关系引用、图无邻居）。
+- `delete_knowledge.py` 改为读取向量元数据中的真实维度，避免 `dimension=1` 写回污染。
+
+#### LPMM 转换修复
+
+- 修复 `convert_lpmm.py` 中向量 ID 与 `MetadataStore` 哈希不一致导致的检索反查失败问题。
+- 为避免脏召回，转换阶段暂时跳过 `relation.parquet` 的直接向量导入（待关系元数据一一映射能力完善后再恢复）。
+
+### 🔖 版本信息
+
+- 插件版本：`0.3.0` → `0.3.1`
+
 ## [0.3.0] - 2026-01-30
 
 本次更新引入了 **V5 动态记忆系统**，实现了符合生物学特性的记忆衰减、强化与全声明周期管理，并提供了配套的指令与工具。

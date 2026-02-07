@@ -15,6 +15,7 @@ import sys
 import os
 import argparse
 import asyncio
+import pickle
 from pathlib import Path
 from rich.console import Console
 from rich.table import Table
@@ -55,6 +56,102 @@ class KnowledgeDeleter:
         self.metadata_store = None
         self.vector_store = None
         self.graph_store = None
+        self.vector_dimension = 384
+
+    def _detect_vector_dimension(self) -> int:
+        """从向量元数据读取真实维度，避免用错误维度写回。"""
+        meta_path = self.data_dir / "vectors" / "vectors_metadata.pkl"
+        if not meta_path.exists():
+            return 384
+
+        try:
+            with open(meta_path, "rb") as f:
+                meta = pickle.load(f)
+            dim = int(meta.get("dimension", 384))
+            if dim > 0:
+                return dim
+        except Exception:
+            pass
+        return 384
+
+    def _collect_paragraph_entities(self, paragraph_hash: str):
+        """收集段落实体（hash -> name），用于后续保守孤儿清理。"""
+        candidates = {}
+        try:
+            entities = self.metadata_store.get_paragraph_entities(paragraph_hash)
+        except Exception:
+            return candidates
+
+        for ent in entities:
+            h = ent.get("hash")
+            n = ent.get("name")
+            if h and n:
+                candidates[h] = n
+        return candidates
+
+    def _is_entity_still_referenced(self, entity_hash: str, entity_name: str) -> bool:
+        """判断实体是否仍被任何有效数据引用。"""
+        # 1) 段落实体关联仍存在
+        if self.metadata_store.query(
+            "SELECT 1 FROM paragraph_entities WHERE entity_hash = ? LIMIT 1",
+            (entity_hash,),
+        ):
+            return True
+
+        # 2) 关系仍引用 (subject/object) - 使用大小写不敏感匹配
+        canon_name = str(entity_name).strip().lower()
+        if canon_name and self.metadata_store.query(
+            """
+            SELECT 1
+            FROM relations
+            WHERE LOWER(TRIM(subject)) = ? OR LOWER(TRIM(object)) = ?
+            LIMIT 1
+            """,
+            (canon_name, canon_name),
+        ):
+            return True
+
+        # 3) 图中仍有邻居
+        try:
+            if self.graph_store.get_neighbors(entity_name):
+                return True
+        except Exception:
+            pass
+
+        return False
+
+    def _cleanup_orphan_entities(self, candidate_entities):
+        """
+        清理孤儿实体（保守策略）
+        仅处理本次删除波及的候选实体，且必须确认完全无引用才删除。
+        """
+        removed = 0
+        skipped = 0
+
+        for entity_hash, entity_name in candidate_entities.items():
+            if self._is_entity_still_referenced(entity_hash, entity_name):
+                skipped += 1
+                continue
+
+            try:
+                self.metadata_store.delete_entity(entity_hash)
+            except Exception:
+                skipped += 1
+                continue
+
+            try:
+                self.vector_store.delete([entity_hash])
+            except Exception:
+                pass
+
+            try:
+                self.graph_store.delete_nodes([entity_name])
+            except Exception:
+                pass
+
+            removed += 1
+
+        return removed, skipped
         
     def initialize(self):
         """初始化存储"""
@@ -66,8 +163,9 @@ class KnowledgeDeleter:
         
         # 2. VectorStore
         # 我们需要加载它以便能够按 ID 删除
+        self.vector_dimension = self._detect_vector_dimension()
         self.vector_store = VectorStore(
-            dimension=1, # 维度不重要，只要能加载 ID 映射即可
+            dimension=self.vector_dimension,
             data_dir=self.data_dir / "vectors"
         )
         if self.vector_store.has_data():
@@ -124,9 +222,15 @@ class KnowledgeDeleter:
         with console.status(f"正在删除 '{source_name}'...", spinner="dots"):
             deleted_count = 0
             errors = []
+            candidate_entities = {}
+            relation_prune_ops = []
+            fallback_edges = set()
             
             for p in paragraphs:
                 try:
+                    # 先收集候选实体，避免段落删除后无法回溯。
+                    candidate_entities.update(self._collect_paragraph_entities(p["hash"]))
+
                     # 原子删除
                     cleanup_plan = self.metadata_store.delete_paragraph_atomic(p['hash'])
                     
@@ -137,18 +241,29 @@ class KnowledgeDeleter:
                             self.vector_store.delete([vec_id])
                         except Exception:
                             pass
-                            
-                    # 清理图边
-                    edges = cleanup_plan.get("edges_to_remove", [])
-                    if edges:
-                        try:
-                            self.graph_store.delete_edges(edges)
-                        except Exception:
-                            pass
+                    
+                    # 累积图清理计划（优先 relation hash 精准裁剪）
+                    for op in cleanup_plan.get("relation_prune_ops", []):
+                        relation_prune_ops.append(op)
+
+                    for edge in cleanup_plan.get("edges_to_remove", []):
+                        fallback_edges.add(tuple(edge))
                             
                     deleted_count += 1
                 except Exception as e:
                     errors.append(str(e))
+
+            # 图清理：优先精准裁剪，回退到边级删除
+            try:
+                if relation_prune_ops and hasattr(self.graph_store, "prune_relation_hashes"):
+                    self.graph_store.prune_relation_hashes(relation_prune_ops)
+                elif fallback_edges:
+                    self.graph_store.delete_edges(list(fallback_edges))
+            except Exception:
+                pass
+
+            # 保守清理孤儿实体
+            removed_entities, skipped_entities = self._cleanup_orphan_entities(candidate_entities)
             
             # 保存
             self.vector_store.save()
@@ -157,7 +272,10 @@ class KnowledgeDeleter:
         if errors:
             console.print(f"[yellow]删除完成，但有 {len(errors)} 个错误。[/yellow]")
         else:
-            console.print(f"[bold green]✅ 成功删除 '{source_name}' 相关的所有 {deleted_count} 条数据。[/bold green]")
+            console.print(
+                f"[bold green]✅ 成功删除 '{source_name}' 相关的 {deleted_count} 条段落，"
+                f"清理孤儿实体 {removed_entities} 个（保留 {skipped_entities} 个仍被引用实体）。[/bold green]"
+            )
 
     def close(self):
         if self.metadata_store:

@@ -1206,7 +1206,8 @@ class MetadataStore:
         cleanup_plan = {
             "paragraph_hash": paragraph_hash,
             "vector_id_to_remove": None,
-            "edges_to_remove": []  # (src, tgt) 元组列表
+            "edges_to_remove": [],  # (src, tgt) 元组列表 (fallback)
+            "relation_prune_ops": []  # (subject, object, relation_hash) 精准裁剪
         }
 
         cursor = self._conn.cursor()
@@ -1240,7 +1241,21 @@ class MetadataStore:
                     cursor.execute("SELECT subject, object FROM relations WHERE hash = ?", (rel_hash,))
                     rel_info = cursor.fetchone()
                     if rel_info:
-                        cleanup_plan["edges_to_remove"].append((rel_info[0], rel_info[1]))
+                        s_val, o_val = rel_info[0], rel_info[1]
+                        cleanup_plan["relation_prune_ops"].append((s_val, o_val, rel_hash))
+
+                        # 仅当 (subject, object) 不再有任何关系时，才计划删整条边（兼容旧实现）。
+                        sibling_count = cursor.execute(
+                            """
+                            SELECT count(*) FROM relations
+                            WHERE LOWER(TRIM(subject)) = LOWER(TRIM(?))
+                              AND LOWER(TRIM(object)) = LOWER(TRIM(?))
+                              AND hash != ?
+                            """,
+                            (s_val, o_val, rel_hash)
+                        ).fetchone()[0]
+                        if sibling_count == 0:
+                            cleanup_plan["edges_to_remove"].append((s_val, o_val))
 
                     orphaned_hashes.append(rel_hash)
 
