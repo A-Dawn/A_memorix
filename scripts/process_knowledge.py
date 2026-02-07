@@ -436,6 +436,22 @@ class AutoImporter:
         except Exception: pass
         return hash_value
 
+    async def import_json_data(self, data: Dict, filename: str = "script_import", progress_callback=None):
+        """Public import entrypoint for pre-processed JSON payloads."""
+        if not self.storage_lock:
+            raise RuntimeError("Importer is not initialized. Call initialize() first.")
+
+        async with self.storage_lock:
+            await self._import_to_db(data, progress_callback=progress_callback)
+            self.manifest[filename] = {
+                "hash": self.get_file_hash(json.dumps(data, ensure_ascii=False, sort_keys=True)),
+                "timestamp": time.time(),
+                "imported": True,
+            }
+            self._save_manifest()
+            self.vector_store.save()
+            self.graph_store.save()
+
     async def _import_to_db(self, data: Dict, progress_callback=None):
         # Same logic, but ensure robust
         with self.graph_store.batch_update():
@@ -445,7 +461,11 @@ class AutoImporter:
                 # Type might be passed in item now
                 k_type_val = item.get("type", KnowledgeType.NARRATIVE.value)
                 
-                h_val = self.metadata_store.add_paragraph(content, source, k_type_val)
+                h_val = self.metadata_store.add_paragraph(
+                    content=content,
+                    source=source,
+                    knowledge_type=k_type_val,
+                )
                 
                 if h_val not in self.vector_store:
                     try:
@@ -465,8 +485,8 @@ class AutoImporter:
                     if s and p and o:
                         await self._add_entity_with_vector(s, source_paragraph=h_val)
                         await self._add_entity_with_vector(o, source_paragraph=h_val)
-                        self.graph_store.add_edges([(s, o)])
-                        self.metadata_store.add_relation(s, p, o, source_paragraph=h_val)
+                        rel_hash = self.metadata_store.add_relation(s, p, o, source_paragraph=h_val)
+                        self.graph_store.add_edges([(s, o)], relation_hashes=[rel_hash])
                         
                 if progress_callback: progress_callback(1)
     

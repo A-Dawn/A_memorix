@@ -21,7 +21,9 @@ import argparse
 import asyncio
 from pathlib import Path
 from typing import List, Dict, Any
-from rich.progress import track
+from rich.console import Console
+
+console = Console()
 
 # 设置环境路径以复用 process_knowledge.py 中的 AutoImporter
 current_dir = Path(__file__).resolve().parent
@@ -132,6 +134,8 @@ async def main():
 
     logger.info(f"找到 {len(files_to_process)} 个文件待处理...")
 
+    from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
+
     # 初始化导入器
     importer = AutoImporter(force=args.force, concurrency=args.concurrency)
     # 初始化存储 (这一步很重要)
@@ -141,29 +145,50 @@ async def main():
 
     converter = LPMMConverter()
 
-    for json_file in track(files_to_process, description="Importing LPMM files..."):
-        logger.info(f"正在转换并导入: {json_file.name}")
-        try:
-            with open(json_file, "r", encoding="utf-8") as f:
-                lpmm_data = json.load(f)
-            
-            # 1. 转换格式
-            memorix_data = converter.convert_lpmm_to_memorix(lpmm_data, json_file.name)
-            
-            if not memorix_data["paragraphs"]:
-                logger.warning(f"  转换结果为空: {json_file.name}")
-                continue
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        TimeElapsedColumn(),
+        console=console, # 确保复用全局 console
+        transient=False  # 完成后保留
+    ) as progress:
+        # 主任务（针对文件列表）并不是很有意义，我们针对具体条目
+        # 总进度条 (如果多个文件，这里可以是一个总览，或者我们为每个文件建一个 Task)
+        
+        for json_file in files_to_process:
+            logger.info(f"正在转换并导入: {json_file.name}")
+            try:
+                with open(json_file, "r", encoding="utf-8") as f:
+                    lpmm_data = json.load(f)
+                
+                # 1. 转换格式
+                memorix_data = converter.convert_lpmm_to_memorix(lpmm_data, json_file.name)
+                
+                total_items = len(memorix_data.get("paragraphs", []))
+                if not total_items:
+                    logger.warning(f"  转换结果为空: {json_file.name}")
+                    continue
 
-            # 2. 调用导入器接口
-            # 我们复用 _process_single_json_file 的逻辑不太好，因为那个是读文件的
-            # 我们直接调用内部的 import_json_data 接口 (我们刚刚添加的)
-            
-            await importer.import_json_data(memorix_data, filename=f"lpmm_{json_file.name}")
-            
-        except Exception as e:
-            logger.error(f"处理文件 {json_file.name} 失败: {e}")
-            import traceback
-            traceback.print_exc()
+                # 创建该文件的进度任务
+                task_id = progress.add_task(f"Importing {json_file.name}", total=total_items)
+
+                # 回调函数：每完成一个item调用一次
+                def update_progress(n=1):
+                    progress.advance(task_id, advance=n)
+
+                # 2. 调用导入器接口
+                await importer.import_json_data(
+                    memorix_data, 
+                    filename=f"lpmm_{json_file.name}",
+                    progress_callback=update_progress
+                )
+                
+            except Exception as e:
+                logger.error(f"处理文件 {json_file.name} 失败: {e}")
+                import traceback
+                traceback.print_exc()
 
     logger.info("全部处理完成")
     await importer.close()

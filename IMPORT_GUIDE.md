@@ -113,6 +113,34 @@ python plugins/A_memorix/scripts/import_lpmm_json.py <包含json的目录或文�
 
 ---
 
+---
+
+## 4. LPMM 二进制直转 (无需 Token)
+
+如果您希望**完全保留** LPMM 的原始 Embedding 向量和图结构，且**不消耗任何 Token**，可以使用直接转换脚本。
+
+> **⚠️ 注意**：这要求 A_memorix 配置的 Embedding 维度与原 LPMM 项目完全一致。
+
+**命令：**
+
+```bash
+python plugins/A_memorix/scripts/convert_lpmm.py --input <LPMM数据目录> --output <A_memorix数据目录>
+```
+
+**示例：**
+
+Assume LPMM data is in `data/lpmm_storage` and you want to output to `plugins/A_memorix/data`.
+
+```bash
+python plugins/A_memorix/scripts/convert_lpmm.py -i data/lpmm_storage -o plugins/A_memorix/data
+```
+
+此脚本会：
+
+1. 直接读取 `.parquet` 文件并转换为 A_memorix 的二进制向量格式。
+2. 直接读取 `.graphml` 或 `.pkl` 文件并转换为稀疏矩阵图。
+3. 自动重建元数据。
+
 ## 常用命令速查
 
 ### 自动导入 (推荐)
