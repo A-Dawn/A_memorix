@@ -791,51 +791,6 @@ class MetadataStore:
         cursor.execute("SELECT subject, predicate, object, hash FROM relations")
         return list(cursor.fetchall())
 
-    def get_relation_status_batch(self, hashes: List[str]) -> Dict[str, Dict[str, Any]]:
-        """
-        批量获取关系的状态信息 (V5 Memory)
-        
-        Args:
-            hashes: 关系哈希列表
-            
-        Returns:
-            Dict[hash, status_dict]
-            status_dict 包含: is_inactive, is_pinned, protected_until, last_reinforced
-        """
-        if not hashes:
-            return {}
-            
-        # SQLite 变量限制通常为 999 个，如有需要请分割。
-        # 此处假设批大小合理或实施分割逻辑？
-        # 简单起见，使用 500 个一组的切片
-        
-        result = {}
-        chunk_size = 500
-        
-        cursor = self._conn.cursor()
-        
-        for i in range(0, len(hashes), chunk_size):
-            chunk = hashes[i : i + chunk_size]
-            placeholders = ",".join(["?"] * len(chunk))
-            sql = f"""
-                SELECT hash, is_inactive, is_pinned, protected_until, last_reinforced
-                FROM relations
-                WHERE hash IN ({placeholders})
-            """
-            
-            cursor.execute(sql, chunk)
-            rows = cursor.fetchall()
-            
-            for row in rows:
-                result[row['hash']] = {
-                    "is_inactive": bool(row['is_inactive']),
-                    "is_pinned": bool(row['is_pinned']),
-                    "protected_until": row['protected_until'],
-                    "last_reinforced": row['last_reinforced']
-                }
-                
-        return result
-
     def get_paragraphs_by_relation(self, relation_hash: str) -> List[Dict[str, Any]]:
         """
         获取支持指定关系的所有段落
@@ -1342,23 +1297,6 @@ class MetadataStore:
             }
         return result
 
-    def mark_relations_inactive(self, hashes: List[str], inactive_since: float) -> None:
-        """
-        批量标记关系为冷冻 (Inactive)
-        """
-        if not hashes:
-            return
-            
-        placeholders = ",".join(["?"] * len(hashes))
-        cursor = self._conn.cursor()
-        cursor.execute(f"""
-            UPDATE relations
-            SET is_inactive = 1,
-                inactive_since = ?
-            WHERE hash IN ({placeholders})
-        """, (inactive_since, *hashes))
-        self._conn.commit()
-        
     def mark_relations_active(self, hashes: List[str], boost_weight: Optional[float] = None) -> None:
         """
         批量标记关系为活跃 (Active/Revive)
@@ -1536,6 +1474,10 @@ class MetadataStore:
             logger.error(f"恢复关系失败: {hash_value} - {e}")
             self._conn.rollback()
             return None
+
+    def restore_relation(self, hash_value: str) -> Optional[Dict[str, Any]]:
+        """兼容旧调用名：恢复关系。"""
+        return self.restore_relation_metadata(hash_value)
             
     def get_protected_relations_hashes(self) -> List[str]:
         """获取所有受保护关系的哈希 (Pinned 或 Protected Until > Now)"""
@@ -1602,10 +1544,11 @@ class MetadataStore:
             
         self._conn.commit()
 
-    def mark_relations_inactive(self, hashes: List[str]) -> None:
-        """标记关系为非活跃 (Freeze)"""
-        if not hashes: return
-        now = datetime.now().timestamp()
+    def mark_relations_inactive(self, hashes: List[str], inactive_since: Optional[float] = None) -> None:
+        """标记关系为非活跃 (Freeze)。兼容显式 inactive_since 或默认当前时间。"""
+        if not hashes:
+            return
+        mark_time = inactive_since if inactive_since is not None else datetime.now().timestamp()
         
         cursor = self._conn.cursor()
         chunk_size = 500
@@ -1617,7 +1560,7 @@ class MetadataStore:
                 SET is_inactive = 1, inactive_since = ?
                 WHERE hash IN ({placeholders})
             """
-            cursor.execute(sql, [now] + chunk)
+            cursor.execute(sql, [mark_time] + chunk)
             
         self._conn.commit()
 
@@ -1708,16 +1651,34 @@ class MetadataStore:
         """
         获取实体 GC 候选列表 (Soft Delete Candidates)
         条件:
-        1. 在 isolated_hashes 列表中 (由 GraphStore 提供, 确保 active degree=0 & not frozen)
+        1. 在 isolated_hashes 列表中 (由 GraphStore 提供；通常是实体名称)
         2. is_deleted = 0 (未被标记)
         3. created_at < now - retention (过了新手保护期)
         4. 不被任何 active paragraph 引用 (paragraph_entities check)
         
         Args:
-            isolated_hashes: 孤儿实体 Hash 列表
+            isolated_hashes: 孤儿实体名称列表（兼容传入 hash）
             retention_seconds: 保留时间 (秒)
         """
         if not isolated_hashes:
+            return []
+
+        # GraphStore.get_isolated_nodes 返回节点名，这里做 canonicalize -> entity hash 映射。
+        # 同时兼容历史调用直接传 hash。
+        normalized_hashes: List[str] = []
+        for item in isolated_hashes:
+            if not item:
+                continue
+            v = str(item).strip()
+            if len(v) == 64 and all(c in "0123456789abcdefABCDEF" for c in v):
+                normalized_hashes.append(v.lower())
+            else:
+                canon = self._canonicalize_name(v)
+                if canon:
+                    normalized_hashes.append(compute_hash(canon))
+
+        normalized_hashes = list(dict.fromkeys(normalized_hashes))
+        if not normalized_hashes:
             return []
             
         now = datetime.now().timestamp()
@@ -1727,8 +1688,8 @@ class MetadataStore:
         batch_size = 900
         
         # 分批处理 IN 查询
-        for i in range(0, len(isolated_hashes), batch_size):
-            batch = isolated_hashes[i:i+batch_size]
+        for i in range(0, len(normalized_hashes), batch_size):
+            batch = normalized_hashes[i:i+batch_size]
             placeholders = ",".join(["?"] * len(batch))
             
             # 使用 NOT EXISTS 子查询检查引用
@@ -1754,7 +1715,7 @@ class MetadataStore:
             """
             
             cursor = self._conn.cursor()
-            cursor.execute(query, batch + [cutoff])
+            cursor.execute(query, [*batch, cutoff])
             candidates.extend([row[0] for row in cursor.fetchall()])
             
         return candidates
@@ -1959,6 +1920,17 @@ class MetadataStore:
                     "deleted_at": row[2]
                 }
         return result
+
+    def has_table(self, table_name: str) -> bool:
+        """检查数据库是否存在指定表。"""
+        if not self._conn:
+            return False
+        cursor = self._conn.cursor()
+        cursor.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ? LIMIT 1",
+            (table_name,),
+        )
+        return cursor.fetchone() is not None
 
     def get_deleted_entities(self, limit: int = 50) -> List[Dict[str, Any]]:
         """获取已软删除的实体 (回收站用)"""

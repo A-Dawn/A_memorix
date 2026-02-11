@@ -863,7 +863,7 @@ class MemorixServer:
             """从回收站恢复记忆"""
             if not self.plugin.metadata_store or not self.plugin.graph_store:
                 raise HTTPException(status_code=503, detail="Stores missing")
-             
+
             try:
                 if data.type == "entity":
                     # 复活实体
@@ -871,41 +871,28 @@ class MemorixServer:
                     cursor.execute("UPDATE entities SET is_deleted=0, deleted_at=NULL WHERE hash=?", (data.hash,))
                     self.plugin.metadata_store._conn.commit()
                     return {"success": True, "type": "entity", "hash": data.hash}
-                
-                else:
-                    # 1. 从删除表中获取记录
-                    record = self.plugin.metadata_store.get_deleted_relation(data.hash)
-                    if not record:
-                        raise HTTPException(status_code=404, detail="回收站中未找到该记忆")
-                    
-                    # 2. 重新插入到元数据 (恢复元数据)
-                    self.plugin.metadata_store.restore_relation(data.hash)
-                    
-                    # 3. 恢复到 GraphStore (仅当节点存在/对图安全时)
-                    s, t = record['subject'], record['object']
-                    
-                    # 确保节点存在 (如果需要则复活，或创建)
-                    # 修复：如果实体在元数据中处于软删除状态，则自动复活它们
-                    self.plugin.metadata_store.revive_entities_by_names([s, t])
-                    
-                    self.plugin.graph_store.add_nodes([s, t])
-                    
-                    self.plugin.graph_store.add_edges(
-                        [(s, t)],
-                        weights=[record['confidence']],
-                        relation_hashes=[data.hash]
-                    )
-                    self.plugin.graph_store.save()
-                    
-                    return {"success": True, "type": "relation", "hash": data.hash} 
-                    # 目前仅恢复元数据并发出警告。
-                    logger.warning(f"正在恢复记忆 {data.hash}，但节点 {s}/{t} 可能在图中缺失。")
-                
-                # 4. Save
+
+                # relation: 先从回收站恢复元数据，再回灌图边
+                record = self.plugin.metadata_store.restore_relation(data.hash)
+                if not record:
+                    raise HTTPException(status_code=404, detail="回收站中未找到该记忆")
+
+                s, t = record["subject"], record["object"]
+
+                # 若实体处于软删除状态，先复活再补图。
+                self.plugin.metadata_store.revive_entities_by_names([s, t])
+                self.plugin.graph_store.add_nodes([s, t])
+                self.plugin.graph_store.add_edges(
+                    [(s, t)],
+                    weights=[record["confidence"]],
+                    relation_hashes=[data.hash],
+                )
                 self.plugin.graph_store.save()
                 self._relation_cache = None
-                
-                return {"success": True}
+
+                return {"success": True, "type": "relation", "hash": data.hash}
+            except HTTPException:
+                raise
             except Exception as e:
                 logger.error(f"Restore failed: {e}")
                 raise HTTPException(status_code=500, detail=str(e))

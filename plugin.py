@@ -64,7 +64,7 @@ class A_MemorixPlugin(BasePlugin):
 
     # 插件基本信息（PluginBase要求的抽象属性）
     plugin_name = "A_Memorix"
-    plugin_version = "0.3.1"
+    plugin_version = "0.3.2"
     plugin_description = "轻量级知识库插件 - 完全独立的记忆增强系统"
     plugin_author = "A_Dawn"
     enable_plugin = False  # 默认禁用，需要在config.toml中启用
@@ -279,7 +279,7 @@ class A_MemorixPlugin(BasePlugin):
             "model_name": ConfigField(
                 type=str,
                 default="auto",
-                description="总结使用的模型名称"
+                description="总结使用的模型选择器（支持 auto/任务名/模型名；也可在配置文件中使用数组）"
             ),
             "context_length": ConfigField(
                 type=int,
@@ -371,6 +371,9 @@ class A_MemorixPlugin(BasePlugin):
         # V5 记忆系统
         self.reinforce_buffer: Set[str] = set() # 存储待强化的关系哈希
         self._memory_lock = asyncio.Lock()
+        self._scheduled_import_task: Optional[asyncio.Task] = None
+        self._auto_save_task: Optional[asyncio.Task] = None
+        self._memory_maintenance_task: Optional[asyncio.Task] = None
 
     @property
     def debug_enabled(self) -> bool:
@@ -713,17 +716,13 @@ class A_MemorixPlugin(BasePlugin):
             except Exception as e:
                 logger.error(f"启动 A_Memorix 可视化服务器失败: {e}")
 
-        # 启动定时记录总结任务
-        if self.get_config("summarization.enabled", True) and self.get_config("schedule.enabled", True):
-            import asyncio
-            asyncio.create_task(self._scheduled_import_loop())
-
-        # V5 Memory Maintenance
-        asyncio.create_task(self._memory_maintenance_loop())
+        self._start_background_tasks()
 
     async def on_disable(self):
         """插件禁用时调用"""
         logger.info("A_Memorix 插件正在禁用...")
+
+        await self._cancel_background_tasks()
 
         # 关闭独立 Web 服务器
         if self.server:
@@ -741,6 +740,49 @@ class A_MemorixPlugin(BasePlugin):
                 logger.info("元数据存储已关闭")
             except Exception as e:
                 logger.error(f"关闭元数据存储时出错: {e}")
+
+    def _start_background_tasks(self):
+        """启动后台任务（幂等，避免重复创建）。"""
+        if (
+            self.get_config("summarization.enabled", True)
+            and self.get_config("schedule.enabled", True)
+            and (self._scheduled_import_task is None or self._scheduled_import_task.done())
+        ):
+            self._scheduled_import_task = asyncio.create_task(self._scheduled_import_loop())
+
+        if (
+            self.get_config("advanced.enable_auto_save", True)
+            and (self._auto_save_task is None or self._auto_save_task.done())
+        ):
+            self._auto_save_task = asyncio.create_task(self._auto_save_loop())
+
+        if self._memory_maintenance_task is None or self._memory_maintenance_task.done():
+            self._memory_maintenance_task = asyncio.create_task(self._memory_maintenance_loop())
+
+    async def _cancel_background_tasks(self):
+        """停止后台任务并等待收敛。"""
+        tasks = [
+            ("scheduled_import", self._scheduled_import_task),
+            ("auto_save", self._auto_save_task),
+            ("memory_maintenance", self._memory_maintenance_task),
+        ]
+        for _, task in tasks:
+            if task and not task.done():
+                task.cancel()
+
+        for name, task in tasks:
+            if not task:
+                continue
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.warning(f"后台任务 {name} 退出异常: {e}")
+
+        self._scheduled_import_task = None
+        self._auto_save_task = None
+        self._memory_maintenance_task = None
 
     async def on_unload(self):
         """插件卸载时调用"""
@@ -906,14 +948,6 @@ class A_MemorixPlugin(BasePlugin):
             except Exception as e:
                 logger.warning(f"加载图数据失败: {e}")
         
-        # 启动定时任务循环
-        import asyncio
-        asyncio.create_task(self._scheduled_import_loop())
-        
-        # 启动自动保存循环
-        if self.get_config("advanced.enable_auto_save", True):
-            asyncio.create_task(self._auto_save_loop())
-
         logger.info(f"知识库数据目录: {data_dir}")
 
     def _initialize_storage(self):

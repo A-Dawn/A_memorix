@@ -80,6 +80,11 @@ class MemoryMaintenanceCommand(BaseCommand):
         except Exception as e:
             logger.warning(f"Failed to initialize retriever for MemoryCommand: {e}")
 
+    @staticmethod
+    def _is_hash_like(value: str) -> bool:
+        v = (value or "").strip()
+        return len(v) in (32, 64) and all(c in "0123456789abcdefABCDEF" for c in v)
+
     async def execute(self) -> Tuple[bool, Optional[str], int]:
         if not self.metadata_store or not self.graph_store:
             return False, "❌ 存储组件未初始化", 1
@@ -266,27 +271,33 @@ class MemoryMaintenanceCommand(BaseCommand):
         if not args:
             return False, "用法: /memory restore <Hash|Query>", 1
             
-        r_hash = args.strip()
+        r_hash = args.strip().lower()
         
         # Try resolve if not direct hash
         target_hashes = [r_hash]
-        if not (len(r_hash) == 32 and all(c in "0123456789abcdefABCDEF" for c in r_hash)):
-             # Only search deleted/recycle bin?
-             # _resolve_relations searches active/inactive.
-             # We need to search deleted_relations specifically if we want to restore by content.
-             # But DualPathRetriever works on 'relations' view usually?
-             # For now, let's keep it simple: Restore requires hash mostly, OR we try to find in deleted_relations by content query.
-             
-             cursor = self.metadata_store._conn.cursor()
-             cursor.execute(
-                 "SELECT hash FROM deleted_relations WHERE subject LIKE ? OR object LIKE ? LIMIT 5", 
-                 (f"%{r_hash}%", f"%{r_hash}%")
-             )
-             found = [row[0] for row in cursor.fetchall()]
-             if found:
-                 target_hashes = found
-             else:
-                 return False, "❌ 未能通过关键词找到回收站中的记忆，请尝试确切的 Hash。", 1
+        if self._is_hash_like(r_hash):
+            # 兼容历史 32 位输入：按前缀匹配到实际 64 位 hash。
+            if len(r_hash) == 32:
+                cursor = self.metadata_store._conn.cursor()
+                cursor.execute(
+                    "SELECT hash FROM deleted_relations WHERE hash LIKE ? LIMIT 5",
+                    (f"{r_hash}%",),
+                )
+                found = [row[0] for row in cursor.fetchall()]
+                if found:
+                    target_hashes = found
+        else:
+            # 非 hash 输入：按内容在回收站检索
+            cursor = self.metadata_store._conn.cursor()
+            cursor.execute(
+                "SELECT hash FROM deleted_relations WHERE subject LIKE ? OR object LIKE ? LIMIT 5", 
+                (f"%{r_hash}%", f"%{r_hash}%")
+            )
+            found = [row[0] for row in cursor.fetchall()]
+            if found:
+                target_hashes = found
+            else:
+                return False, "❌ 未能通过关键词找到回收站中的记忆，请尝试确切的 Hash。", 1
 
         restored_count = 0
         msgs = []
@@ -324,12 +335,21 @@ class MemoryMaintenanceCommand(BaseCommand):
 
     async def _resolve_relations(self, query: str) -> List[str]:
         """解析查询为关系哈希列表"""
-        # 1. If matches hash format
-        if len(query) == 32 and all(c in "0123456789abcdefABCDEF" for c in query):
-            # Verify existence
-            st = self.metadata_store.get_relation_status_batch([query])
-            if st:
-                return [query]
+        query = (query or "").strip()
+
+        # 1. If matches hash format (兼容 32/64；优先 64)
+        if self._is_hash_like(query):
+            query = query.lower()
+            if len(query) == 64:
+                st = self.metadata_store.get_relation_status_batch([query])
+                if st:
+                    return [query]
+            else:
+                cursor = self.metadata_store._conn.cursor()
+                cursor.execute("SELECT hash FROM relations WHERE hash LIKE ? LIMIT 5", (f"{query}%",))
+                hits = [row[0] for row in cursor.fetchall()]
+                if hits:
+                    return hits
                 
         # 2. Semantic Search with Retriever
         if self.retriever:
