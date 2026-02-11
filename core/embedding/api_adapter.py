@@ -10,7 +10,6 @@ from typing import List, Union, Optional
 import numpy as np
 import openai
 import aiohttp
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type, before_sleep_log, AsyncRetrying
 
 from src.common.logger import get_logger
 from src.chat.utils.utils import get_embedding
@@ -75,6 +74,40 @@ class EmbeddingAPIAdapter:
             f"max_concurrent={max_concurrent}, default_dim={default_dimension}"
         )
 
+    async def _request_with_retry(self, client, model_info, text: str, extra_params: dict):
+        """
+        统一重试逻辑，避免在模块导入期依赖第三方重试框架。
+        """
+        retriable_exceptions = (openai.APIConnectionError, aiohttp.ClientError, asyncio.TimeoutError)
+        max_attempts = max(1, int(self.max_attempts))
+        base_wait = max(0.1, float(self.min_wait_seconds))
+        max_wait = max(base_wait, float(self.max_wait_seconds))
+
+        last_exc = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return await client.get_embedding(
+                    model_info=model_info,
+                    embedding_input=text,
+                    extra_params=extra_params,
+                )
+            except retriable_exceptions as e:
+                last_exc = e
+                if attempt >= max_attempts:
+                    raise
+                wait_seconds = min(max_wait, base_wait * (2 ** (attempt - 1)))
+                logger.warning(
+                    f"Embedding 请求失败，重试 {attempt}/{max_attempts - 1}，"
+                    f"{wait_seconds:.1f}s 后重试: {e}"
+                )
+                await asyncio.sleep(wait_seconds)
+            except Exception:
+                raise
+
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("Embedding 请求失败：未知错误")
+
     async def _get_embedding_direct(self, text: str, dimensions: Optional[int] = None) -> Optional[List[float]]:
         """
         直接通过 Client 获取 Embedding，支持传递 dimensions 参数
@@ -124,19 +157,13 @@ class EmbeddingAPIAdapter:
             if dimensions is not None:
                 extra_params["dimensions"] = dimensions
                 
-            # 4. 调用 API (使用动态重试)
-            async for attempt in AsyncRetrying(
-                retry=retry_if_exception_type((openai.APIConnectionError, aiohttp.ClientError, asyncio.TimeoutError)),
-                stop=stop_after_attempt(self.max_attempts),
-                wait=wait_exponential(multiplier=1, min=self.min_wait_seconds, max=self.max_wait_seconds),
-                before_sleep=before_sleep_log(logger, "WARNING")
-            ):
-                with attempt:
-                    response = await client.get_embedding(
-                        model_info=model_info,
-                        embedding_input=text,
-                        extra_params=extra_params
-                    )
+            # 4. 调用 API (内置指数退避重试)
+            response = await self._request_with_retry(
+                client=client,
+                model_info=model_info,
+                text=text,
+                extra_params=extra_params,
+            )
             
             return response.embedding
             

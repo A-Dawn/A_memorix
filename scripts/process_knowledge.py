@@ -17,6 +17,7 @@ import asyncio
 import time
 import random
 import hashlib
+import logging
 import tomlkit
 import argparse
 from pathlib import Path
@@ -385,7 +386,7 @@ class AutoImporter:
         retry=retry_if_exception_type((LLMGenerationError, json.JSONDecodeError)),
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
-        before_sleep=before_sleep_log(logger, "WARNING")
+        before_sleep=before_sleep_log(logger, logging.WARNING)
     )
     async def _llm_call(self, prompt: str, model_config: Any) -> Dict:
         """Generic LLM Caller"""

@@ -1,5 +1,45 @@
 # 更新日志 (Changelog)
 
+## [0.3.2] - 2026-02-11
+
+本次更新为 **V5 稳定性与兼容性修复版本**，在保持原有业务设计（强化→衰减→冷冻→修剪→回收）的前提下，修复关键链路断裂与误判问题。
+
+### 🛠️ 关键修复
+
+#### V5 记忆系统契约与链路
+
+- `MetadataStore`:
+  - 统一 `mark_relations_inactive(hashes, inactive_since=None)` 调用契约，兼容不同调用方；
+  - 补充 `has_table(table_name)`；
+  - 增加 `restore_relation(hash)` 兼容别名，修复服务层恢复调用断裂；
+  - 修正 `get_entity_gc_candidates` 对孤立节点参数的处理（支持节点名映射到实体 hash）。
+- `GraphStore`:
+  - 清理 `deactivate_edges` 重复定义并统一返回冻结数量，保证上层日志与断言稳定。
+- `server.py`:
+  - 修复 `/api/memory/restore` relation 恢复链路；
+  - 清理不可达分支并统一异常路径；
+  - 回收站查询在表检测场景下不再出现错误退空。
+
+#### 命令与模型选择
+
+- `/memory` 命令修复 hash 长度判定：以 64 位 `sha256` 为标准，同时兼容历史 32 位输入。
+- 总结模型选择修复：
+  - 解决 `summarization.model_name = auto` 误命中 `embedding` 问题；
+  - 支持数组与选择器语法（`task:model` / task / model）；
+  - 兼容逗号分隔字符串写法（如 `"utils:model1","utils:model2",replyer`）。
+
+#### 生命周期与脚本稳定性
+
+- `plugin.py` 修复后台任务生命周期管理：
+  - 增加 `_scheduled_import_task` / `_auto_save_task` / `_memory_maintenance_task` 句柄；
+  - 避免重复启动；
+  - 插件停用时统一 cancel + await 收敛。
+- `process_knowledge.py` 修复 tenacity 重试日志级别类型错误（`"WARNING"` → `logging.WARNING`），避免 `KeyError: 'WARNING'`。
+
+### 🔖 版本信息
+
+- 插件版本：`0.3.1` → `0.3.2`
+
 ## [0.3.1] - 2026-02-07
 
 本次更新为 **稳定性补丁版本**，主要修复脚本导入链路、删除安全性与 LPMM 转换一致性问题。

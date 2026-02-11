@@ -614,20 +614,22 @@ class GraphStore:
         """
         if not edges or self._adjacency is None:
             return 0
-            
+
+        deactivated_count = 0
         with self.batch_update():
             # 我们需要 explicit set to 0.
             # 使用增量更新模式覆盖
             for s, t in edges:
-                 s_canon = self._canonicalize(s)
-                 t_canon = self._canonicalize(t)
-                 if s_canon in self._node_to_idx and t_canon in self._node_to_idx:
-                     idx_s = self._node_to_idx[s_canon]
-                     idx_t = self._node_to_idx[t_canon]
-                     self._adjacency[idx_s, idx_t] = 0.0
-                     
+                s_canon = self._canonicalize(s)
+                t_canon = self._canonicalize(t)
+                if s_canon in self._node_to_idx and t_canon in self._node_to_idx:
+                    idx_s = self._node_to_idx[s_canon]
+                    idx_t = self._node_to_idx[t_canon]
+                    self._adjacency[idx_s, idx_t] = 0.0
+                    deactivated_count += 1
+
         self._adjacency_dirty = True
-        return len(edges)
+        return deactivated_count
 
     def _ensure_adjacency_T(self):
         """确保转置邻接矩阵是最新的"""
@@ -919,55 +921,6 @@ class GraphStore:
         #    ... (复杂操作，暂不需要，由 prune 逻辑处理)
             
         self._adjacency_dirty = True
-
-    def deactivate_edges(self, edges: List[Tuple[str, str]]) -> None:
-        """
-        冻结边 (从邻接矩阵移除，但保留 _edge_hash_map 里的记录)
-        
-        Args:
-            edges: 要冻结的边列表 [(src, tgt), ...]
-        """
-        if not edges or self._adjacency is None:
-            return
-            
-        edges_to_remove_indices = []
-        for src, tgt in edges:
-            src_canon = self._canonicalize(src)
-            tgt_canon = self._canonicalize(tgt)
-            if src_canon in self._node_to_idx and tgt_canon in self._node_to_idx:
-                s_idx = self._node_to_idx[src_canon]
-                t_idx = self._node_to_idx[tgt_canon]
-                edges_to_remove_indices.append((s_idx, t_idx))
-                
-        if not edges_to_remove_indices:
-            return
-
-        # 物理删除邻接矩阵中的边 (在稀疏矩阵中将权重设为 0。如果重新构建或掩码，则生效) -> 实际上是将其从矩阵拓扑中"移除"
-        # 为了效率，复用掩码逻辑 (Masking Logic) 重新构建矩阵
-        adj_coo = self._adjacency.tocoo()
-        remove_set = set(edges_to_remove_indices)
-        
-        mask = []
-        for i, j in zip(adj_coo.row, adj_coo.col):
-            if (int(i), int(j)) in remove_set:
-                mask.append(False)
-            else:
-                mask.append(True)
-        
-        mask = np.array(mask)
-        
-        new_row = adj_coo.row[mask]
-        new_col = adj_coo.col[mask]
-        new_data = adj_coo.data[mask]
-        
-        n = len(self._nodes)
-        if self.matrix_format == "csr":
-            self._adjacency = csr_matrix((new_data, (new_row, new_col)), shape=(n, n))
-        else:
-            self._adjacency = csc_matrix((new_data, (new_row, new_col)), shape=(n, n))
-            
-        self._adjacency_dirty = True
-        logger.debug(f"已冻结(Deactivate) {len(edges_to_remove_indices)} 条边 (Mapping保留)")
 
     def prune_relation_hashes(self, operations: List[Tuple[str, str, str]]) -> None:
         """

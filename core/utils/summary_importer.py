@@ -14,7 +14,8 @@ from pathlib import Path
 from src.common.logger import get_logger
 from src.plugin_system.apis import llm_api, message_api
 from src.chat.utils.prompt_builder import global_prompt_manager, Prompt
-from src.config.config import global_config
+from src.config.config import global_config, model_config as host_model_config
+from src.config.api_ada_configs import TaskConfig
 
 from ..storage import (
     VectorStore,
@@ -67,6 +68,143 @@ class SummaryImporter:
         self.metadata_store = metadata_store
         self.embedding_manager = embedding_manager
         self.plugin_config = plugin_config
+
+    def _normalize_summary_model_selectors(self, raw_value: Any) -> List[str]:
+        """标准化 summarization.model_name 配置，兼容字符串和字符串数组。"""
+        if raw_value is None:
+            return ["auto"]
+        if isinstance(raw_value, str):
+            v = raw_value.strip()
+            if not v:
+                return ["auto"]
+            # 兼容写法: "utils:model1","utils:model2",replyer
+            if "," in v:
+                parts = [part.strip().strip("'\"") for part in v.split(",")]
+                selectors = [part for part in parts if part]
+                return selectors or ["auto"]
+            return [v]
+        if isinstance(raw_value, list):
+            selectors = [str(x).strip() for x in raw_value if str(x).strip()]
+            return selectors or ["auto"]
+        v = str(raw_value).strip()
+        return [v] if v else ["auto"]
+
+    def _pick_default_summary_task(self, available_tasks: Dict[str, TaskConfig]) -> Tuple[Optional[str], Optional[TaskConfig]]:
+        """
+        选择总结默认任务，避免错误落到 embedding 任务。
+        优先级：replyer > utils > planner > tool_use > 其他非 embedding。
+        """
+        preferred = ("replyer", "utils", "planner", "tool_use")
+        for name in preferred:
+            cfg = available_tasks.get(name)
+            if cfg and cfg.model_list:
+                return name, cfg
+
+        for name, cfg in available_tasks.items():
+            if name != "embedding" and cfg.model_list:
+                return name, cfg
+
+        for name, cfg in available_tasks.items():
+            if cfg.model_list:
+                return name, cfg
+
+        return None, None
+
+    def _resolve_summary_model_config(self) -> Optional[TaskConfig]:
+        """
+        解析 summarization.model_name 为 TaskConfig。
+        支持：
+        - "auto"
+        - "replyer"（任务名）
+        - "some-model-name"（具体模型名）
+        - ["utils:model1", "utils:model2", "replyer"]（数组混合语法）
+        """
+        available_tasks = llm_api.get_available_models()
+        if not available_tasks:
+            return None
+
+        raw_cfg = self.plugin_config.get("summarization", {}).get("model_name", "auto")
+        selectors = self._normalize_summary_model_selectors(raw_cfg)
+        default_task_name, default_task_cfg = self._pick_default_summary_task(available_tasks)
+
+        selected_models: List[str] = []
+        base_cfg: Optional[TaskConfig] = None
+        model_dict = getattr(host_model_config, "models_dict", {})
+
+        def _append_models(models: List[str]):
+            for model_name in models:
+                if model_name and model_name not in selected_models:
+                    selected_models.append(model_name)
+
+        for raw_selector in selectors:
+            selector = raw_selector.strip()
+            if not selector:
+                continue
+
+            if selector.lower() == "auto":
+                if default_task_cfg:
+                    _append_models(default_task_cfg.model_list)
+                    if base_cfg is None:
+                        base_cfg = default_task_cfg
+                continue
+
+            if ":" in selector:
+                task_name, model_name = selector.split(":", 1)
+                task_name = task_name.strip()
+                model_name = model_name.strip()
+                task_cfg = available_tasks.get(task_name)
+                if not task_cfg:
+                    logger.warning(f"总结模型选择器 '{selector}' 的任务 '{task_name}' 不存在，已跳过")
+                    continue
+
+                if base_cfg is None:
+                    base_cfg = task_cfg
+
+                if not model_name or model_name.lower() == "auto":
+                    _append_models(task_cfg.model_list)
+                    continue
+
+                if model_name in model_dict or model_name in task_cfg.model_list:
+                    _append_models([model_name])
+                else:
+                    logger.warning(f"总结模型选择器 '{selector}' 的模型 '{model_name}' 不存在，已跳过")
+                continue
+
+            task_cfg = available_tasks.get(selector)
+            if task_cfg:
+                _append_models(task_cfg.model_list)
+                if base_cfg is None:
+                    base_cfg = task_cfg
+                continue
+
+            if selector in model_dict:
+                _append_models([selector])
+                continue
+
+            logger.warning(f"总结模型选择器 '{selector}' 无法识别，已跳过")
+
+        if not selected_models:
+            if default_task_cfg:
+                _append_models(default_task_cfg.model_list)
+                if base_cfg is None:
+                    base_cfg = default_task_cfg
+            else:
+                first_cfg = next(iter(available_tasks.values()))
+                _append_models(first_cfg.model_list)
+                if base_cfg is None:
+                    base_cfg = first_cfg
+
+        if not selected_models:
+            return None
+
+        template_cfg = base_cfg or default_task_cfg or next(iter(available_tasks.values()))
+        return TaskConfig(
+            model_list=selected_models,
+            max_tokens=template_cfg.max_tokens,
+            temperature=template_cfg.temperature,
+            slow_threshold=template_cfg.slow_threshold,
+            selection_strategy=template_cfg.selection_strategy,
+        )
 
     async def import_from_stream(
         self,
@@ -123,19 +261,12 @@ class SummaryImporter:
                 chat_history=chat_history_text
             )
 
-            model_name = self.plugin_config.get("summarization", {}).get("model_name", "auto")
-            
-            # 获取可用模型并匹配
-            available_models = llm_api.get_available_models()
-            model_config_to_use = None
-            if model_name in available_models:
-                model_config_to_use = available_models[model_name]
-            elif "balanced" in available_models:
-                model_config_to_use = available_models["balanced"]
-            elif available_models:
-                model_config_to_use = list(available_models.values())[0]
+            model_config_to_use = self._resolve_summary_model_config()
+            if model_config_to_use is None:
+                return False, "未找到可用的总结模型配置"
 
             logger.info(f"正在为流 {stream_id} 执行总结，消息条数: {len(messages)}")
+            logger.info(f"总结模型候选列表: {model_config_to_use.model_list}")
 
             success, response, _, _ = await llm_api.generate_with_model(
                 prompt=prompt,
