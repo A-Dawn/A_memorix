@@ -589,6 +589,7 @@ class ImportCommand(BaseCommand):
                 logger.info(f"{self.log_prefix} [DEBUG] 正在通过 LLM 提取知识，段落长度: {len(para)}")
 
             prompt = f"""请从以下段落中提取实体和它们之间的关系。
+输出值优先使用原文主语言，不要将中文翻译成英文或其他语言，也不要改写专有名词。
 以 JSON 格式返回，格式如下：
 {{
   "entities": ["实体1", "实体2"],
@@ -696,6 +697,7 @@ class ImportCommand(BaseCommand):
     async def _llm_extract(self, chunk: str, model_config: Any) -> Dict:
         """调用 LLM 提取知识"""
         prompt = f"""请分析以下文本，提取其中的实体（Entities）和关系（Relations）。
+输出值优先使用原文主语言，不要将中文翻译成英文或其他语言，也不要改写专有名词。
 仅提取关键信息。
 JSON格式: {{ "entities": ["e1"], "relations": [{{"subject": "s", "predicate": "p", "object": "o"}}] }}
 文本:

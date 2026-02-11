@@ -34,7 +34,7 @@ class ProcessedChunk:
     type: KnowledgeType
     source: SourceInfo
     chunk: ChunkContext
-    data: Dict[str, Any] = field(default_factory=dict) # triples, events, verbatim_entities
+    data: Dict[str, Any] = field(default_factory=dict) # triples、events、verbatim_entities
     flags: ChunkFlags = field(default_factory=ChunkFlags)
 
     def to_dict(self) -> Dict:
@@ -65,13 +65,25 @@ class BaseStrategy(ABC):
 
     @abstractmethod
     def split(self, text: str) -> List[ProcessedChunk]:
-        """Split text into chunks based on strategy."""
+        """按策略将文本切分为块。"""
         pass
 
     @abstractmethod
     async def extract(self, chunk: ProcessedChunk, llm_func=None) -> ProcessedChunk:
-        """Extract information from the chunk."""
+        """从文本块中抽取结构化信息。"""
         pass
 
     def calculate_checksum(self, text: str) -> str:
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    def build_language_guard(self, text: str) -> str:
+        """
+        构建统一的输出语言约束。
+        不区分语言类型，仅要求抽取值保持原文语言，不做翻译。
+        """
+        _ = text  # 预留参数，便于后续按需扩展
+        return (
+            "Focus on the original source language. Keep extracted events, entities, predicates "
+            "and objects in the same language as the source text, preserve names/terms as-is, "
+            "and do not translate."
+        )
