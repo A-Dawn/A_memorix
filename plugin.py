@@ -64,7 +64,7 @@ class A_MemorixPlugin(BasePlugin):
 
     # 插件基本信息（PluginBase要求的抽象属性）
     plugin_name = "A_Memorix"
-    plugin_version = "0.3.3"
+    plugin_version = "0.4.0"
     plugin_description = "轻量级知识库插件 - 完全独立的记忆增强系统"
     plugin_author = "A_Dawn"
     enable_plugin = False  # 默认禁用，需要在config.toml中启用
@@ -93,7 +93,7 @@ class A_MemorixPlugin(BasePlugin):
         "plugin": {
             "config_version": ConfigField(
                 type=str,
-                default="3.0.0",
+                default="3.1.0",
                 description="配置文件版本"
             ),
             "enabled": ConfigField(
@@ -190,6 +190,17 @@ class A_MemorixPlugin(BasePlugin):
                 type=float,
                 default=0.3,
                 description="关系语义回退的最小相似度阈值"
+            ),
+            "temporal": ConfigField(
+                type=dict,
+                default={
+                    "enabled": True,
+                    "allow_created_fallback": True,
+                    "candidate_multiplier": 8,
+                    "default_top_k": 10,
+                    "max_scan": 1000,
+                },
+                description="时序检索配置"
             ),
         },
         "threshold": {
@@ -417,17 +428,42 @@ class A_MemorixPlugin(BasePlugin):
                 ActionInfo(
                     name="knowledge_search",
                     component_type="action",
-                    description="在知识库中搜索相关内容，支持段落和关系的双路检索",
+                    description="在知识库中搜索相关内容，支持段落和关系的双路检索，可用于记忆查询和知识问答",
                     activation_type=ActionActivationType.ALWAYS,
                     activation_keywords=[],
                     keyword_case_sensitive=False,
                     parallel_action=True,
                     random_activation_probability=0.0,
                     action_parameters={
+                        "query_type": {
+                            "type": "string",
+                            "description": "查询模式：semantic(仅语义)/time(仅时间)/hybrid(语义+时间)",
+                            "required": False,
+                        },
                         "query": {
                             "type": "string",
-                            "description": "搜索查询文本",
-                            "required": True,
+                            "description": "查询文本（semantic/hybrid必填）",
+                            "required": False,
+                        },
+                        "time_from": {
+                            "type": "string",
+                            "description": "开始时间（仅支持 YYYY/MM/DD 或 YYYY/MM/DD HH:mm；日期自动按 00:00 展开，其他格式报错）",
+                            "required": False,
+                        },
+                        "time_to": {
+                            "type": "string",
+                            "description": "结束时间（仅支持 YYYY/MM/DD 或 YYYY/MM/DD HH:mm；日期自动按 23:59 展开，其他格式报错）",
+                            "required": False,
+                        },
+                        "person": {
+                            "type": "string",
+                            "description": "人物过滤（可选）",
+                            "required": False,
+                        },
+                        "source": {
+                            "type": "string",
+                            "description": "来源过滤（可选）",
+                            "required": False,
                         },
                         "top_k": {
                             "type": "integer",
@@ -548,9 +584,9 @@ class A_MemorixPlugin(BasePlugin):
                         (
                             "query_type",
                             "string",
-                            "查询类型：search(检索)、entity(实体)、relation(关系)、stats(统计)",
+                            "查询类型：search(检索)、time(时序检索)、entity(实体)、relation(关系)、stats(统计)",
                             True,
-                            ["search", "entity", "relation", "stats"],
+                            ["search", "time", "entity", "relation", "stats"],
                         ),
                         (
                             "query",
@@ -562,7 +598,7 @@ class A_MemorixPlugin(BasePlugin):
                         (
                             "top_k",
                             "integer",
-                            "返回结果数量（仅search模式）",
+                            "返回结果数量（search/time模式）",
                             False,
                             None,
                         ),
@@ -570,6 +606,34 @@ class A_MemorixPlugin(BasePlugin):
                             "use_threshold",
                             "boolean",
                             "是否使用动态阈值过滤（仅search模式）",
+                            False,
+                            None,
+                        ),
+                        (
+                            "time_from",
+                            "string",
+                            "开始时间（time模式，仅支持 YYYY/MM/DD 或 YYYY/MM/DD HH:mm；日期按 00:00 展开）",
+                            False,
+                            None,
+                        ),
+                        (
+                            "time_to",
+                            "string",
+                            "结束时间（time模式，仅支持 YYYY/MM/DD 或 YYYY/MM/DD HH:mm；日期按 23:59 展开）",
+                            False,
+                            None,
+                        ),
+                        (
+                            "person",
+                            "string",
+                            "人物过滤（time模式可选）",
+                            False,
+                            None,
+                        ),
+                        (
+                            "source",
+                            "string",
+                            "来源过滤（time模式可选）",
                             False,
                             None,
                         ),

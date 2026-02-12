@@ -1,7 +1,7 @@
 {
   "manifest_version": 1,
   "name": "A_Memorix",
-  "version": "0.3.3",
+  "version": "0.4.0",
   "description": "轻量级知识库插件 - 基于双路检索的完全独立的记忆增强系统，优化低资源环境下的知识存储与检索",
   "author": {
     "name": "A_Dawn"
@@ -126,6 +126,32 @@
         "type": "number",
         "default": 0.3,
         "description": "关系语义回退的最小相似度阈值"
+      },
+      "temporal": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "allow_created_fallback": {
+            "type": "boolean",
+            "default": true
+          },
+          "candidate_multiplier": {
+            "type": "integer",
+            "default": 8
+          },
+          "default_top_k": {
+            "type": "integer",
+            "default": 10
+          },
+          "max_scan": {
+            "type": "integer",
+            "default": 1000
+          }
+        },
+        "description": "时序检索配置"
       }
     },
     "threshold": {

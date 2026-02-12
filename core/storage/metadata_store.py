@@ -12,6 +12,7 @@ from typing import Optional, Union, List, Dict, Any, Tuple
 
 from src.common.logger import get_logger
 from ..utils.hash import compute_hash, normalize_text
+from ..utils.time_parser import normalize_time_meta
 
 logger = get_logger("A_Memorix.MetadataStore")
 
@@ -113,6 +114,11 @@ class MetadataStore:
                 metadata TEXT,
                 source TEXT,
                 word_count INTEGER,
+                event_time REAL,
+                event_time_start REAL,
+                event_time_end REAL,
+                time_granularity TEXT,
+                time_confidence REAL DEFAULT 1.0,
                 knowledge_type TEXT DEFAULT 'mixed'
             )
         """)
@@ -197,7 +203,6 @@ class MetadataStore:
             CREATE INDEX IF NOT EXISTS idx_paragraphs_source
             ON paragraphs(source)
         """)
-
         self._conn.commit()
         logger.debug("数据库表结构初始化完成")
         
@@ -223,6 +228,27 @@ class MetadataStore:
                 logger.info("Schema迁移完成：已添加knowledge_type字段")
             except sqlite3.OperationalError as e:
                 logger.warning(f"Schema迁移失败（可能已存在）: {e}")
+
+        # 问题2: 时序字段迁移
+        cursor.execute("PRAGMA table_info(paragraphs)")
+        columns = [row[1] for row in cursor.fetchall()]
+        temporal_columns = {
+            "event_time": "ALTER TABLE paragraphs ADD COLUMN event_time REAL",
+            "event_time_start": "ALTER TABLE paragraphs ADD COLUMN event_time_start REAL",
+            "event_time_end": "ALTER TABLE paragraphs ADD COLUMN event_time_end REAL",
+            "time_granularity": "ALTER TABLE paragraphs ADD COLUMN time_granularity TEXT",
+            "time_confidence": "ALTER TABLE paragraphs ADD COLUMN time_confidence REAL DEFAULT 1.0",
+        }
+        for col, sql in temporal_columns.items():
+            if col not in columns:
+                try:
+                    cursor.execute(sql)
+                except sqlite3.OperationalError as e:
+                    logger.warning(f"Schema迁移失败（{col}）: {e}")
+
+        # 时序索引（仅在列存在时创建，兼容旧库迁移）
+        self._create_temporal_indexes_if_ready()
+        self._conn.commit()
 
         # 检查paragraphs表是否有is_permanent列
         cursor.execute("PRAGMA table_info(paragraphs)")
@@ -334,6 +360,30 @@ class MetadataStore:
         except Exception as e:
             logger.error(f"数据自动修复失败: {e}")
 
+    def _create_temporal_indexes_if_ready(self) -> None:
+        """
+        仅当时序列已存在时创建索引。
+
+        旧库升级时，_initialize_tables 不能提前对不存在的列建索引；
+        因此统一在迁移阶段按列存在性安全创建。
+        """
+        cursor = self._conn.cursor()
+        cursor.execute("PRAGMA table_info(paragraphs)")
+        columns = {row[1] for row in cursor.fetchall()}
+
+        if "event_time" in columns:
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_paragraphs_event_time ON paragraphs(event_time)"
+            )
+        if "event_time_start" in columns:
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_paragraphs_event_start ON paragraphs(event_time_start)"
+            )
+        if "event_time_end" in columns:
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_paragraphs_event_end ON paragraphs(event_time_end)"
+            )
+
     def add_paragraph(
         self,
         content: str,
@@ -341,6 +391,7 @@ class MetadataStore:
         source: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         knowledge_type: str = "mixed",
+        time_meta: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         添加段落
@@ -351,6 +402,7 @@ class MetadataStore:
             source: 来源
             metadata: 额外元数据
             knowledge_type: 知识类型 (structured/narrative/factual/mixed)
+            time_meta: 时间元信息 (event_time/event_time_start/event_time_end/...)
 
         Returns:
             段落哈希值
@@ -360,13 +412,18 @@ class MetadataStore:
 
         now = datetime.now().timestamp()
         word_count = len(content_normalized.split())
+        normalized_time = normalize_time_meta(time_meta)
 
         cursor = self._conn.cursor()
         try:
             cursor.execute("""
                 INSERT INTO paragraphs
-                (hash, content, vector_index, created_at, updated_at, metadata, source, word_count, knowledge_type)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (
+                    hash, content, vector_index, created_at, updated_at, metadata, source, word_count,
+                    event_time, event_time_start, event_time_end, time_granularity, time_confidence,
+                    knowledge_type
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 hash_value,
                 content,
@@ -376,6 +433,11 @@ class MetadataStore:
                 pickle.dumps(metadata or {}),
                 source,
                 word_count,
+                normalized_time.get("event_time"),
+                normalized_time.get("event_time_start"),
+                normalized_time.get("event_time_end"),
+                normalized_time.get("time_granularity"),
+                normalized_time.get("time_confidence", 1.0),
                 knowledge_type,
             ))
             self._conn.commit()
@@ -634,6 +696,115 @@ class MetadataStore:
         if row:
             return self._row_to_dict(row, "paragraph")
         return None
+
+    def update_paragraph_time_meta(
+        self,
+        paragraph_hash: str,
+        time_meta: Dict[str, Any],
+    ) -> bool:
+        """
+        更新段落时间元信息。
+        """
+        normalized = normalize_time_meta(time_meta)
+        if not normalized:
+            return False
+
+        updates: List[str] = []
+        params: List[Any] = []
+        for key in [
+            "event_time",
+            "event_time_start",
+            "event_time_end",
+            "time_granularity",
+            "time_confidence",
+        ]:
+            if key in normalized:
+                updates.append(f"{key} = ?")
+                params.append(normalized[key])
+
+        if not updates:
+            return False
+
+        updates.append("updated_at = ?")
+        params.append(datetime.now().timestamp())
+        params.append(paragraph_hash)
+
+        cursor = self._conn.cursor()
+        cursor.execute(
+            f"UPDATE paragraphs SET {', '.join(updates)} WHERE hash = ?",
+            tuple(params),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def query_paragraphs_temporal(
+        self,
+        start_ts: Optional[float] = None,
+        end_ts: Optional[float] = None,
+        person: Optional[str] = None,
+        source: Optional[str] = None,
+        limit: int = 100,
+        allow_created_fallback: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """
+        查询时序命中的段落（区间相交语义）。
+        """
+        if limit <= 0:
+            return []
+
+        effective_start = "COALESCE(p.event_time_start, p.event_time, p.event_time_end"
+        effective_end = "COALESCE(p.event_time_end, p.event_time, p.event_time_start"
+        if allow_created_fallback:
+            effective_start += ", p.created_at)"
+            effective_end += ", p.created_at)"
+        else:
+            effective_start += ")"
+            effective_end += ")"
+
+        conditions = ["(p.is_deleted IS NULL OR p.is_deleted = 0)"]
+        params: List[Any] = []
+
+        if source:
+            conditions.append("p.source = ?")
+            params.append(source)
+
+        if person:
+            conditions.append(
+                """
+                EXISTS (
+                    SELECT 1
+                    FROM paragraph_entities pe
+                    JOIN entities e ON e.hash = pe.entity_hash
+                    WHERE pe.paragraph_hash = p.hash
+                      AND LOWER(e.name) LIKE ?
+                )
+                """
+            )
+            params.append(f"%{str(person).strip().lower()}%")
+
+        if start_ts is not None and end_ts is not None:
+            conditions.append(f"({effective_end} >= ? AND {effective_start} <= ?)")
+            params.extend([start_ts, end_ts])
+        elif start_ts is not None:
+            conditions.append(f"({effective_end} >= ?)")
+            params.append(start_ts)
+        elif end_ts is not None:
+            conditions.append(f"({effective_start} <= ?)")
+            params.append(end_ts)
+
+        where_sql = " AND ".join(conditions)
+        sql = f"""
+            SELECT p.*
+            FROM paragraphs p
+            WHERE {where_sql}
+            ORDER BY {effective_end} DESC, p.updated_at DESC
+            LIMIT ?
+        """
+        params.append(limit)
+
+        cursor = self._conn.cursor()
+        cursor.execute(sql, tuple(params))
+        return [self._row_to_dict(row, "paragraph") for row in cursor.fetchall()]
 
     def get_entity(self, hash_value: str) -> Optional[Dict[str, Any]]:
         """

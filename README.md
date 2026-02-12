@@ -1,6 +1,6 @@
 # A_Memorix
 
-**轻量级知识图谱插件** - 基于双路检索的完全独立的记忆增强系统 (v0.3.3)
+**轻量级知识图谱插件** - 基于双路检索的完全独立的记忆增强系统 (v0.4.0)
 
 > 消えていかない感覚 , まだまだ足りてないみたい !
 
@@ -9,16 +9,28 @@
 > 升级后，虽然系统会尝试自动迁移部分数据，但为确保知识图谱的检索精度和完整性，强烈建议在升级后使用 `process_knowledge.py` 脚本重新导入原始文本。
 
 > [!NOTE]
+> **v0.4.0 时序检索增强**：
+> 1. 新增统一时序检索入口：`/query time|t`、`knowledge_query(query_type=time)`、`knowledge_search(query_type=time|hybrid)`；
+> 2. 查询时间参数仅接受 `YYYY/MM/DD` 或 `YYYY/MM/DD HH:mm`（日期自动展开到 `00:00/23:59`）；
+> 3. 支持分钟级时间窗口检索，结果统一返回 `metadata.time_meta`（含命中依据与有效时间窗口）。
+>
 > **v0.3.3 语言约束补丁**：
 > 1. 知识抽取统一为“保持原文语言输出，不做翻译”约束，不再按语言类型分支处理；
 > 2. `Narrative/Factual` 策略抽取提示词强化“禁止翻译、保留原词”要求；
 > 3. 同步补强 `import_command` 的抽取提示词，避免导入链路出现中译英漂移；
+
+## 📑 文档索引
+
+- [📘 配置参数详解（config.toml）](CONFIG_REFERENCE.md)
+- [📗 导入指南与最佳实践](IMPORT_GUIDE.md)
+- [📝 更新日志](CHANGELOG.md)
 
 ---
 
 ## ✨ 特性
 
 - **🧠 双路检索** - 关系图谱 + 向量语义并行检索，结合 Personalized PageRank 智能排序。
+- **⏱️ 时序检索（分钟级）** - 支持 `time/hybrid` 模式，按事件时间区间命中并可回退 `created_at`。
 - **🧬 生物学记忆 (V5)** - 模拟人类记忆的**衰减 (Decay)**、**强化 (Reinforce)** 与 **结构化重组 (Prune)** 机制，实现记忆的动态生命周期管理。
 - **🔄 智能回退** - 当直接检索结果弱时，自动触发多跳路径搜索，增强间接关系召回。
 - **🛡️ 网络鲁棒性** - 内置指数退避重试机制，支持自定义嵌入请求的重试策略，从容应对网络波动。
@@ -86,6 +98,8 @@ A_Memorix 提供多种方式管理知识库，建议优先选择 **自动化脚�
 - `--force`: 强制重新导入已处理过的文件。
 - `--clear-manifest`: 清空导入历史记录并重新扫描。
 - `--type <type>`: 指定内容类型（`structured`, `narrative`, `factual`）。
+- `--chat-log`: 聊天记录模式。默认按 `narrative` 处理，并使用 LLM 语义理解提取 `event_time/event_time_start/event_time_end`（可解析相对时间）。
+- `--chat-reference-time <datetime>`: 聊天记录模式的相对时间参考点（如 `2026/02/12 10:30`）；不传则使用当前本地时间。
 
 ### 1.1 迁移 LPMM 数据 (`import_lpmm_json.py`)
 
@@ -120,7 +134,7 @@ python plugins/A_memorix/scripts/convert_lpmm.py -i <lpmm_data_dir> -o <output_d
 | 命令         | 模式                                             | 说明                | 示例                         |
 | ------------ | ------------------------------------------------ | ------------------- | ---------------------------- |
 | `/import`    | `text`, `paragraph`, `relation`, `file`, `json`  | 导入知识            | `/import text 人工智能是...` |
-| `/query`     | `search(s)`, `entity(e)`, `relation(r)`, `stats` | 查询知识            | `/query s 什么是AI?`         |
+| `/query`     | `search(s)`, `time(t)`, `entity(e)`, `relation(r)`, `stats` | 查询知识 | `/query t q=项目进展 from=2025/01/01 to=2025/01/31` |
 | `/delete`    | `paragraph`, `entity`, `clear`                   | 删除知识            | `/delete paragraph <hash>`   |
 | `/memory`    | `status`, `protect`, `reinforce`, `restore`      | 记忆系统维护 (V5)   | `/memory status`             |
 | `/visualize` | -                                                | 启动可视化 Web 面板 | `/visualize`                 |
@@ -145,6 +159,9 @@ python plugins/A_memorix/scripts/convert_lpmm.py -i <lpmm_data_dir> -o <output_d
 #### 🔍 查询知识 (`/query`)
 
 - **全文检索**：`/query search <query>` (缩写: `/query s`) - 支持智能回退到路径搜索。
+- **时序检索**：`/query time <k=v参数>` (缩写: `/query t`) - 支持 `q/query`、`from/start`、`to/end`、`person`、`source`、`top_k`。
+  - 时间格式仅支持：`YYYY/MM/DD` 或 `YYYY/MM/DD HH:mm`。
+  - 日期格式会自动展开：`from -> 00:00`，`to -> 23:59`。
 - **实体查询**：`/query entity <name>` (缩写: `/query e`)
 - **关系查询**：`/query relation <spec>` (缩写: `/query r`) - 支持自然语言或 `S|P|O` 格式。
 - **统计信息**：`/query stats`
@@ -167,6 +184,7 @@ python plugins/A_memorix/scripts/convert_lpmm.py -i <lpmm_data_dir> -o <output_d
 ### 4. 核心配置说明 (`config.toml`)
 
 你可以通过修改 `config.toml` 来定制插件行为。v0.2.0 版本提供了更细粒度的控制。
+完整逐项说明请查看：[📘 配置参数详解（config.toml）](CONFIG_REFERENCE.md)。
 
 #### 💾 存储与嵌入 `[storage] & [embedding]`
 

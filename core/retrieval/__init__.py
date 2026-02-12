@@ -5,6 +5,7 @@ from .dual_path import (
     RetrievalStrategy,
     RetrievalResult,
     DualPathRetrieverConfig,
+    TemporalQueryOptions,
 )
 from .pagerank import (
     PersonalizedPageRank,
@@ -23,6 +24,7 @@ __all__ = [
     "RetrievalStrategy",
     "RetrievalResult",
     "DualPathRetrieverConfig",
+    "TemporalQueryOptions",
     # PersonalizedPageRank
     "PersonalizedPageRank",
     "PageRankConfig",

@@ -27,6 +27,7 @@ from ...core import (
     should_extract_relations,
     get_type_display_name,
 )
+from ...core.utils.time_parser import normalize_time_meta
 
 logger = get_logger("A_Memorix.ImportCommand")
 
@@ -325,51 +326,51 @@ class ImportCommand(BaseCommand):
         except Exception as e:
             return False, f"❌ 关系导入失败: {str(e)}"
 
-    async def _import_json(self, file_path: str) -> Tuple[bool, str]:
-        """从JSON文件导入知识
-
-        JSON格式应为:
-        {
-            "paragraphs": ["段落1", "段落2"],
-            "relations": [{"subject": "s", "predicate": "p", "object": "o"}],
-            "entities": ["e1", "e2"]
-        }
-
-        Args:
-            file_path: JSON文件路径
-
-        Returns:
-            Tuple[bool, str]: (是否成功, 结果消息)
-        """
+    async def _import_json(self, json_input: str) -> Tuple[bool, str]:
+        """从JSON文件或JSON字符串导入知识。"""
         try:
-            path = Path(file_path)
-            if not path.exists():
-                return False, f"❌ 文件不存在: {file_path}"
-            
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            
+            path = Path(json_input)
+            if path.exists():
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            else:
+                data = json.loads(json_input)
+
             p_count = 0
             r_count = 0
             e_count = 0
-            
-            # 导入段落
+
+            # 导入段落（支持 time_meta 透传）
             paragraphs = data.get("paragraphs", [])
             for p in paragraphs:
                 if isinstance(p, str):
                     await self._add_paragraph(p)
                     p_count += 1
-                elif isinstance(p, dict) and "content" in p:
-                    await self._add_paragraph(p["content"])
+                    continue
+
+                if isinstance(p, dict) and "content" in p:
+                    raw_time_meta = {
+                        "event_time": p.get("event_time"),
+                        "event_time_start": p.get("event_time_start"),
+                        "event_time_end": p.get("event_time_end"),
+                        "time_range": p.get("time_range"),
+                        "time_granularity": p.get("time_granularity"),
+                        "time_confidence": p.get("time_confidence"),
+                    }
+                    time_meta = normalize_time_meta(raw_time_meta)
+                    await self._add_paragraph(
+                        p["content"],
+                        time_meta=time_meta if time_meta else None,
+                    )
                     p_count += 1
-            
+
             # 导入实体
             entities = data.get("entities", [])
             if entities:
                 for entity in entities:
                     await self._add_entity_with_vector(entity)
                 e_count += len(entities)
-            
+
             # 导入关系
             relations = data.get("relations", [])
             for r in relations:
@@ -379,19 +380,18 @@ class ImportCommand(BaseCommand):
                 if all([s, p, o]):
                     await self._add_relation(s, p, o)
                     r_count += 1
-            
+
             result_lines = [
                 "✅ JSON导入完成",
-                f"📊 统计信息:",
+                "📊 统计信息:",
                 f"  - 段落: {p_count}",
                 f"  - 实体: {e_count}",
                 f"  - 关系: {r_count}",
             ]
-            
             return True, "\n".join(result_lines)
-            
+
         except json.JSONDecodeError:
-            return False, "❌ JSON格式错误"
+            return False, "❌ JSON格式错误（可传入文件路径或JSON字符串）"
         except Exception as e:
             return False, f"❌ JSON导入失败: {str(e)}"
 
@@ -428,6 +428,7 @@ class ImportCommand(BaseCommand):
         self,
         content: str,
         knowledge_type: Optional[KnowledgeType] = None,
+        time_meta: Optional[Dict[str, Any]] = None,
     ) -> Tuple[str, KnowledgeType]:
         """添加段落到知识库
 
@@ -452,6 +453,7 @@ class ImportCommand(BaseCommand):
             content=content,
             source="import_command",
             knowledge_type=knowledge_type.value,
+            time_meta=time_meta,
         )
 
         # 生成嵌入向量 (异步调用)

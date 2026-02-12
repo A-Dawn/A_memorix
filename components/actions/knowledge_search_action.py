@@ -14,7 +14,13 @@ from src.plugin_system.base.component_types import ActionActivationType
 from src.chat.message_receive.chat_stream import ChatStream
 
 # 导入核心模块
-from ...core import DualPathRetriever, RetrievalStrategy, DualPathRetrieverConfig
+from ...core import (
+    DualPathRetriever,
+    RetrievalStrategy,
+    DualPathRetrieverConfig,
+    TemporalQueryOptions,
+)
+from ...core.utils.time_parser import parse_query_time_range
 
 logger = get_logger("A_Memorix.KnowledgeSearchAction")
 
@@ -39,10 +45,37 @@ class KnowledgeSearchAction(BaseAction):
 
     # Action参数
     action_parameters = {
+        "query_type": {
+            "type": "string",
+            "description": "查询模式: semantic(语义)、time(时间)、hybrid(语义+时间)",
+            "required": False,
+            "enum": ["semantic", "time", "hybrid"],
+            "default": "semantic",
+        },
         "query": {
             "type": "string",
-            "description": "搜索查询文本",
-            "required": True,
+            "description": "搜索查询文本（semantic/hybrid必填，time可选）",
+            "required": False,
+        },
+        "time_from": {
+            "type": "string",
+            "description": "开始时间，仅支持 YYYY/MM/DD 或 YYYY/MM/DD HH:mm（日期自动按 00:00 展开）",
+            "required": False,
+        },
+        "time_to": {
+            "type": "string",
+            "description": "结束时间，仅支持 YYYY/MM/DD 或 YYYY/MM/DD HH:mm（日期自动按 23:59 展开）",
+            "required": False,
+        },
+        "person": {
+            "type": "string",
+            "description": "按人物过滤（可选）",
+            "required": False,
+        },
+        "source": {
+            "type": "string",
+            "description": "按来源过滤（可选）",
+            "required": False,
         },
         "top_k": {
             "type": "integer",
@@ -158,14 +191,70 @@ class KnowledgeSearchAction(BaseAction):
             return False, "知识检索器未初始化"
 
         # 获取查询参数
-        query = self.action_data.get("query", "")
-        if not query:
-            return False, "查询内容不能为空"
-
-        top_k = self.action_data.get("top_k", 10)
+        query = str(self.action_data.get("query", "") or "").strip()
+        query_type = str(self.action_data.get("query_type", "") or "").strip().lower()
+        time_from_raw = self.action_data.get("time_from")
+        time_to_raw = self.action_data.get("time_to")
+        person = self.action_data.get("person")
+        source = self.action_data.get("source")
+        top_k_raw = self.action_data.get("top_k")
         use_threshold = self.action_data.get("use_threshold", True)
         enable_ppr = self.action_data.get("enable_ppr", True)
-        
+        if not query_type:
+            if time_from_raw or time_to_raw:
+                query_type = "hybrid" if query else "time"
+            else:
+                query_type = "semantic"
+
+        if query_type not in {"semantic", "time", "hybrid"}:
+            return False, f"query_type 无效: {query_type}（仅支持 semantic/time/hybrid）"
+
+        if query_type in {"semantic", "hybrid"} and not query:
+            return False, "semantic/hybrid 模式必须提供 query"
+
+        temporal_enabled = bool(self.get_config("retrieval.temporal.enabled", True))
+        if query_type in {"time", "hybrid"} and not temporal_enabled:
+            return False, "时序检索已禁用（retrieval.temporal.enabled=false）"
+
+        temporal_default_top_k = int(
+            self.get_config("retrieval.temporal.default_top_k", 10)
+        )
+        default_top_k = temporal_default_top_k if query_type in {"time", "hybrid"} else 10
+        if top_k_raw is None:
+            top_k = default_top_k
+        else:
+            try:
+                top_k = int(top_k_raw)
+            except (TypeError, ValueError):
+                return False, "top_k 参数必须为整数"
+        top_k = max(1, min(50, top_k))
+
+        temporal: Optional[TemporalQueryOptions] = None
+        if query_type in {"time", "hybrid"}:
+            if not time_from_raw and not time_to_raw:
+                return False, "time/hybrid 模式至少需要 time_from 或 time_to"
+            try:
+                ts_from, ts_to = parse_query_time_range(
+                    str(time_from_raw) if time_from_raw is not None else None,
+                    str(time_to_raw) if time_to_raw is not None else None,
+                )
+            except ValueError as e:
+                return False, f"时间参数错误: {e}"
+            temporal = TemporalQueryOptions(
+                time_from=ts_from,
+                time_to=ts_to,
+                person=str(person).strip() if person else None,
+                source=str(source).strip() if source else None,
+                allow_created_fallback=self.get_config(
+                    "retrieval.temporal.allow_created_fallback",
+                    True,
+                ),
+                candidate_multiplier=int(
+                    self.get_config("retrieval.temporal.candidate_multiplier", 8)
+                ),
+                max_scan=int(self.get_config("retrieval.temporal.max_scan", 1000)),
+            )
+
         # 0. 检查是否在允许的聊天流中
         from ...plugin import A_MemorixPlugin
         plugin_instance = A_MemorixPlugin.get_global_instance()
@@ -180,7 +269,9 @@ class KnowledgeSearchAction(BaseAction):
                 logger.info(f"{self.log_prefix} 聊天流已被过滤配置禁用，跳过检索")
                 return True, ""
 
-        logger.info(f"{self.log_prefix} 开始知识检索: query='{query}', top_k={top_k}")
+        logger.info(
+            f"{self.log_prefix} 开始知识检索: query_type={query_type}, query='{query}', top_k={top_k}"
+        )
 
         try:
             # 记录开始时间
@@ -192,6 +283,7 @@ class KnowledgeSearchAction(BaseAction):
                 top_k=top_k,
                 use_threshold=use_threshold,
                 enable_ppr=enable_ppr,
+                temporal=temporal,
             )
 
             # 计算耗时
@@ -204,7 +296,8 @@ class KnowledgeSearchAction(BaseAction):
                 return True, response
 
             # 构建响应
-            response = self._format_results(results, query, elapsed_ms)
+            query_display = query if query else "N/A"
+            response = self._format_results(results, query_display, elapsed_ms)
 
             logger.info(
                 f"{self.log_prefix} 检索完成: 返回{len(results)}条结果, 耗时{elapsed_ms:.1f}ms"
@@ -223,6 +316,7 @@ class KnowledgeSearchAction(BaseAction):
         top_k: int,
         use_threshold: bool,
         enable_ppr: bool,
+        temporal: Optional[TemporalQueryOptions] = None,
     ) -> List[Any]:
         """执行知识检索
 
@@ -241,7 +335,11 @@ class KnowledgeSearchAction(BaseAction):
 
         try:
             # 执行检索 (异步)
-            results = await self.retriever.retrieve(query, top_k=top_k)
+            results = await self.retriever.retrieve(
+                query,
+                top_k=top_k,
+                temporal=temporal,
+            )
 
             # 应用阈值过滤
             if use_threshold and hasattr(self.retriever, "threshold_filter"):
@@ -254,7 +352,9 @@ class KnowledgeSearchAction(BaseAction):
             plugin_instance = A_MemorixPlugin.get_global_instance()
             if plugin_instance:
                  # Reinforce only relations that survived filtering
-                 relation_hashes = [r.id for r in results if r.result_type == "relation"]
+                 relation_hashes = [
+                     r.hash_value for r in results if r.result_type == "relation"
+                 ]
                  if relation_hashes:
                      # Fire and forget (it pushes to buffer)
                      await plugin_instance.reinforce_access(relation_hashes)
@@ -295,7 +395,14 @@ class KnowledgeSearchAction(BaseAction):
             lines.append("📄 匹配的段落：")
             for i, result in enumerate(paragraphs, 1):
                 score_pct = result.score * 100
-                lines.append(f"  {i}. [{score_pct:.1f}%] {result.content[:100]}...")
+                summary = result.content[:100] + ("..." if len(result.content) > 100 else "")
+                lines.append(f"  {i}. [{score_pct:.1f}%] {summary}")
+                time_meta = result.metadata.get("time_meta", {})
+                if time_meta:
+                    basis = time_meta.get("match_basis", "none")
+                    s_text = time_meta.get("effective_start_text") or "N/A"
+                    e_text = time_meta.get("effective_end_text") or "N/A"
+                    lines.append(f"     ⏱️ {s_text} ~ {e_text} ({basis})")
             lines.append("")
 
         # 添加关系结果
@@ -307,6 +414,12 @@ class KnowledgeSearchAction(BaseAction):
                 predicate = result.metadata.get("predicate", "")
                 obj = result.metadata.get("object", "")
                 lines.append(f"  {i}. [{score_pct:.1f}%] {subject} {predicate} {obj}")
+                time_meta = result.metadata.get("time_meta", {})
+                if time_meta:
+                    basis = time_meta.get("match_basis", "none")
+                    s_text = time_meta.get("effective_start_text") or "N/A"
+                    e_text = time_meta.get("effective_end_text") or "N/A"
+                    lines.append(f"     ⏱️ {s_text} ~ {e_text} ({basis})")
             lines.append("")
 
         # 添加统计信息

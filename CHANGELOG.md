@@ -1,5 +1,51 @@
 # 更新日志 (Changelog)
 
+## [0.4.0] - 2026-02-12
+
+本次更新为 **时序检索增强正式版**，完成分钟级时间检索能力、Action/Tool/Command 三入口统一，以及文档与配置 schema 同步。
+
+### 🚀 主要新增
+
+#### 时序检索能力（分钟级）
+
+- 新增统一时序查询入口：
+  - `/query time`（别名 `/query t`）
+  - `knowledge_query(query_type=time)`
+  - `knowledge_search(query_type=time|hybrid)`
+- 查询时间参数统一支持：
+  - `YYYY/MM/DD`
+  - `YYYY/MM/DD HH:mm`
+- 日期参数自动展开边界：
+  - `from/time_from` -> `00:00`
+  - `to/time_to` -> `23:59`
+- 查询结果统一回传 `metadata.time_meta`，包含命中时间窗口与命中依据（事件时间或 `created_at` 回退）。
+
+#### 存储与检索链路
+
+- 段落存储层支持时序字段：
+  - `event_time`
+  - `event_time_start`
+  - `event_time_end`
+  - `time_granularity`
+  - `time_confidence`
+- 时序命中采用区间相交逻辑，并遵循“双层时间语义”：
+  - 优先 `event_time/event_time_range`
+  - 缺失时回退 `created_at`（可配置关闭）
+- 检索排序规则保持：语义优先，时间次排序（新到旧）。
+- `process_knowledge.py` 新增 `--chat-log` 参数：
+  - 启用后强制使用 `narrative` 策略；
+  - 使用 LLM 对聊天文本进行语义时间抽取（支持相对时间转绝对时间），写入 `event_time/event_time_start/event_time_end`。
+  - 新增 `--chat-reference-time`，用于指定相对时间语义解析的参考时间点。
+
+#### Schema 与文档同步
+
+- `_manifest.json` 同步补齐 `retrieval.temporal` 配置 schema。
+- 更新 `README.md`、`CONFIG_REFERENCE.md`、`IMPORT_GUIDE.md`，补充时序检索入口、参数格式与导入时间字段说明。
+
+### 🔖 版本信息
+
+- 插件版本：`0.3.3` → `0.4.0`
+
 ## [0.3.3] - 2026-02-11
 
 本次更新为 **语言一致性补丁版本**，重点收敛知识抽取时的语言漂移问题，要求输出严格贴合原文语言，不做翻译改写。
