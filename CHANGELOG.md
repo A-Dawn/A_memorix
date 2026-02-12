@@ -40,11 +40,13 @@
 #### Schema 与文档同步
 
 - `_manifest.json` 同步补齐 `retrieval.temporal` 配置 schema。
+- 配置 schema 版本升级：`config_version` 从 `3.0.0` 提升到 `3.1.0`（`plugin.py` / `config.toml` / 配置文档同步）。
 - 更新 `README.md`、`CONFIG_REFERENCE.md`、`IMPORT_GUIDE.md`，补充时序检索入口、参数格式与导入时间字段说明。
 
 ### 🔖 版本信息
 
 - 插件版本：`0.3.3` → `0.4.0`
+- 配置版本：`3.0.0` → `3.1.0`
 
 ## [0.3.3] - 2026-02-11
 
