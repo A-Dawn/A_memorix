@@ -22,6 +22,8 @@ from ...core import (
     DynamicThresholdFilter,
     ThresholdMethod,
     ThresholdConfig,
+    SparseBM25Config,
+    FusionConfig,
 )
 from ...core.utils.time_parser import parse_query_time_range
 
@@ -115,6 +117,7 @@ class KnowledgeQueryTool(BaseTool):
         self.graph_store = self.plugin_config.get("graph_store")
         self.metadata_store = self.plugin_config.get("metadata_store")
         self.embedding_manager = self.plugin_config.get("embedding_manager")
+        self.sparse_index = self.plugin_config.get("sparse_index")
 
         # 初始化检索器
         self.retriever: Optional[DualPathRetriever] = None
@@ -143,6 +146,7 @@ class KnowledgeQueryTool(BaseTool):
             graph_store = self.graph_store
             metadata_store = self.metadata_store
             embedding_manager = self.embedding_manager
+            sparse_index = self.sparse_index
 
             # 兜底逻辑：如果配置中没有存储实例，尝试直接从插件系统获取
             # 使用 is not None 检查，因为空对象可能布尔值为 False
@@ -159,12 +163,14 @@ class KnowledgeQueryTool(BaseTool):
                     graph_store = graph_store or instances.get("graph_store")
                     metadata_store = metadata_store or instances.get("metadata_store")
                     embedding_manager = embedding_manager or instances.get("embedding_manager")
+                    sparse_index = sparse_index or instances.get("sparse_index")
                     
                     # 同步回实例属性
                     self.vector_store = vector_store
                     self.graph_store = graph_store
                     self.metadata_store = metadata_store
                     self.embedding_manager = embedding_manager
+                    self.sparse_index = sparse_index
 
 
             # 最终检查 (使用 is not None 而非布尔值，因为空对象可能为 False)
@@ -178,6 +184,22 @@ class KnowledgeQueryTool(BaseTool):
                 return
 
             # 创建检索器配置
+            sparse_cfg_raw = self.get_config("retrieval.sparse", {}) or {}
+            if not isinstance(sparse_cfg_raw, dict):
+                sparse_cfg_raw = {}
+            fusion_cfg_raw = self.get_config("retrieval.fusion", {}) or {}
+            if not isinstance(fusion_cfg_raw, dict):
+                fusion_cfg_raw = {}
+            try:
+                sparse_cfg = SparseBM25Config(**sparse_cfg_raw)
+            except Exception as e:
+                logger.warning(f"{self.log_prefix} sparse 配置非法，回退默认: {e}")
+                sparse_cfg = SparseBM25Config()
+            try:
+                fusion_cfg = FusionConfig(**fusion_cfg_raw)
+            except Exception as e:
+                logger.warning(f"{self.log_prefix} fusion 配置非法，回退默认: {e}")
+                fusion_cfg = FusionConfig()
             config = DualPathRetrieverConfig(
                 top_k_paragraphs=self.get_config("retrieval.top_k_paragraphs", 20),
                 top_k_relations=self.get_config("retrieval.top_k_relations", 10),
@@ -189,6 +211,8 @@ class KnowledgeQueryTool(BaseTool):
                 enable_parallel=self.get_config("retrieval.enable_parallel", True),
                 retrieval_strategy=RetrievalStrategy.DUAL_PATH,
                 debug=self.debug_enabled,
+                sparse=sparse_cfg,
+                fusion=fusion_cfg,
             )
 
             # 创建检索器
@@ -197,6 +221,7 @@ class KnowledgeQueryTool(BaseTool):
                 graph_store=self.graph_store,
                 metadata_store=self.metadata_store,
                 embedding_manager=self.embedding_manager,
+                sparse_index=self.sparse_index,
                 config=config,
             )
 
@@ -1066,6 +1091,7 @@ class KnowledgeQueryTool(BaseTool):
                 "num_relations": self.metadata_store.count_relations() if self.metadata_store else 0,
                 "num_entities": self.metadata_store.count_entities() if self.metadata_store else 0,
             },
+            "sparse": self.sparse_index.stats() if self.sparse_index else None,
         }
 
         # Format a human-readable summary
@@ -1082,6 +1108,15 @@ class KnowledgeQueryTool(BaseTool):
             f"  - 关系数: {stats['metadata_store']['num_relations']}\n"
             f"  - 实体数: {stats['metadata_store']['num_entities']}"
         )
+        sparse_stats = stats.get("sparse")
+        if sparse_stats:
+            content += (
+                f"\n\n🧩 稀疏检索:\n"
+                f"  - 启用: {'是' if sparse_stats.get('enabled') else '否'}\n"
+                f"  - 已加载: {'是' if sparse_stats.get('loaded') else '否'}\n"
+                f"  - Tokenizer: {sparse_stats.get('tokenizer_mode', 'N/A')}\n"
+                f"  - FTS文档数: {sparse_stats.get('doc_count', 0)}"
+            )
 
         return {
             "success": True,
@@ -1111,6 +1146,7 @@ class KnowledgeQueryTool(BaseTool):
             f"  - Top-K段落: {self.retriever.config.top_k_paragraphs}",
             f"  - Top-K关系: {self.retriever.config.top_k_relations}",
             f"  - 融合系数(alpha): {self.retriever.config.alpha}",
+            f"  - 融合方法: {self.retriever.config.fusion.method}",
             f"  - PPR启用: {'是' if self.retriever.config.enable_ppr else '否'}",
             f"  - 并行检索: {'是' if self.retriever.config.enable_parallel else '否'}",
             "",
@@ -1120,5 +1156,14 @@ class KnowledgeQueryTool(BaseTool):
             f"  - 边数量: {self.graph_store.num_edges if self.graph_store else 0}",
             f"  - 段落数量: {self.metadata_store.count_paragraphs() if self.metadata_store else 0}",
         ]
+        if self.sparse_index:
+            sparse_stats = self.sparse_index.stats()
+            lines.extend([
+                "",
+                "🧩 稀疏检索:",
+                f"  - 启用: {'是' if sparse_stats.get('enabled') else '否'}",
+                f"  - 已加载: {'是' if sparse_stats.get('loaded') else '否'}",
+                f"  - Tokenizer: {sparse_stats.get('tokenizer_mode', 'N/A')}",
+            ])
 
         return "\n".join(lines)

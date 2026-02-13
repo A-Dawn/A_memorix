@@ -24,12 +24,15 @@ from .retrieval import (
     RetrievalResult,
     DualPathRetrieverConfig,
     TemporalQueryOptions,
+    FusionConfig,
     PersonalizedPageRank,
     PageRankConfig,
     create_ppr_from_graph,
     DynamicThresholdFilter,
     ThresholdMethod,
     ThresholdConfig,
+    SparseBM25Index,
+    SparseBM25Config,
 )
 
 __all__ = [
@@ -50,11 +53,14 @@ __all__ = [
     "RetrievalResult",
     "DualPathRetrieverConfig",
     "TemporalQueryOptions",
+    "FusionConfig",
     "PersonalizedPageRank",
     "PageRankConfig",
     "create_ppr_from_graph",
     "DynamicThresholdFilter",
     "ThresholdMethod",
     "ThresholdConfig",
+    "SparseBM25Index",
+    "SparseBM25Config",
 ]
 

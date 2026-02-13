@@ -5,7 +5,7 @@
 """
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Tuple, Union
 from enum import Enum
 
@@ -17,6 +17,7 @@ from ..embedding import EmbeddingManager
 from ..utils.matcher import AhoCorasick
 from ..utils.time_parser import format_timestamp
 from .pagerank import PersonalizedPageRank, PageRankConfig
+from .sparse_bm25 import SparseBM25Config, SparseBM25Index
 
 logger = get_logger("A_Memorix.DualPathRetriever")
 
@@ -93,9 +94,16 @@ class DualPathRetrieverConfig:
     enable_parallel: bool = True
     retrieval_strategy: RetrievalStrategy = RetrievalStrategy.DUAL_PATH
     debug: bool = False
+    sparse: SparseBM25Config = field(default_factory=SparseBM25Config)
+    fusion: "FusionConfig" = field(default_factory=lambda: FusionConfig())
 
     def __post_init__(self):
         """验证配置"""
+        if isinstance(self.sparse, dict):
+            self.sparse = SparseBM25Config(**self.sparse)
+        if isinstance(self.fusion, dict):
+            self.fusion = FusionConfig(**self.fusion)
+
         if not 0 <= self.alpha <= 1:
             raise ValueError(f"alpha必须在[0, 1]之间: {self.alpha}")
 
@@ -122,6 +130,32 @@ class TemporalQueryOptions:
     max_scan: int = 1000
 
 
+@dataclass
+class FusionConfig:
+    """融合配置。"""
+
+    method: str = "weighted_rrf"  # weighted_rrf | alpha_legacy
+    rrf_k: int = 60
+    vector_weight: float = 0.7
+    bm25_weight: float = 0.3
+    normalize_score: bool = True
+    normalize_method: str = "minmax"
+
+    def __post_init__(self):
+        self.method = str(self.method or "weighted_rrf").strip().lower()
+        self.normalize_method = str(self.normalize_method or "minmax").strip().lower()
+        self.rrf_k = max(1, int(self.rrf_k))
+        self.vector_weight = max(0.0, float(self.vector_weight))
+        self.bm25_weight = max(0.0, float(self.bm25_weight))
+        s = self.vector_weight + self.bm25_weight
+        if s <= 0:
+            self.vector_weight = 0.7
+            self.bm25_weight = 0.3
+        elif abs(s - 1.0) > 1e-8:
+            self.vector_weight /= s
+            self.bm25_weight /= s
+
+
 class DualPathRetriever:
     """
     双路检索器
@@ -146,6 +180,7 @@ class DualPathRetriever:
         graph_store: GraphStore,
         metadata_store: MetadataStore,
         embedding_manager: EmbeddingManager,
+        sparse_index: Optional[SparseBM25Index] = None,
         config: Optional[DualPathRetrieverConfig] = None,
     ):
         """
@@ -163,6 +198,7 @@ class DualPathRetriever:
         self.metadata_store = metadata_store
         self.embedding_manager = embedding_manager
         self.config = config or DualPathRetrieverConfig()
+        self.sparse_index = sparse_index
 
         # PageRank计算器
         ppr_config = PageRankConfig(alpha=self.config.ppr_alpha)
@@ -182,9 +218,6 @@ class DualPathRetriever:
         # 缓存 Aho-Corasick 匹配器
         self._ac_matcher: Optional[AhoCorasick] = None
         self._ac_nodes_count = 0
-        
-        # 并发控制
-        self._ppr_semaphore = asyncio.Semaphore(4)
 
     async def retrieve(
         self,
@@ -242,6 +275,212 @@ class DualPathRetriever:
             k = min(k, int(temporal.max_scan))
         return max(1, k)
 
+    def _is_valid_embedding(self, emb: Optional[np.ndarray]) -> bool:
+        if emb is None:
+            return False
+        arr = np.asarray(emb, dtype=np.float32)
+        if arr.ndim == 0 or arr.size == 0:
+            return False
+        return bool(np.all(np.isfinite(arr)))
+
+    def _should_use_sparse(
+        self,
+        embedding_ok: bool,
+        vector_results: Optional[List[RetrievalResult]] = None,
+    ) -> bool:
+        if not self.config.sparse.enabled or self.sparse_index is None:
+            return False
+
+        mode = self.config.sparse.mode
+        if mode == "hybrid":
+            return True
+        if mode == "fallback_only":
+            return not embedding_ok
+        # auto
+        if not embedding_ok:
+            return True
+        if not vector_results:
+            return True
+        best = max((float(r.score) for r in vector_results), default=0.0)
+        return best < 0.45
+
+    def _should_use_sparse_relations(
+        self,
+        embedding_ok: bool,
+        relation_results: Optional[List[RetrievalResult]] = None,
+    ) -> bool:
+        if not self.config.sparse.enable_relation_sparse_fallback:
+            return False
+        return self._should_use_sparse(embedding_ok, relation_results)
+
+    def _normalize_scores_minmax(self, results: List[RetrievalResult]) -> None:
+        if not results:
+            return
+        vals = [float(r.score) for r in results]
+        lo = min(vals)
+        hi = max(vals)
+        if hi - lo < 1e-12:
+            for r in results:
+                r.score = 1.0
+            return
+        for r in results:
+            r.score = (float(r.score) - lo) / (hi - lo)
+
+    def _fuse_ranked_lists_weighted_rrf(
+        self,
+        vector_results: List[RetrievalResult],
+        sparse_results: List[RetrievalResult],
+    ) -> List[RetrievalResult]:
+        """按 weighted RRF 融合两路段落召回。"""
+        if not vector_results:
+            out = sparse_results[:]
+            if self.config.fusion.normalize_score:
+                self._normalize_scores_minmax(out)
+            return out
+        if not sparse_results:
+            out = vector_results[:]
+            if self.config.fusion.normalize_score:
+                self._normalize_scores_minmax(out)
+            return out
+
+        k = self.config.fusion.rrf_k
+        w_vec = self.config.fusion.vector_weight
+        w_sparse = self.config.fusion.bm25_weight
+        merged: Dict[str, RetrievalResult] = {}
+        score_map: Dict[str, float] = {}
+
+        for rank, item in enumerate(vector_results, start=1):
+            h = item.hash_value
+            if h not in merged:
+                merged[h] = item
+                merged[h].source = "fusion_rrf"
+            score_map[h] = score_map.get(h, 0.0) + w_vec * (1.0 / (k + rank))
+
+        for rank, item in enumerate(sparse_results, start=1):
+            h = item.hash_value
+            if h not in merged:
+                merged[h] = item
+                merged[h].source = "fusion_rrf"
+            score_map[h] = score_map.get(h, 0.0) + w_sparse * (1.0 / (k + rank))
+
+        out = list(merged.values())
+        for item in out:
+            item.score = float(score_map.get(item.hash_value, 0.0))
+
+        out.sort(key=lambda x: x.score, reverse=True)
+        if self.config.fusion.normalize_score and self.config.fusion.normalize_method == "minmax":
+            self._normalize_scores_minmax(out)
+        return out
+
+    def _search_paragraphs_sparse(
+        self,
+        query: str,
+        top_k: int,
+        temporal: Optional[TemporalQueryOptions] = None,
+    ) -> List[RetrievalResult]:
+        """BM25 段落召回。"""
+        if not self.sparse_index or not self.config.sparse.enabled:
+            return []
+
+        candidate_k = max(top_k, self.config.sparse.candidate_k)
+        candidate_k = self._cap_temporal_scan_k(candidate_k, temporal)
+        sparse_rows = self.sparse_index.search(query=query, k=candidate_k)
+        results: List[RetrievalResult] = []
+        for row in sparse_rows:
+            hash_value = row["hash"]
+            paragraph = self.metadata_store.get_paragraph(hash_value)
+            if paragraph is None:
+                continue
+            time_meta = self._build_time_meta_from_paragraph(paragraph, temporal=temporal)
+            results.append(
+                RetrievalResult(
+                    hash_value=hash_value,
+                    content=paragraph["content"],
+                    score=float(row.get("score", 0.0)),
+                    result_type="paragraph",
+                    source="sparse_bm25",
+                    metadata={
+                        "word_count": paragraph.get("word_count", 0),
+                        "time_meta": time_meta,
+                        "bm25_score": float(row.get("bm25_score", 0.0)),
+                    },
+                )
+            )
+        results = self._apply_temporal_filter_to_paragraphs(results, temporal)
+        if self.config.fusion.normalize_score and self.config.fusion.normalize_method == "minmax":
+            self._normalize_scores_minmax(results)
+        return results
+
+    def _search_relations_sparse(
+        self,
+        query: str,
+        top_k: int,
+        temporal: Optional[TemporalQueryOptions] = None,
+    ) -> List[RetrievalResult]:
+        """关系 BM25 召回。"""
+        if not self.sparse_index or not self.config.sparse.enabled:
+            return []
+        if not self.config.sparse.enable_relation_sparse_fallback:
+            return []
+
+        candidate_k = max(top_k, self.config.sparse.relation_candidate_k)
+        candidate_k = self._cap_temporal_scan_k(candidate_k, temporal)
+        rows = self.sparse_index.search_relations(query=query, k=candidate_k)
+        results: List[RetrievalResult] = []
+        for row in rows:
+            hash_value = row["hash"]
+            relation = self.metadata_store.get_relation(hash_value)
+            if relation is None:
+                continue
+
+            relation_time_meta = None
+            if temporal:
+                relation_time_meta = self._best_supporting_time_meta(hash_value, temporal)
+                if relation_time_meta is None:
+                    continue
+
+            content = f"{relation['subject']} {relation['predicate']} {relation['object']}"
+            results.append(
+                RetrievalResult(
+                    hash_value=hash_value,
+                    content=content,
+                    score=float(row.get("score", 0.0)),
+                    result_type="relation",
+                    source="sparse_relation_bm25",
+                    metadata={
+                        "subject": relation["subject"],
+                        "predicate": relation["predicate"],
+                        "object": relation["object"],
+                        "confidence": relation.get("confidence", 1.0),
+                        "time_meta": relation_time_meta,
+                        "bm25_score": float(row.get("bm25_score", 0.0)),
+                    },
+                )
+            )
+
+        if self.config.fusion.normalize_score and self.config.fusion.normalize_method == "minmax":
+            self._normalize_scores_minmax(results)
+        return self._apply_temporal_filter_to_relations(results, temporal)
+
+    def _merge_relation_results(
+        self,
+        vector_results: List[RetrievalResult],
+        sparse_results: List[RetrievalResult],
+    ) -> List[RetrievalResult]:
+        """合并关系候选，按 hash 去重并保留更高分。"""
+        merged: Dict[str, RetrievalResult] = {}
+        for item in vector_results:
+            merged[item.hash_value] = item
+        for item in sparse_results:
+            old = merged.get(item.hash_value)
+            if old is None or float(item.score) > float(old.score):
+                merged[item.hash_value] = item
+            elif old is not None and old.source != item.source:
+                old.source = "relation_fusion"
+        out = list(merged.values())
+        out.sort(key=lambda x: x.score, reverse=True)
+        return out
+
     async def _retrieve_paragraphs_only(
         self,
         query: str,
@@ -258,41 +497,56 @@ class DualPathRetriever:
         Returns:
             检索结果列表
         """
-        # 生成查询嵌入（异步调用）
-        query_emb = await self.embedding_manager.encode(query)
+        query_emb = None
+        embedding_ok = False
+        vector_results: List[RetrievalResult] = []
 
-        # 检索段落
-        multiplier = max(1, temporal.candidate_multiplier) if temporal else 1
-        candidate_k = self._cap_temporal_scan_k(top_k * 2 * multiplier, temporal)
-        para_ids, para_scores = self.vector_store.search(
-            query_emb,
-            k=candidate_k,  # temporal 模式扩大召回后过滤
-        )
+        try:
+            query_emb = await self.embedding_manager.encode(query)
+            embedding_ok = self._is_valid_embedding(query_emb)
+        except Exception as e:
+            logger.warning(f"段落检索 embedding 生成失败，将尝试 sparse 回退: {e}")
 
-        # 获取段落内容
-        results = []
-        for hash_value, score in zip(para_ids, para_scores):
-            paragraph = self.metadata_store.get_paragraph(hash_value)
-            if paragraph is None:
-                continue
-
-            time_meta = self._build_time_meta_from_paragraph(
-                paragraph,
-                temporal=temporal,
+        if embedding_ok:
+            multiplier = max(1, temporal.candidate_multiplier) if temporal else 1
+            candidate_k = self._cap_temporal_scan_k(top_k * 2 * multiplier, temporal)
+            para_ids, para_scores = self.vector_store.search(
+                query_emb,  # type: ignore[arg-type]
+                k=candidate_k,
             )
-            results.append(RetrievalResult(
-                hash_value=hash_value,
-                content=paragraph["content"],
-                score=float(score),
-                result_type="paragraph",
-                source="paragraph_search",
-                metadata={
-                    "word_count": paragraph.get("word_count", 0),
-                    "time_meta": time_meta,
-                },
-            ))
 
-        results = self._apply_temporal_filter_to_paragraphs(results, temporal)
+            for hash_value, score in zip(para_ids, para_scores):
+                paragraph = self.metadata_store.get_paragraph(hash_value)
+                if paragraph is None:
+                    continue
+                time_meta = self._build_time_meta_from_paragraph(paragraph, temporal=temporal)
+                vector_results.append(
+                    RetrievalResult(
+                        hash_value=hash_value,
+                        content=paragraph["content"],
+                        score=float(score),
+                        result_type="paragraph",
+                        source="paragraph_search",
+                        metadata={
+                            "word_count": paragraph.get("word_count", 0),
+                            "time_meta": time_meta,
+                        },
+                    )
+                )
+            vector_results = self._apply_temporal_filter_to_paragraphs(vector_results, temporal)
+
+        sparse_results: List[RetrievalResult] = []
+        if self._should_use_sparse(embedding_ok, vector_results):
+            sparse_results = self._search_paragraphs_sparse(query, top_k, temporal=temporal)
+
+        if self.config.fusion.method == "weighted_rrf" and (vector_results and sparse_results):
+            results = self._fuse_ranked_lists_weighted_rrf(vector_results, sparse_results)
+        elif vector_results and sparse_results:
+            results = vector_results + sparse_results
+            results.sort(key=lambda x: x.score, reverse=True)
+        else:
+            results = vector_results if vector_results else sparse_results
+
         return results[:top_k]
 
     async def _retrieve_relations_only(
@@ -316,37 +570,38 @@ class DualPathRetriever:
         Returns:
             检索结果列表
         """
-        # 生成查询嵌入（异步调用）
-        query_emb = await self.embedding_manager.encode(query)
+        query_emb = None
+        embedding_ok = False
+        vector_results: List[RetrievalResult] = []
+        try:
+            query_emb = await self.embedding_manager.encode(query)
+            embedding_ok = self._is_valid_embedding(query_emb)
+        except Exception as e:
+            logger.warning(f"关系检索 embedding 生成失败，将尝试 sparse 回退: {e}")
 
-        # 1. 检索向量 (混合了段落和实体，所以扩大检索范围以召回足够多实体)
-        multiplier = max(1, temporal.candidate_multiplier) if temporal else 1
-        candidate_k = self._cap_temporal_scan_k(top_k * 3 * multiplier, temporal)
-        ids, scores = self.vector_store.search(
-            query_emb,
-            k=candidate_k,
-        )
+        if embedding_ok:
+            # 1. 检索向量 (混合了段落和实体，所以扩大检索范围以召回足够多实体)
+            multiplier = max(1, temporal.candidate_multiplier) if temporal else 1
+            candidate_k = self._cap_temporal_scan_k(top_k * 3 * multiplier, temporal)
+            ids, scores = self.vector_store.search(
+                query_emb,  # type: ignore[arg-type]
+                k=candidate_k,
+            )
 
-        results = []
-        seen_relations = set()
-
-        for hash_value, score in zip(ids, scores):
-            # 2. 检查是否为实体
-            entity = self.metadata_store.get_entity(hash_value)
-            
-            if entity:
-                # 是实体！扩展搜索其关联的关系
+            seen_relations = set()
+            for hash_value, score in zip(ids, scores):
+                entity = self.metadata_store.get_entity(hash_value)
+                if not entity:
+                    continue
                 entity_name = entity["name"]
-                
-                # 获取作为 主语 或 宾语 的所有关系
+
                 related_rels = []
                 related_rels.extend(self.metadata_store.get_relations(subject=entity_name))
                 related_rels.extend(self.metadata_store.get_relations(object=entity_name))
-                
+
                 for rel in related_rels:
                     if rel["hash"] in seen_relations:
                         continue
-                        
                     seen_relations.add(rel["hash"])
 
                     relation_time_meta = None
@@ -354,30 +609,38 @@ class DualPathRetriever:
                         relation_time_meta = self._best_supporting_time_meta(rel["hash"], temporal)
                         if relation_time_meta is None:
                             continue
-                    
-                    content = f"{rel['subject']} {rel['predicate']} {rel['object']}"
-                    
-                    # 构造结果 (复用实体的向量相似度作为基础分)
-                    # TODO: 未来可以考虑结合 关系文本 vs Query 的重排序
-                    results.append(RetrievalResult(
-                        hash_value=rel["hash"],
-                        content=content,
-                        score=float(score),
-                        result_type="relation",
-                        source="relation_search (via entity)",
-                        metadata={
-                            "subject": rel["subject"],
-                            "predicate": rel["predicate"],
-                            "object": rel["object"],
-                            "confidence": rel.get("confidence", 1.0),
-                            "pivot_entity": entity_name,  # 记录是通过哪个实体找到的
-                            "time_meta": relation_time_meta,
-                        },
-                    ))
 
-        # 根据分数降序排序并截取
-        results.sort(key=lambda x: x.score, reverse=True)
-        return self._apply_temporal_filter_to_relations(results, temporal)[:top_k]
+                    content = f"{rel['subject']} {rel['predicate']} {rel['object']}"
+                    vector_results.append(
+                        RetrievalResult(
+                            hash_value=rel["hash"],
+                            content=content,
+                            score=float(score),
+                            result_type="relation",
+                            source="relation_search (via entity)",
+                            metadata={
+                                "subject": rel["subject"],
+                                "predicate": rel["predicate"],
+                                "object": rel["object"],
+                                "confidence": rel.get("confidence", 1.0),
+                                "pivot_entity": entity_name,
+                                "time_meta": relation_time_meta,
+                            },
+                        )
+                    )
+
+            vector_results = self._apply_temporal_filter_to_relations(vector_results, temporal)
+
+        sparse_results: List[RetrievalResult] = []
+        if self._should_use_sparse_relations(embedding_ok, vector_results):
+            sparse_results = self._search_relations_sparse(query=query, top_k=top_k, temporal=temporal)
+
+        if vector_results and sparse_results:
+            results = self._merge_relation_results(vector_results, sparse_results)
+        else:
+            results = vector_results if vector_results else sparse_results
+
+        return results[:top_k]
 
     async def _retrieve_dual_path(
         self,
@@ -395,14 +658,52 @@ class DualPathRetriever:
         Returns:
             融合后的检索结果列表
         """
-        # 生成查询嵌入（异步调用）
-        query_emb = await self.embedding_manager.encode(query)
+        query_emb = None
+        embedding_ok = False
+        try:
+            query_emb = await self.embedding_manager.encode(query)
+            embedding_ok = self._is_valid_embedding(query_emb)
+        except Exception as e:
+            logger.warning(f"双路检索 embedding 生成失败，将尝试 sparse 回退: {e}")
 
-        # 并行检索（使用 asyncio）
-        if self.config.enable_parallel:
-            para_results, rel_results = await self._parallel_retrieve(query_emb, temporal=temporal)
+        para_results: List[RetrievalResult] = []
+        rel_results: List[RetrievalResult] = []
+        if embedding_ok:
+            # 并行检索（使用 asyncio）
+            if self.config.enable_parallel:
+                para_results, rel_results = await self._parallel_retrieve(query_emb, temporal=temporal)  # type: ignore[arg-type]
+            else:
+                para_results, rel_results = self._sequential_retrieve(query_emb, temporal=temporal)  # type: ignore[arg-type]
         else:
-            para_results, rel_results = self._sequential_retrieve(query_emb, temporal=temporal)
+            logger.warning("embedding 不可用，跳过向量段落/关系召回")
+
+        sparse_para_results: List[RetrievalResult] = []
+        if self._should_use_sparse(embedding_ok, para_results):
+            sparse_para_results = self._search_paragraphs_sparse(
+                query=query,
+                top_k=max(top_k * 2, self.config.sparse.candidate_k),
+                temporal=temporal,
+            )
+        sparse_rel_results: List[RetrievalResult] = []
+        if self._should_use_sparse_relations(embedding_ok, rel_results):
+            sparse_rel_results = self._search_relations_sparse(
+                query=query,
+                top_k=max(top_k, self.config.sparse.relation_candidate_k),
+                temporal=temporal,
+            )
+
+        if self.config.fusion.method == "weighted_rrf" and para_results and sparse_para_results:
+            para_results = self._fuse_ranked_lists_weighted_rrf(para_results, sparse_para_results)
+        elif para_results and sparse_para_results:
+            para_results = para_results + sparse_para_results
+            para_results.sort(key=lambda x: x.score, reverse=True)
+        elif sparse_para_results and (not para_results or not embedding_ok):
+            para_results = sparse_para_results
+
+        if rel_results and sparse_rel_results:
+            rel_results = self._merge_relation_results(rel_results, sparse_rel_results)
+        elif sparse_rel_results and (not rel_results or not embedding_ok):
+            rel_results = sparse_rel_results
 
         # 融合结果
         fused_results = self._fuse_results(
@@ -599,7 +900,7 @@ class DualPathRetriever:
         self,
         para_results: List[RetrievalResult],
         rel_results: List[RetrievalResult],
-        query_emb: np.ndarray,
+        query_emb: Optional[np.ndarray] = None,
     ) -> List[RetrievalResult]:
         """
         融合段落和关系结果
@@ -612,11 +913,12 @@ class DualPathRetriever:
         Args:
             para_results: 段落结果
             rel_results: 关系结果
-            query_emb: 查询嵌入
+            query_emb: 查询嵌入（兼容参数，当前未使用）
 
         Returns:
             融合后的结果列表
         """
+        del query_emb  # 参数保留用于兼容
         alpha = self.config.alpha
 
         # 为段落结果计算加权分数
@@ -703,6 +1005,10 @@ class DualPathRetriever:
             )
 
         # 调整结果分数
+        ppr_scores_by_name = {
+            str(name).strip().lower(): float(score)
+            for name, score in ppr_scores.items()
+        }
         for result in results:
             if result.result_type == "paragraph":
                 # 获取段落的实体
@@ -714,9 +1020,9 @@ class DualPathRetriever:
                 if para_entities:
                     entity_scores = []
                     for ent in para_entities:
-                        ent_hash = ent["hash"]
-                        if ent_hash in ppr_scores:
-                            entity_scores.append(ppr_scores[ent_hash])
+                        ent_name = str(ent.get("name", "")).strip().lower()
+                        if ent_name in ppr_scores_by_name:
+                            entity_scores.append(ppr_scores_by_name[ent_name])
 
                     if entity_scores:
                         avg_ppr = np.mean(entity_scores)
@@ -983,6 +1289,10 @@ class DualPathRetriever:
         Returns:
             统计信息字典
         """
+        vector_size = getattr(self.vector_store, "size", None)
+        if vector_size is None:
+            vector_size = getattr(self.vector_store, "num_vectors", 0)
+
         return {
             "config": {
                 "top_k_paragraphs": self.config.top_k_paragraphs,
@@ -992,15 +1302,18 @@ class DualPathRetriever:
                 "enable_ppr": self.config.enable_ppr,
                 "enable_parallel": self.config.enable_parallel,
                 "strategy": self.config.retrieval_strategy.value,
+                "sparse_mode": self.config.sparse.mode,
+                "fusion_method": self.config.fusion.method,
             },
             "vector_store": {
-                "size": self.vector_store.size,
+                "size": int(vector_size),
             },
             "graph_store": {
                 "num_nodes": self.graph_store.num_nodes,
                 "num_edges": self.graph_store.num_edges,
             },
             "metadata_store": self.metadata_store.get_statistics(),
+            "sparse": self.sparse_index.stats() if self.sparse_index else None,
         }
 
     def __repr__(self) -> str:

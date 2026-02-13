@@ -19,6 +19,8 @@ from ...core import (
     RetrievalStrategy,
     DualPathRetrieverConfig,
     TemporalQueryOptions,
+    SparseBM25Config,
+    FusionConfig,
 )
 from ...core.utils.time_parser import parse_query_time_range
 
@@ -123,6 +125,7 @@ class KnowledgeSearchAction(BaseAction):
             graph_store = self.plugin_config.get("graph_store")
             metadata_store = self.plugin_config.get("metadata_store")
             embedding_manager = self.plugin_config.get("embedding_manager")
+            sparse_index = self.plugin_config.get("sparse_index")
 
             # 兜底逻辑：如果配置中没有存储实例，尝试直接从插件系统获取
             # 使用 is not None 检查，因为空对象可能布尔值为 False
@@ -139,6 +142,7 @@ class KnowledgeSearchAction(BaseAction):
                     graph_store = graph_store or instances.get("graph_store")
                     metadata_store = metadata_store or instances.get("metadata_store")
                     embedding_manager = embedding_manager or instances.get("embedding_manager")
+                    sparse_index = sparse_index or instances.get("sparse_index")
 
 
             # 最终检查 (使用 is not None 而非布尔值，因为空对象可能为 False)
@@ -152,6 +156,23 @@ class KnowledgeSearchAction(BaseAction):
                 return
 
             # 创建检索器配置
+            sparse_cfg_raw = self.get_config("retrieval.sparse", {}) or {}
+            if not isinstance(sparse_cfg_raw, dict):
+                sparse_cfg_raw = {}
+            fusion_cfg_raw = self.get_config("retrieval.fusion", {}) or {}
+            if not isinstance(fusion_cfg_raw, dict):
+                fusion_cfg_raw = {}
+            try:
+                sparse_cfg = SparseBM25Config(**sparse_cfg_raw)
+            except Exception as e:
+                logger.warning(f"{self.log_prefix} sparse 配置非法，回退默认: {e}")
+                sparse_cfg = SparseBM25Config()
+            try:
+                fusion_cfg = FusionConfig(**fusion_cfg_raw)
+            except Exception as e:
+                logger.warning(f"{self.log_prefix} fusion 配置非法，回退默认: {e}")
+                fusion_cfg = FusionConfig()
+
             config = DualPathRetrieverConfig(
                 top_k_paragraphs=self.get_config("retrieval.top_k_paragraphs", 20),
                 top_k_relations=self.get_config("retrieval.top_k_relations", 10),
@@ -163,6 +184,8 @@ class KnowledgeSearchAction(BaseAction):
                 enable_parallel=self.get_config("retrieval.enable_parallel", True),
                 retrieval_strategy=RetrievalStrategy.DUAL_PATH,
                 debug=self.debug_enabled,
+                sparse=sparse_cfg,
+                fusion=fusion_cfg,
             )
 
             # 创建检索器
@@ -171,6 +194,7 @@ class KnowledgeSearchAction(BaseAction):
                 graph_store=graph_store,
                 metadata_store=metadata_store,
                 embedding_manager=embedding_manager,
+                sparse_index=sparse_index,
                 config=config,
             )
 

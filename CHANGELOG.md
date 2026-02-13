@@ -1,10 +1,61 @@
 # 更新日志 (Changelog)
 
-## [0.4.0] - 2026-02-12
+## [0.4.0] - 2026-02-13
 
-本次更新为 **时序检索增强正式版**，完成分钟级时间检索能力、Action/Tool/Command 三入口统一，以及文档与配置 schema 同步。
+本次 `0.4.0` 版本整合了时序检索增强与后续检索链路增强、稳定性修复和文档同步。
 
-### 🚀 主要新增
+### 🔖 版本信息
+
+- 插件版本：`0.3.3` → `0.4.0`
+- 配置版本：`3.0.0` → `3.1.0`
+
+### 🚀 新增
+
+- 新增 `core/retrieval/sparse_bm25.py`
+  - `SparseBM25Config` / `SparseBM25Index`
+  - FTS5 + BM25 稀疏检索
+  - 支持 `jieba/mixed/char_2gram` 分词与懒加载
+  - 支持 ngram 倒排回退与可选 LIKE 兜底
+- `DualPathRetriever` 新增 sparse/fusion 配置注入：
+  - embedding 不可用时自动 sparse 回退；
+  - `hybrid` 模式支持向量路 + sparse 路并行候选；
+  - 新增 `FusionConfig` 与 `weighted_rrf` 融合。
+- `MetadataStore` 新增 FTS/倒排能力：
+  - `paragraphs_fts`、`relations_fts` schema 与回填；
+  - `paragraph_ngrams` 倒排索引与回填；
+  - `fts_search_bm25` / `fts_search_relations_bm25` / `ngram_search_paragraphs`。
+
+### 🛠️ 组件链路同步
+
+- `plugin.py`
+  - 新增 `[retrieval.sparse]`、`[retrieval.fusion]` 默认配置；
+  - 初始化并向组件注入 `sparse_index`；
+  - `on_disable` 支持按配置卸载 sparse 连接并释放缓存。
+- `knowledge_search_action.py` / `query_command.py` / `knowledge_query_tool.py`
+  - 统一接入 sparse/fusion 配置；
+  - 统一注入 `sparse_index`；
+  - `stats` 输出新增 sparse 状态观测。
+- `requirements.txt`
+  - 新增 `jieba>=0.42.1`（未安装时自动回退 char n-gram）。
+
+### 🧯 修复与行为调整
+
+- 修复 `retrieval.ppr_concurrency_limit` 不生效问题：
+  - `DualPathRetriever` 使用配置值初始化 `_ppr_semaphore`，不再被固定值覆盖。
+- 修复 `char_2gram` 召回失效场景：
+  - FTS miss 时增加 `_fallback_substring_search`，优先 ngram 倒排回退，按配置可选 LIKE 兜底。
+- 提升可观测性与兼容性：
+  - `get_statistics()` 对向量规模字段兼容读取 `size -> num_vectors -> 0`，避免属性缺失导致异常。
+  - `/query stats` 与 `knowledge_query` 输出包含 sparse 状态（enabled/loaded/tokenizer/doc_count）。
+
+### 📚 文档
+
+- `README.md`
+  - 新增检索增强说明、稀疏行为说明、时序回填脚本入口。
+- `CONFIG_REFERENCE.md`
+  - 补齐 sparse/fusion 参数与触发规则、回退链路、融合实现细节。
+
+### ⏱️ 时序检索与导入增强
 
 #### 时序检索能力（分钟级）
 
@@ -42,11 +93,6 @@
 - `_manifest.json` 同步补齐 `retrieval.temporal` 配置 schema。
 - 配置 schema 版本升级：`config_version` 从 `3.0.0` 提升到 `3.1.0`（`plugin.py` / `config.toml` / 配置文档同步）。
 - 更新 `README.md`、`CONFIG_REFERENCE.md`、`IMPORT_GUIDE.md`，补充时序检索入口、参数格式与导入时间字段说明。
-
-### 🔖 版本信息
-
-- 插件版本：`0.3.3` → `0.4.0`
-- 配置版本：`3.0.0` → `3.1.0`
 
 ## [0.3.3] - 2026-02-11
 

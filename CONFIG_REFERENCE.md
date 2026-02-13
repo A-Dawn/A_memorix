@@ -4,12 +4,13 @@
 
 ---
 
-## ⚠️ 先看这 4 条
+## ⚠️ 先看这 5 条
 
 - `embedding.quantization_type` 当前**基本不生效**：虽然配置支持 `float32/int8/pq`，但 `VectorStore` 内部目前固定走 SQ8（`int8`）实现（后期预期不会走其他实现）。
-- `retrieval.ppr_concurrency_limit` 当前有实现覆盖：初始化后信号量又被写死为 `4`，因此该参数实际不会改变并发。
+- `retrieval.sparse` 与 `retrieval.fusion` 是新增检索增强配置：可在 embedding 异常时自动回退 BM25，并通过 weighted RRF 融合候选。
 - `memory.reinforce_buffer_max_size`、`memory.min_active_weight_protected` 当前代码里**未实际使用**。
 - `filter.mode = "blacklist"` 且 `filter.chats = []` 时，会导致“全部聊天流被禁用”。
+- `retrieval.sparse.enable_relation_sparse_fallback = false` 会关闭关系 sparse 召回，但当前段落 sparse 查询路径仍会幂等检查 `relations_fts` schema/backfill（有轻微额外开销）。
 
 ---
 
@@ -76,7 +77,7 @@
   - 生效：传给 `PageRankConfig(alpha=...)`。
 - `retrieval.ppr_concurrency_limit`
   - 功能：PPR 计算并发上限。
-  - 生效：理论应生效，但当前构造器后续被固定为 `4`，实际受覆盖。
+  - 生效：用于限制 PPR 线程池重排并发。
 - `retrieval.enable_parallel`
   - 功能：是否并行执行段落/关系检索。
   - 生效：DualPath 内部并发执行开关。
@@ -86,6 +87,115 @@
 - `retrieval.relation_fallback_min_score`
   - 功能：关系语义回退最低分数阈值。
   - 生效：过滤低分语义关系候选。
+
+### `[retrieval.sparse]` 稀疏检索（FTS5 + BM25）
+
+- `retrieval.sparse.enabled`
+  - 功能：是否启用稀疏检索路径。
+  - 生效：关闭后不会触发 BM25 检索。
+- `retrieval.sparse.backend`
+  - 功能：稀疏后端类型。
+  - 生效：当前仅支持 `fts5`。
+- `retrieval.sparse.lazy_load`
+  - 功能：是否懒加载索引连接。
+  - 生效：开启后首次命中稀疏检索时才加载。
+- `retrieval.sparse.mode`
+  - 功能：稀疏检索模式（`auto/fallback_only/hybrid`）。
+  - 生效：控制 embedding 正常/异常时是否启用 BM25。
+- `retrieval.sparse.tokenizer_mode`
+  - 功能：分词模式（`jieba/mixed/char_2gram`）。
+  - 生效：FTS MATCH 查询构造时使用。
+- `retrieval.sparse.jieba_user_dict`
+  - 功能：jieba 用户词典路径。
+  - 生效：`tokenizer_mode` 包含 jieba 时加载。
+- `retrieval.sparse.char_ngram_n`
+  - 功能：字符 n-gram 的 n。
+  - 生效：`char_2gram`/`mixed` 分词路径。
+- `retrieval.sparse.candidate_k`
+  - 功能：稀疏检索候选上限。
+  - 生效：BM25 召回数量的默认上限。
+- `retrieval.sparse.max_doc_len`
+  - 功能：BM25 返回内容最大长度。
+  - 生效：返回段落内容截断长度。
+- `retrieval.sparse.enable_ngram_fallback_index`
+  - 功能：是否启用 ngram 倒排回退索引。
+  - 生效：FTS 未命中时优先走 `paragraph_ngrams` 倒排召回，避免 LIKE 全表扫描。
+- `retrieval.sparse.enable_like_fallback`
+  - 功能：是否启用 LIKE 全表扫描兜底。
+  - 生效：仅在 ngram 回退为空时触发；默认关闭以降低扫描开销。
+- `retrieval.sparse.enable_relation_sparse_fallback`
+  - 功能：是否启用关系通道的稀疏回退。
+  - 生效：在 relation-only / dual-path 的关系分支按 `auto/fallback_only/hybrid` 决策触发。
+- `retrieval.sparse.relation_candidate_k`
+  - 功能：关系稀疏检索候选上限。
+  - 生效：关系 BM25 路每次召回候选数量上限。
+- `retrieval.sparse.relation_max_doc_len`
+  - 功能：关系稀疏检索返回内容最大长度。
+  - 生效：关系内容（subject/predicate/object 拼接）截断长度。
+- `retrieval.sparse.unload_on_disable`
+  - 功能：插件关闭时是否卸载稀疏检索连接。
+  - 生效：`on_disable` 阶段执行卸载。
+- `retrieval.sparse.shrink_memory_on_unload`
+  - 功能：卸载时是否调用 SQLite `shrink_memory`。
+  - 生效：用于释放连接缓存占用。
+
+### 稀疏检索触发规则（DualPath 实现细节）
+
+- `sparse.mode = auto`
+  - 触发条件（满足任一）：
+    - embedding 生成失败或非法（空/NaN/Inf）
+    - 向量候选为空
+    - 向量最高分 `< 0.45`
+- `sparse.mode = fallback_only`
+  - 仅在 embedding 不可用时触发 sparse。
+- `sparse.mode = hybrid`
+  - 总是启用 sparse；若 embedding 同时可用，则并行形成双候选路。
+- 额外约束：
+  - 候选数会受 `retrieval.temporal.max_scan` 二次裁剪（时序检索模式）。
+
+### 稀疏回退链路（段落）
+
+- 查询 token 构造：最多取前 64 个 token，按 `OR` 组装 FTS `MATCH`。
+- 主路径：`FTS5 bm25`。
+- FTS miss 后：
+  - 若 `enable_ngram_fallback_index=true`：走 `paragraph_ngrams` 倒排召回（优先）。
+  - 若仍为空且 `enable_like_fallback=true`：才走 LIKE 子串扫描兜底。
+- 冷启动成本：
+  - 首次 `ensure_loaded()` 可能触发 `paragraphs_fts/relations_fts/paragraph_ngrams` 的 schema 检查与回填。
+
+### `[retrieval.fusion]` 融合
+
+- `retrieval.fusion.method`
+  - 功能：融合方法（默认 `weighted_rrf`）。
+  - 生效：段落向量召回与 BM25 候选融合策略。
+- `retrieval.fusion.rrf_k`
+  - 功能：RRF 平滑参数。
+  - 生效：`1 / (rrf_k + rank)` 计算项。
+- `retrieval.fusion.vector_weight`
+  - 功能：向量路权重。
+  - 生效：weighted RRF 中向量候选贡献比例。
+- `retrieval.fusion.bm25_weight`
+  - 功能：BM25 路权重。
+  - 生效：weighted RRF 中稀疏候选贡献比例。
+- `retrieval.fusion.normalize_score`
+  - 功能：融合后是否做归一化。
+  - 生效：在阈值过滤前将分数标准化。
+- `retrieval.fusion.normalize_method`
+  - 功能：归一化方法。
+  - 生效：当前支持 `minmax`。
+
+### 融合实现细节
+
+- `fusion.method = weighted_rrf`
+  - 段落双路融合公式：`score = w_vec/(k+rank_vec) + w_bm25/(k+rank_sparse)`。
+  - 其中 `k = retrieval.fusion.rrf_k`。
+- 权重修正：
+  - `vector_weight + bm25_weight != 1` 时会自动归一化；
+  - 若二者都为 0，自动回退为 `0.7/0.3`。
+- 非 `weighted_rrf`：
+  - 当前实现会退化为“拼接后按分数排序”的 legacy 行为。
+- `normalize_score=true` 且 `normalize_method=minmax`：
+  - 若分数全相同，归一化后统一为 `1.0`。
 
 ### `[retrieval.temporal]` 时序检索
 

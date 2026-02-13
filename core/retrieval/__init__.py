@@ -6,6 +6,7 @@ from .dual_path import (
     RetrievalResult,
     DualPathRetrieverConfig,
     TemporalQueryOptions,
+    FusionConfig,
 )
 from .pagerank import (
     PersonalizedPageRank,
@@ -17,6 +18,10 @@ from .threshold import (
     ThresholdMethod,
     ThresholdConfig,
 )
+from .sparse_bm25 import (
+    SparseBM25Index,
+    SparseBM25Config,
+)
 
 __all__ = [
     # DualPathRetriever
@@ -25,6 +30,7 @@ __all__ = [
     "RetrievalResult",
     "DualPathRetrieverConfig",
     "TemporalQueryOptions",
+    "FusionConfig",
     # PersonalizedPageRank
     "PersonalizedPageRank",
     "PageRankConfig",
@@ -33,4 +39,7 @@ __all__ = [
     "DynamicThresholdFilter",
     "ThresholdMethod",
     "ThresholdConfig",
+    # Sparse BM25
+    "SparseBM25Index",
+    "SparseBM25Config",
 ]

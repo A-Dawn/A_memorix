@@ -22,6 +22,8 @@ from ...core import (
     DynamicThresholdFilter,
     ThresholdMethod,
     ThresholdConfig,
+    SparseBM25Config,
+    FusionConfig,
 )
 from ...core.utils.time_parser import parse_query_time_range
 
@@ -55,6 +57,7 @@ class QueryCommand(BaseCommand):
         self.graph_store = self.plugin_config.get("graph_store")
         self.metadata_store = self.plugin_config.get("metadata_store")
         self.embedding_manager = self.plugin_config.get("embedding_manager")
+        self.sparse_index = self.plugin_config.get("sparse_index")
 
         logger.info(f"  从 plugin_config 获取: vector_store={self.vector_store is not None}, "
                    f"graph_store={self.graph_store is not None}, "
@@ -80,6 +83,7 @@ class QueryCommand(BaseCommand):
                     self.graph_store = self.graph_store or instances.get("graph_store")
                     self.metadata_store = self.metadata_store or instances.get("metadata_store")
                     self.embedding_manager = self.embedding_manager or instances.get("embedding_manager")
+                    self.sparse_index = self.sparse_index or instances.get("sparse_index")
                     
                     logger.info(f"  兜底后: vector_store={self.vector_store is not None}, "
                                f"graph_store={self.graph_store is not None}, "
@@ -127,6 +131,22 @@ class QueryCommand(BaseCommand):
                 return
 
             # 创建检索器配置
+            sparse_cfg_raw = self.get_config("retrieval.sparse", {}) or {}
+            if not isinstance(sparse_cfg_raw, dict):
+                sparse_cfg_raw = {}
+            fusion_cfg_raw = self.get_config("retrieval.fusion", {}) or {}
+            if not isinstance(fusion_cfg_raw, dict):
+                fusion_cfg_raw = {}
+            try:
+                sparse_cfg = SparseBM25Config(**sparse_cfg_raw)
+            except Exception as e:
+                logger.warning(f"{self.log_prefix} sparse 配置非法，回退默认: {e}")
+                sparse_cfg = SparseBM25Config()
+            try:
+                fusion_cfg = FusionConfig(**fusion_cfg_raw)
+            except Exception as e:
+                logger.warning(f"{self.log_prefix} fusion 配置非法，回退默认: {e}")
+                fusion_cfg = FusionConfig()
             config = DualPathRetrieverConfig(
                 top_k_paragraphs=self.get_config("retrieval.top_k_paragraphs", 20),
                 top_k_relations=self.get_config("retrieval.top_k_relations", 10),
@@ -138,6 +158,8 @@ class QueryCommand(BaseCommand):
                 enable_parallel=self.get_config("retrieval.enable_parallel", True),
                 retrieval_strategy=RetrievalStrategy.DUAL_PATH,
                 debug=self.debug_enabled,
+                sparse=sparse_cfg,
+                fusion=fusion_cfg,
             )
 
             # 创建检索器
@@ -146,6 +168,7 @@ class QueryCommand(BaseCommand):
                 graph_store=self.graph_store,
                 metadata_store=self.metadata_store,
                 embedding_manager=self.embedding_manager,
+                sparse_index=self.sparse_index,
                 config=config,
             )
 
@@ -512,6 +535,7 @@ class QueryCommand(BaseCommand):
                 "关系数": self.metadata_store.count_relations() if self.metadata_store else 0,
                 "实体数": self.metadata_store.count_entities() if self.metadata_store else 0,
             },
+            "sparse": self.sparse_index.stats() if self.sparse_index else None,
         }
         
         # 获取知识类型分布
@@ -545,6 +569,17 @@ class QueryCommand(BaseCommand):
             f"  - 关系数: {stats['metadata_store']['关系数']}",
             f"  - 实体数: {stats['metadata_store']['实体数']}",
         ]
+
+        sparse_stats = stats.get("sparse")
+        if sparse_stats:
+            lines.extend([
+                "",
+                "🧩 稀疏检索:",
+                f"  - 启用: {'是' if sparse_stats.get('enabled') else '否'}",
+                f"  - 已加载: {'是' if sparse_stats.get('loaded') else '否'}",
+                f"  - Tokenizer: {sparse_stats.get('tokenizer_mode', 'N/A')}",
+                f"  - FTS文档数: {sparse_stats.get('doc_count', 0)}",
+            ])
         
         # 添加类型分布
         if type_distribution:

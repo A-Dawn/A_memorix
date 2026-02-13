@@ -35,6 +35,9 @@ from .core import (
     MetadataStore,
     EmbeddingAPIAdapter,
     create_embedding_api_adapter,
+    SparseBM25Index,
+    SparseBM25Config,
+    FusionConfig,
 )
 
 logger = get_logger("A_Memorix")
@@ -69,7 +72,7 @@ class A_MemorixPlugin(BasePlugin):
     plugin_author = "A_Dawn"
     enable_plugin = False  # 默认禁用，需要在config.toml中启用
     dependencies: list[str] = []
-    python_dependencies: list[str] = ["numpy", "scipy", "nest-asyncio", "faiss-cpu", "fastapi", "uvicorn", "pydantic"]  # 插件所需Python依赖
+    python_dependencies: list[str] = ["numpy", "scipy", "nest-asyncio", "faiss-cpu", "fastapi", "uvicorn", "pydantic", "jieba"]  # 插件所需Python依赖
     config_file_name: str = "config.toml"
 
     # 配置节描述
@@ -201,6 +204,40 @@ class A_MemorixPlugin(BasePlugin):
                     "max_scan": 1000,
                 },
                 description="时序检索配置"
+            ),
+            "sparse": ConfigField(
+                type=dict,
+                default={
+                    "enabled": True,
+                    "backend": "fts5",
+                    "lazy_load": True,
+                    "mode": "auto",
+                    "tokenizer_mode": "jieba",
+                    "jieba_user_dict": "",
+                    "char_ngram_n": 2,
+                    "candidate_k": 80,
+                    "max_doc_len": 2000,
+                    "enable_ngram_fallback_index": True,
+                    "enable_like_fallback": False,
+                    "enable_relation_sparse_fallback": True,
+                    "relation_candidate_k": 60,
+                    "relation_max_doc_len": 512,
+                    "unload_on_disable": True,
+                    "shrink_memory_on_unload": True,
+                },
+                description="稀疏检索配置（FTS5 + BM25）"
+            ),
+            "fusion": ConfigField(
+                type=dict,
+                default={
+                    "method": "weighted_rrf",
+                    "rrf_k": 60,
+                    "vector_weight": 0.7,
+                    "bm25_weight": 0.3,
+                    "normalize_score": True,
+                    "normalize_method": "minmax",
+                },
+                description="检索融合配置"
             ),
         },
         "threshold": {
@@ -369,6 +406,7 @@ class A_MemorixPlugin(BasePlugin):
         self.graph_store: Optional[GraphStore] = None
         self.metadata_store: Optional[MetadataStore] = None
         self.embedding_manager: Optional[EmbeddingAPIAdapter] = None
+        self.sparse_index: Optional[SparseBM25Index] = None
 
         # 插件配置字典（传递给组件）
         self._plugin_config: dict = {}
@@ -797,6 +835,17 @@ class A_MemorixPlugin(BasePlugin):
             except Exception as e:
                 logger.error(f"关闭 A_Memorix 可视化服务器失败: {e}")
 
+        # 卸载稀疏检索组件（释放连接与缓存）
+        if self.sparse_index:
+            try:
+                sparse_cfg = self.get_config("retrieval.sparse", {}) or {}
+                unload_on_disable = bool(sparse_cfg.get("unload_on_disable", True)) if isinstance(sparse_cfg, dict) else True
+                if unload_on_disable:
+                    self.sparse_index.unload()
+                    logger.info("稀疏检索组件已卸载")
+            except Exception as e:
+                logger.error(f"卸载稀疏检索组件失败: {e}")
+
         # 关闭存储组件
         if self.metadata_store:
             try:
@@ -859,6 +908,7 @@ class A_MemorixPlugin(BasePlugin):
             "graph_store": self.graph_store,
             "metadata_store": self.metadata_store,
             "embedding_manager": self.embedding_manager,
+            "sparse_index": self.sparse_index,
         }
         
         # 同时更新私有配置和主配置，确保命令可以通过其获取实例
@@ -887,11 +937,13 @@ class A_MemorixPlugin(BasePlugin):
                 "graph_store": instance.graph_store,
                 "metadata_store": instance.metadata_store,
                 "embedding_manager": instance.embedding_manager,
+                "sparse_index": instance.sparse_index,
             }
             logger.info(f"  从全局实例获取: vector_store={result['vector_store'] is not None}, "
                        f"graph_store={result['graph_store'] is not None}, "
                        f"metadata_store={result['metadata_store'] is not None}, "
-                       f"embedding_manager={result['embedding_manager'] is not None}")
+                       f"embedding_manager={result['embedding_manager'] is not None}, "
+                       f"sparse_index={result['sparse_index'] is not None}")
             return result
         
         # 如果单例不存在，尝试从 PluginManager 获取
@@ -907,11 +959,13 @@ class A_MemorixPlugin(BasePlugin):
                     "graph_store": getattr(plugin, "graph_store"),
                     "metadata_store": getattr(plugin, "metadata_store"),
                     "embedding_manager": getattr(plugin, "embedding_manager"),
+                    "sparse_index": getattr(plugin, "sparse_index", None),
                 }
                 logger.info(f"  从 PluginManager 获取: vector_store={result['vector_store'] is not None}, "
                            f"graph_store={result['graph_store'] is not None}, "
                            f"metadata_store={result['metadata_store'] is not None}, "
-                           f"embedding_manager={result['embedding_manager'] is not None}")
+                           f"embedding_manager={result['embedding_manager'] is not None}, "
+                           f"sparse_index={result['sparse_index'] is not None}")
                 return result
         except Exception as e:
             logger.error(f"通过 PluginManager 获取存储实例失败: {e}")
@@ -996,6 +1050,29 @@ class A_MemorixPlugin(BasePlugin):
         self.metadata_store = MetadataStore(data_dir=data_dir / "metadata")
         self.metadata_store.connect()
         logger.info("元数据存储初始化完成")
+
+        # 初始化稀疏检索组件（懒加载，不立即装载索引）
+        sparse_cfg_raw = self.get_config("retrieval.sparse", {}) or {}
+        if not isinstance(sparse_cfg_raw, dict):
+            sparse_cfg_raw = {}
+        try:
+            sparse_cfg = SparseBM25Config(**sparse_cfg_raw)
+        except Exception as e:
+            logger.warning(f"sparse 配置非法，回退默认配置: {e}")
+            sparse_cfg = SparseBM25Config()
+        self.sparse_index = SparseBM25Index(
+            metadata_store=self.metadata_store,
+            config=sparse_cfg,
+        )
+        logger.info(
+            "稀疏检索组件初始化完成: enabled=%s, lazy_load=%s, mode=%s, tokenizer=%s",
+            sparse_cfg.enabled,
+            sparse_cfg.lazy_load,
+            sparse_cfg.mode,
+            sparse_cfg.tokenizer_mode,
+        )
+        if sparse_cfg.enabled and not sparse_cfg.lazy_load:
+            self.sparse_index.ensure_loaded()
 
         # 加载现有数据（如果存在）
         if self.vector_store.has_data():

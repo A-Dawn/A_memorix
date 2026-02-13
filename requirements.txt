@@ -37,3 +37,6 @@ pydantic>=2.0.0
 # UI 交互
 rich>=14.0.0
 tenacity>=8.0.0
+
+# 稀疏检索中文分词（可选，未安装时自动回退 char n-gram）
+jieba>=0.42.1
