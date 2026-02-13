@@ -152,6 +152,126 @@
           }
         },
         "description": "时序检索配置"
+      },
+      "sparse": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "backend": {
+            "type": "string",
+            "default": "fts5",
+            "enum": [
+              "fts5"
+            ]
+          },
+          "lazy_load": {
+            "type": "boolean",
+            "default": true
+          },
+          "mode": {
+            "type": "string",
+            "default": "auto",
+            "enum": [
+              "auto",
+              "fallback_only",
+              "hybrid"
+            ]
+          },
+          "tokenizer_mode": {
+            "type": "string",
+            "default": "jieba",
+            "enum": [
+              "jieba",
+              "mixed",
+              "char_2gram"
+            ]
+          },
+          "jieba_user_dict": {
+            "type": "string",
+            "default": ""
+          },
+          "char_ngram_n": {
+            "type": "integer",
+            "default": 2
+          },
+          "candidate_k": {
+            "type": "integer",
+            "default": 80
+          },
+          "max_doc_len": {
+            "type": "integer",
+            "default": 2000
+          },
+          "enable_ngram_fallback_index": {
+            "type": "boolean",
+            "default": true
+          },
+          "enable_like_fallback": {
+            "type": "boolean",
+            "default": false
+          },
+          "enable_relation_sparse_fallback": {
+            "type": "boolean",
+            "default": true
+          },
+          "relation_candidate_k": {
+            "type": "integer",
+            "default": 60
+          },
+          "relation_max_doc_len": {
+            "type": "integer",
+            "default": 512
+          },
+          "unload_on_disable": {
+            "type": "boolean",
+            "default": true
+          },
+          "shrink_memory_on_unload": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "description": "稀疏检索配置（FTS5 + BM25）"
+      },
+      "fusion": {
+        "type": "object",
+        "properties": {
+          "method": {
+            "type": "string",
+            "default": "weighted_rrf",
+            "enum": [
+              "weighted_rrf",
+              "alpha_legacy"
+            ]
+          },
+          "rrf_k": {
+            "type": "integer",
+            "default": 60
+          },
+          "vector_weight": {
+            "type": "number",
+            "default": 0.7
+          },
+          "bm25_weight": {
+            "type": "number",
+            "default": 0.3
+          },
+          "normalize_score": {
+            "type": "boolean",
+            "default": true
+          },
+          "normalize_method": {
+            "type": "string",
+            "default": "minmax",
+            "enum": [
+              "minmax"
+            ]
+          }
+        },
+        "description": "检索融合配置"
       }
     },
     "threshold": {
