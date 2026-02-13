@@ -22,6 +22,7 @@
 
 ## 📑 文档索引
 
+- [⚡ 快速入门（5分钟上手）](QUICK_START.md)
 - [📘 配置参数详解（config.toml）](CONFIG_REFERENCE.md)
 - [📗 导入指南与最佳实践](IMPORT_GUIDE.md)
 - [📝 更新日志](CHANGELOG.md)
