@@ -505,8 +505,8 @@ class ImportCommand(BaseCommand):
             source_paragraph=source_paragraph, # 这里应该是 hash
         )
 
-        # 添加关系到图
-        self.graph_store.add_edges([(subject, obj)])
+        # 添加关系到图（写入 relation_hashes，确保删除/修剪可精确回溯）
+        self.graph_store.add_edges([(subject, obj)], relation_hashes=[hash_value])
 
         logger.debug(
             f"{self.log_prefix} 添加关系: {subject} {predicate} {obj}, "

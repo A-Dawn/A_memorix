@@ -373,7 +373,7 @@ class SummaryImporter:
                     confidence=1.0,
                     source_paragraph=summary
                 )
-                # 写入图数据库
-                self.graph_store.add_edges([(s, o)])
+                # 写入图数据库（写入 relation_hashes，确保后续可按关系精确修剪）
+                self.graph_store.add_edges([(s, o)], relation_hashes=[rel_hash])
                 
         logger.info(f"总结导入完成: hash={hash_value[:8]}")

@@ -199,7 +199,7 @@ class QueryCommand(BaseCommand):
         # 检查组件是否初始化
         if not self.retriever:
             error_msg = "❌ 查询组件未初始化"
-            return False, error_msg, 0
+            return False, error_msg, 1
 
         # 获取匹配的参数
         mode = self.matched_groups.get("mode", "search")
@@ -208,7 +208,7 @@ class QueryCommand(BaseCommand):
         # 如果没有内容，显示帮助
         if not content and mode not in ["stats", "help"]:
             help_msg = self._get_help_message()
-            return True, help_msg, 0
+            return True, help_msg, 1
 
         logger.info(f"{self.log_prefix} 执行查询: mode={mode}, content='{content}'")
 
@@ -229,12 +229,19 @@ class QueryCommand(BaseCommand):
             else:
                 success, result = False, f"❌ 未知的查询模式: {mode}"
 
-            return success, result, 0
+            # 显式回消息到当前对话流，避免仅返回结果导致输出丢失或落到错误链路。
+            if result:
+                try:
+                    await self.send_text(result)
+                except Exception as send_err:
+                    logger.warning(f"{self.log_prefix} 发送查询结果失败: {send_err}")
+
+            return success, result, 1
 
         except Exception as e:
             error_msg = f"❌ 查询失败: {str(e)}"
             logger.error(f"{self.log_prefix} {error_msg}")
-            return False, error_msg, 0
+            return False, error_msg, 1
 
     async def _query_search(self, query: str) -> Tuple[bool, str]:
         """执行检索查询
