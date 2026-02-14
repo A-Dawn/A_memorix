@@ -12,6 +12,7 @@ from typing import Optional, Union, List, Dict, Any, Tuple
 
 from src.common.logger import get_logger
 from ..utils.hash import compute_hash, normalize_text
+from ..utils.time_parser import normalize_time_meta
 
 logger = get_logger("A_Memorix.MetadataStore")
 
@@ -48,6 +49,7 @@ class MetadataStore:
         self.db_name = db_name
         self._conn: Optional[sqlite3.Connection] = None
         self._is_initialized = False
+        self._db_path: Optional[Path] = None
 
         logger.info(f"MetadataStore 初始化: db={db_name}")
 
@@ -68,6 +70,7 @@ class MetadataStore:
         data_dir.mkdir(parents=True, exist_ok=True)
 
         db_path = data_dir / self.db_name
+        self._db_path = db_path
 
         # 连接数据库
         self._conn = sqlite3.connect(
@@ -91,6 +94,12 @@ class MetadataStore:
             self._initialize_tables()
             self._is_initialized = True
 
+        # 初始化 FTS schema（幂等）
+        try:
+            self.ensure_fts_schema()
+        except Exception as e:
+            logger.warning(f"初始化 FTS schema 失败，将跳过 BM25 检索: {e}")
+
     def close(self) -> None:
         """关闭数据库连接"""
         if self._conn:
@@ -113,6 +122,11 @@ class MetadataStore:
                 metadata TEXT,
                 source TEXT,
                 word_count INTEGER,
+                event_time REAL,
+                event_time_start REAL,
+                event_time_end REAL,
+                time_granularity TEXT,
+                time_confidence REAL DEFAULT 1.0,
                 knowledge_type TEXT DEFAULT 'mixed'
             )
         """)
@@ -197,7 +211,6 @@ class MetadataStore:
             CREATE INDEX IF NOT EXISTS idx_paragraphs_source
             ON paragraphs(source)
         """)
-
         self._conn.commit()
         logger.debug("数据库表结构初始化完成")
         
@@ -223,6 +236,27 @@ class MetadataStore:
                 logger.info("Schema迁移完成：已添加knowledge_type字段")
             except sqlite3.OperationalError as e:
                 logger.warning(f"Schema迁移失败（可能已存在）: {e}")
+
+        # 问题2: 时序字段迁移
+        cursor.execute("PRAGMA table_info(paragraphs)")
+        columns = [row[1] for row in cursor.fetchall()]
+        temporal_columns = {
+            "event_time": "ALTER TABLE paragraphs ADD COLUMN event_time REAL",
+            "event_time_start": "ALTER TABLE paragraphs ADD COLUMN event_time_start REAL",
+            "event_time_end": "ALTER TABLE paragraphs ADD COLUMN event_time_end REAL",
+            "time_granularity": "ALTER TABLE paragraphs ADD COLUMN time_granularity TEXT",
+            "time_confidence": "ALTER TABLE paragraphs ADD COLUMN time_confidence REAL DEFAULT 1.0",
+        }
+        for col, sql in temporal_columns.items():
+            if col not in columns:
+                try:
+                    cursor.execute(sql)
+                except sqlite3.OperationalError as e:
+                    logger.warning(f"Schema迁移失败（{col}）: {e}")
+
+        # 时序索引（仅在列存在时创建，兼容旧库迁移）
+        self._create_temporal_indexes_if_ready()
+        self._conn.commit()
 
         # 检查paragraphs表是否有is_permanent列
         cursor.execute("PRAGMA table_info(paragraphs)")
@@ -334,6 +368,550 @@ class MetadataStore:
         except Exception as e:
             logger.error(f"数据自动修复失败: {e}")
 
+    def _create_temporal_indexes_if_ready(self) -> None:
+        """
+        仅当时序列已存在时创建索引。
+
+        旧库升级时，_initialize_tables 不能提前对不存在的列建索引；
+        因此统一在迁移阶段按列存在性安全创建。
+        """
+        cursor = self._conn.cursor()
+        cursor.execute("PRAGMA table_info(paragraphs)")
+        columns = {row[1] for row in cursor.fetchall()}
+
+        if "event_time" in columns:
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_paragraphs_event_time ON paragraphs(event_time)"
+            )
+        if "event_time_start" in columns:
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_paragraphs_event_start ON paragraphs(event_time_start)"
+            )
+        if "event_time_end" in columns:
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_paragraphs_event_end ON paragraphs(event_time_end)"
+            )
+
+    def _resolve_conn(self, conn: Optional[sqlite3.Connection] = None) -> sqlite3.Connection:
+        """解析可用连接。"""
+        resolved = conn or self._conn
+        if resolved is None:
+            raise RuntimeError("MetadataStore 未连接数据库")
+        return resolved
+
+    def get_db_path(self) -> Path:
+        """获取 SQLite 数据库文件路径。"""
+        if self._db_path is not None:
+            return self._db_path
+        if self.data_dir is None:
+            raise RuntimeError("MetadataStore 未配置 data_dir")
+        return Path(self.data_dir) / self.db_name
+
+    def ensure_fts_schema(self, conn: Optional[sqlite3.Connection] = None) -> bool:
+        """
+        确保 FTS5 schema 存在（幂等）。
+
+        采用 external-content 方式，不在 FTS 表重复存储正文。
+        """
+        c = self._resolve_conn(conn)
+        cur = c.cursor()
+        try:
+            cur.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS paragraphs_fts
+                USING fts5(
+                    content,
+                    content='paragraphs',
+                    content_rowid='rowid',
+                    tokenize='unicode61'
+                )
+            """)
+
+            # insert trigger
+            cur.execute("""
+                CREATE TRIGGER IF NOT EXISTS paragraphs_ai
+                AFTER INSERT ON paragraphs
+                BEGIN
+                    INSERT INTO paragraphs_fts(rowid, content)
+                    VALUES (new.rowid, new.content);
+                END
+            """)
+
+            # delete trigger
+            cur.execute("""
+                CREATE TRIGGER IF NOT EXISTS paragraphs_ad
+                AFTER DELETE ON paragraphs
+                BEGIN
+                    INSERT INTO paragraphs_fts(paragraphs_fts, rowid, content)
+                    VALUES ('delete', old.rowid, old.content);
+                END
+            """)
+
+            # update trigger
+            cur.execute("""
+                CREATE TRIGGER IF NOT EXISTS paragraphs_au
+                AFTER UPDATE OF content ON paragraphs
+                BEGIN
+                    INSERT INTO paragraphs_fts(paragraphs_fts, rowid, content)
+                    VALUES ('delete', old.rowid, old.content);
+                    INSERT INTO paragraphs_fts(rowid, content)
+                    VALUES (new.rowid, new.content);
+                END
+            """)
+            c.commit()
+            return True
+        except sqlite3.OperationalError as e:
+            logger.warning(f"FTS5 schema 创建失败（可能不支持 FTS5）: {e}")
+            c.rollback()
+            return False
+
+    def ensure_fts_backfilled(self, conn: Optional[sqlite3.Connection] = None) -> bool:
+        """
+        确保 FTS 索引已回填。
+
+        当历史数据存在但 FTS 表为空/不一致时执行 rebuild。
+        """
+        c = self._resolve_conn(conn)
+        cur = c.cursor()
+        try:
+            cur.execute("SELECT COUNT(1) AS n FROM paragraphs")
+            para_count = int(cur.fetchone()[0])
+            cur.execute("SELECT COUNT(1) AS n FROM paragraphs_fts")
+            fts_count = int(cur.fetchone()[0])
+
+            if para_count > 0 and fts_count != para_count:
+                cur.execute("INSERT INTO paragraphs_fts(paragraphs_fts) VALUES ('rebuild')")
+                c.commit()
+                logger.info(f"FTS 回填完成: paragraphs={para_count}, fts={para_count}")
+            return True
+        except sqlite3.OperationalError as e:
+            logger.warning(f"FTS 回填失败: {e}")
+            c.rollback()
+            return False
+
+    def ensure_relations_fts_schema(self, conn: Optional[sqlite3.Connection] = None) -> bool:
+        """
+        确保关系 FTS5 schema 存在（幂等）。
+
+        注意：relations 表没有 content 列，因此使用独立 FTS 表并通过触发器同步。
+        """
+        c = self._resolve_conn(conn)
+        cur = c.cursor()
+        try:
+            cur.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS relations_fts
+                USING fts5(
+                    relation_hash UNINDEXED,
+                    content,
+                    tokenize='unicode61'
+                )
+            """)
+
+            cur.execute("""
+                CREATE TRIGGER IF NOT EXISTS relations_ai
+                AFTER INSERT ON relations
+                BEGIN
+                    INSERT INTO relations_fts(relation_hash, content)
+                    VALUES (
+                        new.hash,
+                        COALESCE(new.subject, '') || ' ' || COALESCE(new.predicate, '') || ' ' || COALESCE(new.object, '')
+                    );
+                END
+            """)
+
+            cur.execute("""
+                CREATE TRIGGER IF NOT EXISTS relations_ad
+                AFTER DELETE ON relations
+                BEGIN
+                    DELETE FROM relations_fts WHERE relation_hash = old.hash;
+                END
+            """)
+
+            cur.execute("""
+                CREATE TRIGGER IF NOT EXISTS relations_au
+                AFTER UPDATE OF subject, predicate, object ON relations
+                BEGIN
+                    DELETE FROM relations_fts WHERE relation_hash = new.hash;
+                    INSERT INTO relations_fts(relation_hash, content)
+                    VALUES (
+                        new.hash,
+                        COALESCE(new.subject, '') || ' ' || COALESCE(new.predicate, '') || ' ' || COALESCE(new.object, '')
+                    );
+                END
+            """)
+            c.commit()
+            return True
+        except sqlite3.OperationalError as e:
+            logger.warning(f"relations FTS5 schema 创建失败（可能不支持 FTS5）: {e}")
+            c.rollback()
+            return False
+
+    def ensure_relations_fts_backfilled(self, conn: Optional[sqlite3.Connection] = None) -> bool:
+        """确保关系 FTS 索引已回填。"""
+        c = self._resolve_conn(conn)
+        cur = c.cursor()
+        try:
+            cur.execute("SELECT COUNT(1) AS n FROM relations")
+            rel_count = int(cur.fetchone()[0])
+            cur.execute("SELECT COUNT(1) AS n FROM relations_fts")
+            fts_count = int(cur.fetchone()[0])
+
+            if rel_count != fts_count:
+                cur.execute("DELETE FROM relations_fts")
+                cur.execute("""
+                    INSERT INTO relations_fts(relation_hash, content)
+                    SELECT
+                        r.hash,
+                        COALESCE(r.subject, '') || ' ' || COALESCE(r.predicate, '') || ' ' || COALESCE(r.object, '')
+                    FROM relations r
+                """)
+                c.commit()
+                logger.info(f"relations FTS 回填完成: relations={rel_count}, fts={rel_count}")
+            return True
+        except sqlite3.OperationalError as e:
+            logger.warning(f"relations FTS 回填失败: {e}")
+            c.rollback()
+            return False
+
+    def ensure_paragraph_ngram_schema(self, conn: Optional[sqlite3.Connection] = None) -> bool:
+        """确保段落 ngram 倒排表存在。"""
+        c = self._resolve_conn(conn)
+        cur = c.cursor()
+        try:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS paragraph_ngrams (
+                    term TEXT NOT NULL,
+                    paragraph_hash TEXT NOT NULL,
+                    PRIMARY KEY (term, paragraph_hash),
+                    FOREIGN KEY (paragraph_hash) REFERENCES paragraphs(hash) ON DELETE CASCADE
+                )
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_paragraph_ngrams_hash
+                ON paragraph_ngrams(paragraph_hash)
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS paragraph_ngram_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                )
+            """)
+            c.commit()
+            return True
+        except sqlite3.OperationalError as e:
+            logger.warning(f"paragraph ngram schema 创建失败: {e}")
+            c.rollback()
+            return False
+
+    @staticmethod
+    def _char_ngrams(text: str, n: int) -> List[str]:
+        compact = "".join(str(text or "").lower().split())
+        if not compact:
+            return []
+        if len(compact) < n:
+            return [compact]
+        return [compact[i : i + n] for i in range(0, len(compact) - n + 1)]
+
+    def ensure_paragraph_ngram_backfilled(
+        self,
+        n: int = 2,
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> bool:
+        """
+        确保段落 ngram 倒排索引已回填。
+
+        仅在 n 变化或文档数量变化时重建，避免每次加载都全量重建。
+        """
+        c = self._resolve_conn(conn)
+        cur = c.cursor()
+        n = max(1, int(n))
+        try:
+            cur.execute("SELECT value FROM paragraph_ngram_meta WHERE key='ngram_n'")
+            row = cur.fetchone()
+            current_n = int(row[0]) if row and row[0] is not None else None
+
+            cur.execute("SELECT COUNT(1) FROM paragraphs WHERE is_deleted IS NULL OR is_deleted = 0")
+            para_count = int(cur.fetchone()[0])
+            cur.execute("SELECT COUNT(DISTINCT paragraph_hash) FROM paragraph_ngrams")
+            indexed_docs = int(cur.fetchone()[0])
+
+            need_rebuild = (current_n != n) or (para_count != indexed_docs)
+            if not need_rebuild:
+                return True
+
+            cur.execute("DELETE FROM paragraph_ngrams")
+            cur.execute("""
+                SELECT hash, content
+                FROM paragraphs
+                WHERE is_deleted IS NULL OR is_deleted = 0
+            """)
+            rows = cur.fetchall()
+
+            batch: List[Tuple[str, str]] = []
+            batch_size = 2000
+            for row in rows:
+                p_hash = str(row["hash"])
+                terms = list(dict.fromkeys(self._char_ngrams(str(row["content"] or ""), n)))
+                for term in terms:
+                    batch.append((term, p_hash))
+                if len(batch) >= batch_size:
+                    cur.executemany(
+                        "INSERT OR IGNORE INTO paragraph_ngrams(term, paragraph_hash) VALUES (?, ?)",
+                        batch,
+                    )
+                    batch.clear()
+            if batch:
+                cur.executemany(
+                    "INSERT OR IGNORE INTO paragraph_ngrams(term, paragraph_hash) VALUES (?, ?)",
+                    batch,
+                )
+
+            cur.execute("""
+                INSERT INTO paragraph_ngram_meta(key, value) VALUES('ngram_n', ?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value
+            """, (str(n),))
+            cur.execute("""
+                INSERT INTO paragraph_ngram_meta(key, value) VALUES('paragraph_count', ?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value
+            """, (str(para_count),))
+            c.commit()
+            logger.info(f"paragraph ngram 回填完成: n={n}, paragraphs={para_count}")
+            return True
+        except Exception as e:
+            logger.warning(f"paragraph ngram 回填失败: {e}")
+            c.rollback()
+            return False
+
+    def fts_upsert_paragraph(
+        self,
+        paragraph_hash: str,
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> bool:
+        """
+        将段落写入（或覆盖）到 FTS 索引。
+        """
+        c = self._resolve_conn(conn)
+        cur = c.cursor()
+        try:
+            cur.execute(
+                "SELECT rowid, content FROM paragraphs WHERE hash = ?",
+                (paragraph_hash,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return False
+            rowid = int(row[0])
+            content = str(row[1] or "")
+            cur.execute(
+                "INSERT OR REPLACE INTO paragraphs_fts(rowid, content) VALUES (?, ?)",
+                (rowid, content),
+            )
+            c.commit()
+            return True
+        except sqlite3.OperationalError as e:
+            logger.warning(f"FTS upsert 失败: {e}")
+            c.rollback()
+            return False
+
+    def fts_delete_paragraph(
+        self,
+        paragraph_hash: str,
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> bool:
+        """
+        从 FTS 索引删除段落。
+        """
+        c = self._resolve_conn(conn)
+        cur = c.cursor()
+        try:
+            cur.execute(
+                "SELECT rowid, content FROM paragraphs WHERE hash = ?",
+                (paragraph_hash,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return False
+            rowid = int(row[0])
+            content = str(row[1] or "")
+            cur.execute(
+                "INSERT INTO paragraphs_fts(paragraphs_fts, rowid, content) VALUES ('delete', ?, ?)",
+                (rowid, content),
+            )
+            c.commit()
+            return True
+        except sqlite3.OperationalError as e:
+            logger.warning(f"FTS delete 失败: {e}")
+            c.rollback()
+            return False
+
+    def fts_search_bm25(
+        self,
+        match_query: str,
+        limit: int = 20,
+        max_doc_len: int = 2000,
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        使用 FTS5 + bm25 执行全文检索。
+        """
+        if not match_query.strip():
+            return []
+
+        c = self._resolve_conn(conn)
+        cur = c.cursor()
+        try:
+            cur.execute(
+                """
+                SELECT p.hash, p.content, bm25(paragraphs_fts) AS bm25_score
+                FROM paragraphs_fts
+                JOIN paragraphs p ON p.rowid = paragraphs_fts.rowid
+                WHERE paragraphs_fts MATCH ?
+                  AND (p.is_deleted IS NULL OR p.is_deleted = 0)
+                ORDER BY bm25_score ASC
+                LIMIT ?
+                """,
+                (match_query, max(1, int(limit))),
+            )
+            rows = cur.fetchall()
+            results: List[Dict[str, Any]] = []
+            for row in rows:
+                content = str(row["content"] or "")
+                if max_doc_len > 0:
+                    content = content[:max_doc_len]
+                results.append(
+                    {
+                        "hash": row["hash"],
+                        "content": content,
+                        "bm25_score": float(row["bm25_score"]),
+                    }
+                )
+            return results
+        except sqlite3.OperationalError as e:
+            logger.warning(f"FTS 查询失败: {e}")
+            return []
+
+    def fts_search_relations_bm25(
+        self,
+        match_query: str,
+        limit: int = 20,
+        max_doc_len: int = 512,
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> List[Dict[str, Any]]:
+        """使用 FTS5 + bm25 执行关系全文检索。"""
+        if not match_query.strip():
+            return []
+
+        c = self._resolve_conn(conn)
+        cur = c.cursor()
+        try:
+            cur.execute(
+                """
+                SELECT
+                    r.hash,
+                    r.subject,
+                    r.predicate,
+                    r.object,
+                    bm25(relations_fts) AS bm25_score
+                FROM relations_fts
+                JOIN relations r ON r.hash = relations_fts.relation_hash
+                WHERE relations_fts MATCH ?
+                ORDER BY bm25_score ASC
+                LIMIT ?
+                """,
+                (match_query, max(1, int(limit))),
+            )
+            rows = cur.fetchall()
+            out: List[Dict[str, Any]] = []
+            for row in rows:
+                content = f"{row['subject']} {row['predicate']} {row['object']}"
+                if max_doc_len > 0:
+                    content = content[:max_doc_len]
+                out.append(
+                    {
+                        "hash": row["hash"],
+                        "subject": row["subject"],
+                        "predicate": row["predicate"],
+                        "object": row["object"],
+                        "content": content,
+                        "bm25_score": float(row["bm25_score"]),
+                    }
+                )
+            return out
+        except sqlite3.OperationalError as e:
+            logger.warning(f"relations FTS 查询失败: {e}")
+            return []
+
+    def ngram_search_paragraphs(
+        self,
+        tokens: List[str],
+        limit: int = 20,
+        max_doc_len: int = 2000,
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> List[Dict[str, Any]]:
+        """按 ngram 倒排索引检索段落，避免 LIKE 全表扫描。"""
+        uniq = [t for t in dict.fromkeys([str(x).strip().lower() for x in tokens]) if t]
+        if not uniq:
+            return []
+
+        c = self._resolve_conn(conn)
+        cur = c.cursor()
+        placeholders = ",".join(["?"] * len(uniq))
+        try:
+            cur.execute(
+                f"""
+                SELECT
+                    p.hash,
+                    p.content,
+                    COUNT(*) AS hit_terms
+                FROM paragraph_ngrams ng
+                JOIN paragraphs p ON p.hash = ng.paragraph_hash
+                WHERE ng.term IN ({placeholders})
+                  AND (p.is_deleted IS NULL OR p.is_deleted = 0)
+                GROUP BY p.hash, p.content
+                ORDER BY hit_terms DESC
+                LIMIT ?
+                """,
+                tuple(uniq + [max(1, int(limit))]),
+            )
+            rows = cur.fetchall()
+            out: List[Dict[str, Any]] = []
+            token_count = max(1, len(uniq))
+            for row in rows:
+                hit_terms = int(row["hit_terms"])
+                score = float(hit_terms / token_count)
+                content = str(row["content"] or "")
+                if max_doc_len > 0:
+                    content = content[:max_doc_len]
+                out.append(
+                    {
+                        "hash": row["hash"],
+                        "content": content,
+                        "bm25_score": -score,
+                        "fallback_score": score,
+                    }
+                )
+            return out
+        except sqlite3.OperationalError as e:
+            logger.warning(f"ngram 倒排查询失败: {e}")
+            return []
+
+    def fts_doc_count(self, conn: Optional[sqlite3.Connection] = None) -> int:
+        """获取 FTS 文档数量。"""
+        c = self._resolve_conn(conn)
+        cur = c.cursor()
+        try:
+            cur.execute("SELECT COUNT(1) FROM paragraphs_fts")
+            return int(cur.fetchone()[0])
+        except sqlite3.OperationalError:
+            return 0
+
+    def shrink_memory(self, conn: Optional[sqlite3.Connection] = None) -> None:
+        """请求 SQLite 收缩当前连接缓存。"""
+        c = self._resolve_conn(conn)
+        try:
+            c.execute("PRAGMA shrink_memory")
+        except sqlite3.OperationalError:
+            pass
+
     def add_paragraph(
         self,
         content: str,
@@ -341,6 +919,7 @@ class MetadataStore:
         source: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         knowledge_type: str = "mixed",
+        time_meta: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         添加段落
@@ -351,6 +930,7 @@ class MetadataStore:
             source: 来源
             metadata: 额外元数据
             knowledge_type: 知识类型 (structured/narrative/factual/mixed)
+            time_meta: 时间元信息 (event_time/event_time_start/event_time_end/...)
 
         Returns:
             段落哈希值
@@ -360,13 +940,18 @@ class MetadataStore:
 
         now = datetime.now().timestamp()
         word_count = len(content_normalized.split())
+        normalized_time = normalize_time_meta(time_meta)
 
         cursor = self._conn.cursor()
         try:
             cursor.execute("""
                 INSERT INTO paragraphs
-                (hash, content, vector_index, created_at, updated_at, metadata, source, word_count, knowledge_type)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (
+                    hash, content, vector_index, created_at, updated_at, metadata, source, word_count,
+                    event_time, event_time_start, event_time_end, time_granularity, time_confidence,
+                    knowledge_type
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 hash_value,
                 content,
@@ -376,6 +961,11 @@ class MetadataStore:
                 pickle.dumps(metadata or {}),
                 source,
                 word_count,
+                normalized_time.get("event_time"),
+                normalized_time.get("event_time_start"),
+                normalized_time.get("event_time_end"),
+                normalized_time.get("time_granularity"),
+                normalized_time.get("time_confidence", 1.0),
                 knowledge_type,
             ))
             self._conn.commit()
@@ -634,6 +1224,115 @@ class MetadataStore:
         if row:
             return self._row_to_dict(row, "paragraph")
         return None
+
+    def update_paragraph_time_meta(
+        self,
+        paragraph_hash: str,
+        time_meta: Dict[str, Any],
+    ) -> bool:
+        """
+        更新段落时间元信息。
+        """
+        normalized = normalize_time_meta(time_meta)
+        if not normalized:
+            return False
+
+        updates: List[str] = []
+        params: List[Any] = []
+        for key in [
+            "event_time",
+            "event_time_start",
+            "event_time_end",
+            "time_granularity",
+            "time_confidence",
+        ]:
+            if key in normalized:
+                updates.append(f"{key} = ?")
+                params.append(normalized[key])
+
+        if not updates:
+            return False
+
+        updates.append("updated_at = ?")
+        params.append(datetime.now().timestamp())
+        params.append(paragraph_hash)
+
+        cursor = self._conn.cursor()
+        cursor.execute(
+            f"UPDATE paragraphs SET {', '.join(updates)} WHERE hash = ?",
+            tuple(params),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def query_paragraphs_temporal(
+        self,
+        start_ts: Optional[float] = None,
+        end_ts: Optional[float] = None,
+        person: Optional[str] = None,
+        source: Optional[str] = None,
+        limit: int = 100,
+        allow_created_fallback: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """
+        查询时序命中的段落（区间相交语义）。
+        """
+        if limit <= 0:
+            return []
+
+        effective_start = "COALESCE(p.event_time_start, p.event_time, p.event_time_end"
+        effective_end = "COALESCE(p.event_time_end, p.event_time, p.event_time_start"
+        if allow_created_fallback:
+            effective_start += ", p.created_at)"
+            effective_end += ", p.created_at)"
+        else:
+            effective_start += ")"
+            effective_end += ")"
+
+        conditions = ["(p.is_deleted IS NULL OR p.is_deleted = 0)"]
+        params: List[Any] = []
+
+        if source:
+            conditions.append("p.source = ?")
+            params.append(source)
+
+        if person:
+            conditions.append(
+                """
+                EXISTS (
+                    SELECT 1
+                    FROM paragraph_entities pe
+                    JOIN entities e ON e.hash = pe.entity_hash
+                    WHERE pe.paragraph_hash = p.hash
+                      AND LOWER(e.name) LIKE ?
+                )
+                """
+            )
+            params.append(f"%{str(person).strip().lower()}%")
+
+        if start_ts is not None and end_ts is not None:
+            conditions.append(f"({effective_end} >= ? AND {effective_start} <= ?)")
+            params.extend([start_ts, end_ts])
+        elif start_ts is not None:
+            conditions.append(f"({effective_end} >= ?)")
+            params.append(start_ts)
+        elif end_ts is not None:
+            conditions.append(f"({effective_start} <= ?)")
+            params.append(end_ts)
+
+        where_sql = " AND ".join(conditions)
+        sql = f"""
+            SELECT p.*
+            FROM paragraphs p
+            WHERE {where_sql}
+            ORDER BY {effective_end} DESC, p.updated_at DESC
+            LIMIT ?
+        """
+        params.append(limit)
+
+        cursor = self._conn.cursor()
+        cursor.execute(sql, tuple(params))
+        return [self._row_to_dict(row, "paragraph") for row in cursor.fetchall()]
 
     def get_entity(self, hash_value: str) -> Optional[Dict[str, Any]]:
         """

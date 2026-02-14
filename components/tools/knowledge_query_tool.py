@@ -18,10 +18,14 @@ from ...core import (
     DualPathRetriever,
     RetrievalStrategy,
     DualPathRetrieverConfig,
+    TemporalQueryOptions,
     DynamicThresholdFilter,
     ThresholdMethod,
     ThresholdConfig,
+    SparseBM25Config,
+    FusionConfig,
 )
+from ...core.utils.time_parser import parse_query_time_range
 
 logger = get_logger("A_Memorix.KnowledgeQueryTool")
 
@@ -46,9 +50,9 @@ class KnowledgeQueryTool(BaseTool):
         (
             "query_type",
             ToolParamType.STRING,
-            "查询类型：search(检索)、entity(实体)、relation(关系)、stats(统计)",
+            "查询类型：search(检索)、time(时序检索)、entity(实体)、relation(关系)、stats(统计)",
             True,
-            ["search", "entity", "relation", "stats"],
+            ["search", "time", "entity", "relation", "stats"],
         ),
         (
             "query",
@@ -60,7 +64,7 @@ class KnowledgeQueryTool(BaseTool):
         (
             "top_k",
             ToolParamType.INTEGER,
-            "返回结果数量（仅search模式）",
+            "返回结果数量（search/time模式）",
             False,
             None,
         ),
@@ -68,6 +72,34 @@ class KnowledgeQueryTool(BaseTool):
             "use_threshold",
             ToolParamType.BOOLEAN,
             "是否使用动态阈值过滤（仅search模式）",
+            False,
+            None,
+        ),
+        (
+            "time_from",
+            ToolParamType.STRING,
+            "开始时间（time模式，仅支持 YYYY/MM/DD 或 YYYY/MM/DD HH:mm；日期按 00:00 展开）",
+            False,
+            None,
+        ),
+        (
+            "time_to",
+            ToolParamType.STRING,
+            "结束时间（time模式，仅支持 YYYY/MM/DD 或 YYYY/MM/DD HH:mm；日期按 23:59 展开）",
+            False,
+            None,
+        ),
+        (
+            "person",
+            ToolParamType.STRING,
+            "人物过滤（time模式可选）",
+            False,
+            None,
+        ),
+        (
+            "source",
+            ToolParamType.STRING,
+            "来源过滤（time模式可选）",
             False,
             None,
         ),
@@ -85,6 +117,7 @@ class KnowledgeQueryTool(BaseTool):
         self.graph_store = self.plugin_config.get("graph_store")
         self.metadata_store = self.plugin_config.get("metadata_store")
         self.embedding_manager = self.plugin_config.get("embedding_manager")
+        self.sparse_index = self.plugin_config.get("sparse_index")
 
         # 初始化检索器
         self.retriever: Optional[DualPathRetriever] = None
@@ -113,6 +146,7 @@ class KnowledgeQueryTool(BaseTool):
             graph_store = self.graph_store
             metadata_store = self.metadata_store
             embedding_manager = self.embedding_manager
+            sparse_index = self.sparse_index
 
             # 兜底逻辑：如果配置中没有存储实例，尝试直接从插件系统获取
             # 使用 is not None 检查，因为空对象可能布尔值为 False
@@ -129,12 +163,14 @@ class KnowledgeQueryTool(BaseTool):
                     graph_store = graph_store or instances.get("graph_store")
                     metadata_store = metadata_store or instances.get("metadata_store")
                     embedding_manager = embedding_manager or instances.get("embedding_manager")
+                    sparse_index = sparse_index or instances.get("sparse_index")
                     
                     # 同步回实例属性
                     self.vector_store = vector_store
                     self.graph_store = graph_store
                     self.metadata_store = metadata_store
                     self.embedding_manager = embedding_manager
+                    self.sparse_index = sparse_index
 
 
             # 最终检查 (使用 is not None 而非布尔值，因为空对象可能为 False)
@@ -148,6 +184,22 @@ class KnowledgeQueryTool(BaseTool):
                 return
 
             # 创建检索器配置
+            sparse_cfg_raw = self.get_config("retrieval.sparse", {}) or {}
+            if not isinstance(sparse_cfg_raw, dict):
+                sparse_cfg_raw = {}
+            fusion_cfg_raw = self.get_config("retrieval.fusion", {}) or {}
+            if not isinstance(fusion_cfg_raw, dict):
+                fusion_cfg_raw = {}
+            try:
+                sparse_cfg = SparseBM25Config(**sparse_cfg_raw)
+            except Exception as e:
+                logger.warning(f"{self.log_prefix} sparse 配置非法，回退默认: {e}")
+                sparse_cfg = SparseBM25Config()
+            try:
+                fusion_cfg = FusionConfig(**fusion_cfg_raw)
+            except Exception as e:
+                logger.warning(f"{self.log_prefix} fusion 配置非法，回退默认: {e}")
+                fusion_cfg = FusionConfig()
             config = DualPathRetrieverConfig(
                 top_k_paragraphs=self.get_config("retrieval.top_k_paragraphs", 20),
                 top_k_relations=self.get_config("retrieval.top_k_relations", 10),
@@ -159,6 +211,8 @@ class KnowledgeQueryTool(BaseTool):
                 enable_parallel=self.get_config("retrieval.enable_parallel", True),
                 retrieval_strategy=RetrievalStrategy.DUAL_PATH,
                 debug=self.debug_enabled,
+                sparse=sparse_cfg,
+                fusion=fusion_cfg,
             )
 
             # 创建检索器
@@ -167,6 +221,7 @@ class KnowledgeQueryTool(BaseTool):
                 graph_store=self.graph_store,
                 metadata_store=self.metadata_store,
                 embedding_manager=self.embedding_manager,
+                sparse_index=self.sparse_index,
                 config=config,
             )
 
@@ -211,14 +266,35 @@ class KnowledgeQueryTool(BaseTool):
             }
 
         # 解析参数
-        query_type = function_args.get("query_type", "search")
+        query_type = str(function_args.get("query_type", "search") or "search").strip().lower()
         query = function_args.get("query", "")
-        top_k = function_args.get("top_k", 10)
+        top_k_raw = function_args.get("top_k")
+        default_top_k = (
+            int(self.get_config("retrieval.temporal.default_top_k", 10))
+            if query_type == "time"
+            else 10
+        )
+        if top_k_raw is None:
+            top_k = default_top_k
+        else:
+            try:
+                top_k = max(1, int(top_k_raw))
+            except (TypeError, ValueError):
+                return {
+                    "success": False,
+                    "error": "top_k 必须是整数",
+                    "content": "❌ top_k 必须是整数",
+                    "results": [],
+                }
         use_threshold = function_args.get("use_threshold", True)
+        time_from = function_args.get("time_from")
+        time_to = function_args.get("time_to")
+        person = function_args.get("person")
+        source = function_args.get("source")
 
         logger.info(
             f"{self.log_prefix} LLM调用: query_type={query_type}, "
-            f"query='{query}', top_k={top_k}"
+            f"query='{query}', top_k={top_k}, time_from={time_from}, time_to={time_to}"
         )
 
         if self.debug_enabled:
@@ -228,6 +304,16 @@ class KnowledgeQueryTool(BaseTool):
             # 根据查询类型执行
             if query_type == "search":
                 result = await self._search(query, top_k, use_threshold)
+            elif query_type == "time":
+                result = await self._query_time(
+                    query=query,
+                    top_k=top_k,
+                    time_from=time_from,
+                    time_to=time_to,
+                    person=person,
+                    source=source,
+                    use_threshold=use_threshold,
+                )
             elif query_type == "entity":
                 result = await self._query_entity(query)
             elif query_type == "relation":
@@ -260,6 +346,10 @@ class KnowledgeQueryTool(BaseTool):
         query: str = "",
         top_k: int = 10,
         use_threshold: bool = True,
+        time_from: Optional[str] = None,
+        time_to: Optional[str] = None,
+        person: Optional[str] = None,
+        source: Optional[str] = None,
     ) -> Dict[str, Any]:
         """直接执行工具函数（供插件调用）
 
@@ -277,6 +367,10 @@ class KnowledgeQueryTool(BaseTool):
             "query": query,
             "top_k": top_k,
             "use_threshold": use_threshold,
+            "time_from": time_from,
+            "time_to": time_to,
+            "person": person,
+            "source": source,
         }
 
         return await self.execute(function_args)
@@ -401,6 +495,113 @@ class KnowledgeQueryTool(BaseTool):
             "count": len(formatted_results),
             "elapsed_ms": elapsed * 1000,
             "content": content, # 给 LLM 看的摘要 (无分数)
+        }
+
+    async def _query_time(
+        self,
+        query: str,
+        top_k: int,
+        time_from: Optional[str],
+        time_to: Optional[str],
+        person: Optional[str],
+        source: Optional[str],
+        use_threshold: bool = True,
+    ) -> Dict[str, Any]:
+        """执行时序检索（可选语义query）。"""
+        if not bool(self.get_config("retrieval.temporal.enabled", True)):
+            return {
+                "success": False,
+                "error": "时序检索已禁用（retrieval.temporal.enabled=false）",
+                "content": "❌ 时序检索已禁用（retrieval.temporal.enabled=false）",
+                "results": [],
+            }
+
+        if not time_from and not time_to:
+            return {
+                "success": False,
+                "error": "time模式至少需要time_from或time_to",
+                "content": "❌ time模式至少需要time_from或time_to",
+                "results": [],
+            }
+
+        try:
+            ts_from, ts_to = parse_query_time_range(
+                str(time_from) if time_from is not None else None,
+                str(time_to) if time_to is not None else None,
+            )
+        except ValueError as e:
+            return {
+                "success": False,
+                "error": f"时间参数错误: {e}",
+                "content": f"❌ 时间参数错误: {e}",
+                "results": [],
+            }
+
+        temporal = TemporalQueryOptions(
+            time_from=ts_from,
+            time_to=ts_to,
+            person=str(person).strip() if person else None,
+            source=str(source).strip() if source else None,
+            allow_created_fallback=self.get_config(
+                "retrieval.temporal.allow_created_fallback",
+                True,
+            ),
+            candidate_multiplier=int(
+                self.get_config("retrieval.temporal.candidate_multiplier", 8)
+            ),
+            max_scan=int(self.get_config("retrieval.temporal.max_scan", 1000)),
+        )
+
+        start_time = time.time()
+        results = await self.retriever.retrieve(
+            query=query,
+            top_k=top_k,
+            temporal=temporal,
+        )
+        if query and use_threshold and self.threshold_filter:
+            results = self.threshold_filter.filter(results)
+        elapsed = time.time() - start_time
+
+        formatted_results = []
+        for result in results:
+            metadata = dict(result.metadata or {})
+            if "time_meta" not in metadata:
+                metadata["time_meta"] = {}
+            formatted_results.append(
+                {
+                    "hash": result.hash_value,
+                    "type": result.result_type,
+                    "score": float(result.score),
+                    "content": result.content,
+                    "metadata": metadata,
+                }
+            )
+
+        if formatted_results:
+            lines = [f"找到 {len(formatted_results)} 条时间相关信息："]
+            for i, item in enumerate(formatted_results[:5], 1):
+                time_meta = item["metadata"].get("time_meta", {})
+                s_text = time_meta.get("effective_start_text", "N/A")
+                e_text = time_meta.get("effective_end_text", "N/A")
+                basis = time_meta.get("match_basis", "none")
+                lines.append(f"{i}. {item['content']}")
+                lines.append(f"   时间: {s_text} ~ {e_text} ({basis})")
+            content = "\n".join(lines)
+        else:
+            content = "未找到符合时间条件的结果。"
+
+        return {
+            "success": True,
+            "query_type": "time",
+            "query": query,
+            "time_from": time_from,
+            "time_to": time_to,
+            "person": person,
+            "source": source,
+            "results": formatted_results,
+            "count": len(formatted_results),
+            "elapsed_ms": elapsed * 1000,
+            "content": content,
         }
 
     def _deduplicate_results(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -890,6 +1091,7 @@ class KnowledgeQueryTool(BaseTool):
                 "num_relations": self.metadata_store.count_relations() if self.metadata_store else 0,
                 "num_entities": self.metadata_store.count_entities() if self.metadata_store else 0,
             },
+            "sparse": self.sparse_index.stats() if self.sparse_index else None,
         }
 
         # Format a human-readable summary
@@ -906,6 +1108,15 @@ class KnowledgeQueryTool(BaseTool):
             f"  - 关系数: {stats['metadata_store']['num_relations']}\n"
             f"  - 实体数: {stats['metadata_store']['num_entities']}"
         )
+        sparse_stats = stats.get("sparse")
+        if sparse_stats:
+            content += (
+                f"\n\n🧩 稀疏检索:\n"
+                f"  - 启用: {'是' if sparse_stats.get('enabled') else '否'}\n"
+                f"  - 已加载: {'是' if sparse_stats.get('loaded') else '否'}\n"
+                f"  - Tokenizer: {sparse_stats.get('tokenizer_mode', 'N/A')}\n"
+                f"  - FTS文档数: {sparse_stats.get('doc_count', 0)}"
+            )
 
         return {
             "success": True,
@@ -935,6 +1146,7 @@ class KnowledgeQueryTool(BaseTool):
             f"  - Top-K段落: {self.retriever.config.top_k_paragraphs}",
             f"  - Top-K关系: {self.retriever.config.top_k_relations}",
             f"  - 融合系数(alpha): {self.retriever.config.alpha}",
+            f"  - 融合方法: {self.retriever.config.fusion.method}",
             f"  - PPR启用: {'是' if self.retriever.config.enable_ppr else '否'}",
             f"  - 并行检索: {'是' if self.retriever.config.enable_parallel else '否'}",
             "",
@@ -944,5 +1156,14 @@ class KnowledgeQueryTool(BaseTool):
             f"  - 边数量: {self.graph_store.num_edges if self.graph_store else 0}",
             f"  - 段落数量: {self.metadata_store.count_paragraphs() if self.metadata_store else 0}",
         ]
+        if self.sparse_index:
+            sparse_stats = self.sparse_index.stats()
+            lines.extend([
+                "",
+                "🧩 稀疏检索:",
+                f"  - 启用: {'是' if sparse_stats.get('enabled') else '否'}",
+                f"  - 已加载: {'是' if sparse_stats.get('loaded') else '否'}",
+                f"  - Tokenizer: {sparse_stats.get('tokenizer_mode', 'N/A')}",
+            ])
 
         return "\n".join(lines)

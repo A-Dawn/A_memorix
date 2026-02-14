@@ -21,6 +21,7 @@ import logging
 import tomlkit
 import argparse
 from pathlib import Path
+from datetime import datetime
 from typing import List, Dict, Any, Optional
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
 from rich.console import Console
@@ -68,6 +69,8 @@ try:
 
     storage_module = importlib.import_module(f"plugins.{plugin_name}.core.storage")
     detect_knowledge_type = storage_module.detect_knowledge_type
+    utils_module = importlib.import_module(f"plugins.{plugin_name}.core.utils")
+    normalize_time_meta = utils_module.normalize_time_meta
 
     # Strategies
     strategies_module = importlib.import_module(f"plugins.{plugin_name}.core.strategies")
@@ -87,7 +90,15 @@ except ImportError as e:
 logger = get_logger("A_Memorix.AutoImport")
 
 class AutoImporter:
-    def __init__(self, force: bool = False, clear_manifest: bool = False, target_type: str = "auto", concurrency: int = 5):
+    def __init__(
+        self,
+        force: bool = False,
+        clear_manifest: bool = False,
+        target_type: str = "auto",
+        concurrency: int = 5,
+        chat_log: bool = False,
+        chat_reference_time: Optional[str] = None,
+    ):
         self.vector_store: Optional[VectorStore] = None
         self.graph_store: Optional[GraphStore] = None
         self.metadata_store: Optional[MetadataStore] = None
@@ -96,7 +107,13 @@ class AutoImporter:
         self.manifest = {}
         self.force = force
         self.clear_manifest = clear_manifest
-        self.target_type = target_type
+        self.chat_log = chat_log
+        self.target_type = "narrative" if chat_log else target_type
+        self.chat_reference_dt = self._parse_reference_time(chat_reference_time)
+        if self.chat_log and target_type not in {"auto", "narrative"}:
+            logger.warning(
+                f"chat_log 模式已启用，target_type={target_type} 将被覆盖为 narrative"
+            )
         self.concurrency_limit = concurrency
         self.semaphore = None
         self.storage_lock = None
@@ -181,9 +198,112 @@ class AutoImporter:
 
     def get_file_hash(self, content: str) -> str:
         return hashlib.md5(content.encode("utf-8")).hexdigest()
+    
+    def _parse_reference_time(self, value: Optional[str]) -> datetime:
+        """解析 chat_log 模式的参考时间（用于相对时间语义解析）。"""
+        if not value:
+            return datetime.now()
+        formats = [
+            "%Y/%m/%d %H:%M:%S",
+            "%Y/%m/%d %H:%M",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M",
+            "%Y/%m/%d",
+            "%Y-%m-%d",
+        ]
+        text = str(value).strip()
+        for fmt in formats:
+            try:
+                return datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+        logger.warning(
+            f"无法解析 chat_reference_time={value}，将回退为当前本地时间"
+        )
+        return datetime.now()
+
+    async def _extract_chat_time_meta_with_llm(
+        self,
+        text: str,
+        model_config: Any,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        使用 LLM 从聊天文本语义中抽取时间信息。
+        支持将相对时间表达转换为绝对时间。
+        """
+        if not text.strip():
+            return None
+
+        reference_now = self.chat_reference_dt.strftime("%Y/%m/%d %H:%M")
+        prompt = f"""You are a time extraction engine for chat logs.
+Extract temporal information from the following chat paragraph.
+
+Rules:
+1. Use semantic understanding, not regex matching.
+2. Convert relative expressions (e.g., yesterday evening, last Friday morning) to absolute local datetime using reference_now.
+3. If a time span exists, return event_time_start/event_time_end.
+4. If only one point in time exists, return event_time.
+5. If no reliable time can be inferred, return all time fields as null.
+6. Output ONLY valid JSON. No markdown, no explanation.
+
+reference_now: {reference_now}
+timezone: local system timezone
+
+Allowed output formats for time values:
+- "YYYY/MM/DD"
+- "YYYY/MM/DD HH:mm"
+
+JSON schema:
+{{
+  "event_time": null,
+  "event_time_start": null,
+  "event_time_end": null,
+  "time_range": null,
+  "time_granularity": "day",
+  "time_confidence": 0.0
+}}
+
+Chat paragraph:
+\"\"\"{text}\"\"\"
+"""
+        try:
+            result = await self._llm_call(prompt, model_config)
+        except Exception as e:
+            logger.warning(f"chat_log 时间语义抽取失败: {e}")
+            return None
+
+        if not isinstance(result, dict):
+            return None
+
+        raw_time_meta = {
+            "event_time": result.get("event_time"),
+            "event_time_start": result.get("event_time_start"),
+            "event_time_end": result.get("event_time_end"),
+            "time_range": result.get("time_range"),
+            "time_granularity": result.get("time_granularity"),
+            "time_confidence": result.get("time_confidence"),
+        }
+        try:
+            normalized = normalize_time_meta(raw_time_meta)
+        except Exception as e:
+            logger.warning(f"chat_log 时间语义抽取结果不可用，已忽略: {e}")
+            return None
+
+        has_effective_time = any(
+            key in normalized
+            for key in ("event_time", "event_time_start", "event_time_end")
+        )
+        if not has_effective_time:
+            return None
+
+        return normalized
 
     def _determine_strategy(self, filename: str, content: str) -> BaseStrategy:
         """Layer 1: Global Strategy Routing"""
+        if self.chat_log:
+            logger.info(f"chat_log 模式: {filename} 强制使用 NarrativeStrategy")
+            return NarrativeStrategy(filename)
+
         # Manual override
         if self.target_type == "narrative":
             return NarrativeStrategy(filename)
@@ -303,8 +423,19 @@ class AutoImporter:
                          # For quotes, extract might be just pass through or regex
                         result_chunk = await current_strategy.extract(chunk)
                     
+                    time_meta = None
+                    if self.chat_log:
+                        time_meta = await self._extract_chat_time_meta_with_llm(
+                            result_chunk.chunk.text,
+                            model_config,
+                        )
+
                     # Normalize Data
-                    self._normalize_and_aggregate(result_chunk, processed_data)
+                    self._normalize_and_aggregate(
+                        result_chunk,
+                        processed_data,
+                        time_meta=time_meta,
+                    )
                     
                     logger.info(f"  已处理块 {i+1}/{len(initial_chunks)}")
                 
@@ -334,7 +465,12 @@ class AutoImporter:
                 traceback.print_exc()
                 return False
 
-    def _normalize_and_aggregate(self, chunk: ProcessedChunk, all_data: Dict):
+    def _normalize_and_aggregate(
+        self,
+        chunk: ProcessedChunk,
+        all_data: Dict,
+        time_meta: Optional[Dict[str, Any]] = None,
+    ):
         """Convert strategy-specific data to unified generic format for storage."""
         # Generic fields
         para_item = {
@@ -376,6 +512,9 @@ class AutoImporter:
             
         # Dedupe per paragraph
         para_item["entities"] = list(set([e for e in para_item["entities"] if e]))
+
+        if time_meta:
+            para_item["time_meta"] = time_meta
         
         all_data["paragraphs"].append(para_item)
         all_data["entities"].extend(para_item["entities"])
@@ -466,6 +605,7 @@ class AutoImporter:
                     content=content,
                     source=source,
                     knowledge_type=k_type_val,
+                    time_meta=normalize_time_meta(item.get("time_meta")),
                 )
                 
                 if h_val not in self.vector_store:
@@ -504,6 +644,16 @@ async def main():
     parser.add_argument("--clear-manifest", action="store_true", help="Clear manifest")
     parser.add_argument("--type", "-t", default="auto", help="Target type override")
     parser.add_argument("--concurrency", "-c", type=int, default=5)
+    parser.add_argument(
+        "--chat-log",
+        action="store_true",
+        help="聊天记录导入模式：强制 narrative 策略，并使用 LLM 语义抽取 event_time/event_time_range",
+    )
+    parser.add_argument(
+        "--chat-reference-time",
+        default=None,
+        help="chat_log 模式的相对时间参考点（如 2026/02/12 10:30）；不传则使用当前本地时间",
+    )
     args = parser.parse_args()
 
     if not global_config: return
@@ -512,7 +662,9 @@ async def main():
         force=args.force, 
         clear_manifest=args.clear_manifest, 
         target_type=args.type,
-        concurrency=args.concurrency
+        concurrency=args.concurrency,
+        chat_log=args.chat_log,
+        chat_reference_time=args.chat_reference_time,
     )
     await importer.process_and_import()
     await importer.close()

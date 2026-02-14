@@ -285,9 +285,22 @@ class SummaryImporter:
             summary_text = data["summary"]
             entities = data.get("entities", [])
             relations = data.get("relations", [])
+            msg_times = [
+                float(getattr(msg, "time"))
+                for msg in messages
+                if getattr(msg, "time", None) is not None
+            ]
+            time_meta = {}
+            if msg_times:
+                time_meta = {
+                    "event_time_start": min(msg_times),
+                    "event_time_end": max(msg_times),
+                    "time_granularity": "minute",
+                    "time_confidence": 0.95,
+                }
 
             # 6. 执行导入
-            await self._execute_import(summary_text, entities, relations, stream_id)
+            await self._execute_import(summary_text, entities, relations, stream_id, time_meta=time_meta)
 
             # 7. 持久化
             self.vector_store.save()
@@ -322,7 +335,8 @@ class SummaryImporter:
         summary: str,
         entities: List[str],
         relations: List[Dict[str, str]],
-        stream_id: str
+        stream_id: str,
+        time_meta: Optional[Dict[str, Any]] = None,
     ):
         """将数据写入存储"""
         # 获取默认知识类型
@@ -333,7 +347,8 @@ class SummaryImporter:
         hash_value = self.metadata_store.add_paragraph(
             content=summary,
             source=f"chat_summary:{stream_id}",
-            knowledge_type=knowledge_type.value
+            knowledge_type=knowledge_type.value,
+            time_meta=time_meta,
         )
 
         embedding = await self.embedding_manager.encode(summary)
@@ -358,7 +373,7 @@ class SummaryImporter:
                     confidence=1.0,
                     source_paragraph=summary
                 )
-                # 写入图数据库
-                self.graph_store.add_edges([(s, o)])
+                # 写入图数据库（写入 relation_hashes，确保后续可按关系精确修剪）
+                self.graph_store.add_edges([(s, o)], relation_hashes=[rel_hash])
                 
         logger.info(f"总结导入完成: hash={hash_value[:8]}")

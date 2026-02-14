@@ -287,8 +287,24 @@ class DeleteCommand(BaseCommand):
         subject = str(relation.get("subject", ""))
         obj = str(relation.get("object", ""))
 
+        # 优先走 relation-hash 精确修剪；若历史数据缺失映射，则回退按边删除
+        has_hash_map = False
+        if hasattr(self.graph_store, "_edge_hash_map") and hasattr(self.graph_store, "_node_to_idx"):
+            try:
+                src_canon = self.graph_store._canonicalize(subject)  # noqa: SLF001
+                tgt_canon = self.graph_store._canonicalize(obj)  # noqa: SLF001
+                if src_canon in self.graph_store._node_to_idx and tgt_canon in self.graph_store._node_to_idx:  # noqa: SLF001
+                    s_idx = self.graph_store._node_to_idx[src_canon]  # noqa: SLF001
+                    t_idx = self.graph_store._node_to_idx[tgt_canon]  # noqa: SLF001
+                    has_hash_map = hash_value in self.graph_store._edge_hash_map.get((s_idx, t_idx), set())  # noqa: SLF001
+            except Exception:  # noqa: BLE001
+                has_hash_map = False
+
         if hasattr(self.graph_store, "prune_relation_hashes"):
             self.graph_store.prune_relation_hashes([(subject, obj, hash_value)])
+            if not has_hash_map and self.graph_store.get_edge_weight(subject, obj) > 0.0:
+                # 兼容旧数据：边存在但无 relation-hash 映射时，显式删边
+                self.graph_store.delete_edges([(subject, obj)])
         else:
             self.graph_store.delete_edges([(subject, obj)])
 

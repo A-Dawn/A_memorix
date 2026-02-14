@@ -1,6 +1,6 @@
 # A_Memorix
 
-**轻量级知识图谱插件** - 基于双路检索的完全独立的记忆增强系统 (v0.3.3)
+**轻量级知识图谱插件** - 基于双路检索的完全独立的记忆增强系统 (v0.4.0)
 
 > 消えていかない感覚 , まだまだ足りてないみたい !
 
@@ -9,16 +9,31 @@
 > 升级后，虽然系统会尝试自动迁移部分数据，但为确保知识图谱的检索精度和完整性，强烈建议在升级后使用 `process_knowledge.py` 脚本重新导入原始文本。
 
 > [!NOTE]
-> **v0.3.3 语言约束补丁**：
-> 1. 知识抽取统一为“保持原文语言输出，不做翻译”约束，不再按语言类型分支处理；
-> 2. `Narrative/Factual` 策略抽取提示词强化“禁止翻译、保留原词”要求；
-> 3. 同步补强 `import_command` 的抽取提示词，避免导入链路出现中译英漂移；
+> **v0.4.0 时序检索增强**：
+> 1. 新增统一时序检索入口：`/query time|t`、`knowledge_query(query_type=time)`、`knowledge_search(query_type=time|hybrid)`；
+> 2. 查询时间参数仅接受 `YYYY/MM/DD` 或 `YYYY/MM/DD HH:mm`（日期自动展开到 `00:00/23:59`）；
+> 3. 支持分钟级时间窗口检索，结果统一返回 `metadata.time_meta`（含命中依据与有效时间窗口）。
+>
+> **v0.4.0 检索增强**：
+> 1. 新增稀疏检索组件 `SparseBM25Index`（FTS5 + BM25），支持懒加载与卸载；
+> 2. 段落检索新增 `ngram` 倒排回退，并可选启用 LIKE 兜底；
+> 3. DualPath 在 embedding 异常时可自动回退 sparse，并支持 `weighted_rrf` 融合向量路与 BM25 路；
+> 4. `/query stats` 与 `knowledge_query` 统计结果新增 sparse 状态（enabled/loaded/tokenizer/doc_count）。
+
+## 📑 文档索引
+
+- [⚡ 快速入门（5分钟上手）](QUICK_START.md)
+- [📘 配置参数详解（config.toml）](CONFIG_REFERENCE.md)
+- [📗 导入指南与最佳实践](IMPORT_GUIDE.md)
+- [📝 更新日志](CHANGELOG.md)
 
 ---
 
 ## ✨ 特性
 
 - **🧠 双路检索** - 关系图谱 + 向量语义并行检索，结合 Personalized PageRank 智能排序。
+- **⏱️ 时序检索（分钟级）** - 支持 `time/hybrid` 模式，按事件时间区间命中并可回退 `created_at`。
+- **🧩 稀疏检索增强（FTS5 + BM25）** - embedding 不可用或召回偏弱时自动走 sparse，支持 `jieba/mixed/char_2gram` 分词与 `ngram` 倒排回退。
 - **🧬 生物学记忆 (V5)** - 模拟人类记忆的**衰减 (Decay)**、**强化 (Reinforce)** 与 **结构化重组 (Prune)** 机制，实现记忆的动态生命周期管理。
 - **🔄 智能回退** - 当直接检索结果弱时，自动触发多跳路径搜索，增强间接关系召回。
 - **🛡️ 网络鲁棒性** - 内置指数退避重试机制，支持自定义嵌入请求的重试策略，从容应对网络波动。
@@ -52,6 +67,7 @@ pip install -r requirements.txt
 - `rich` (终端可视化)
 - `tenacity` (重试机制)
 - `nest-asyncio` (环境兼容)
+- `jieba` (稀疏检索中文分词；未安装时自动回退 char n-gram)
 - `fastapi`, `uvicorn`, `pydantic` (可视化服务器)
 
 ---
@@ -86,6 +102,8 @@ A_Memorix 提供多种方式管理知识库，建议优先选择 **自动化脚�
 - `--force`: 强制重新导入已处理过的文件。
 - `--clear-manifest`: 清空导入历史记录并重新扫描。
 - `--type <type>`: 指定内容类型（`structured`, `narrative`, `factual`）。
+- `--chat-log`: 聊天记录模式。默认按 `narrative` 处理，并使用 LLM 语义理解提取 `event_time/event_time_start/event_time_end`（可解析相对时间）。
+- `--chat-reference-time <datetime>`: 聊天记录模式的相对时间参考点（如 `2026/02/12 10:30`）；不传则使用当前本地时间。
 
 ### 1.1 迁移 LPMM 数据 (`import_lpmm_json.py`)
 
@@ -113,6 +131,17 @@ python plugins/A_memorix/scripts/convert_lpmm.py -i <lpmm_data_dir> -o <output_d
 - 输入目录支持 `paragraph.parquet`、`entity.parquet` 以及 `rag-graph.graphml/graph.graphml/graph_structure.pkl`。
 - 当前版本优先保证 ID 与元数据一致性，关系向量不做直接导入（避免检索反查不一致）。
 
+### 1.3 回填旧数据时序字段 (`backfill_temporal_metadata.py`)
+
+当历史段落缺失 `event_time/event_time_start/event_time_end` 时，可使用脚本按 `created_at` 回填，提升 `time/hybrid` 检索命中率：
+
+```bash
+python plugins/A_memorix/scripts/backfill_temporal_metadata.py --dry-run
+python plugins/A_memorix/scripts/backfill_temporal_metadata.py --limit 50000
+```
+
+默认回填策略：`event_time=created_at`、`time_granularity=day`、`time_confidence=0.2`。
+
 ### 2. 指令交互
 
 在聊天窗口中直接输入以下一级命令进行操作：
@@ -120,7 +149,7 @@ python plugins/A_memorix/scripts/convert_lpmm.py -i <lpmm_data_dir> -o <output_d
 | 命令         | 模式                                             | 说明                | 示例                         |
 | ------------ | ------------------------------------------------ | ------------------- | ---------------------------- |
 | `/import`    | `text`, `paragraph`, `relation`, `file`, `json`  | 导入知识            | `/import text 人工智能是...` |
-| `/query`     | `search(s)`, `entity(e)`, `relation(r)`, `stats` | 查询知识            | `/query s 什么是AI?`         |
+| `/query`     | `search(s)`, `time(t)`, `entity(e)`, `relation(r)`, `stats` | 查询知识 | `/query t q=项目进展 from=2025/01/01 to=2025/01/31` |
 | `/delete`    | `paragraph`, `entity`, `clear`                   | 删除知识            | `/delete paragraph <hash>`   |
 | `/memory`    | `status`, `protect`, `reinforce`, `restore`      | 记忆系统维护 (V5)   | `/memory status`             |
 | `/visualize` | -                                                | 启动可视化 Web 面板 | `/visualize`                 |
@@ -145,6 +174,9 @@ python plugins/A_memorix/scripts/convert_lpmm.py -i <lpmm_data_dir> -o <output_d
 #### 🔍 查询知识 (`/query`)
 
 - **全文检索**：`/query search <query>` (缩写: `/query s`) - 支持智能回退到路径搜索。
+- **时序检索**：`/query time <k=v参数>` (缩写: `/query t`) - 支持 `q/query`、`from/start`、`to/end`、`person`、`source`、`top_k`。
+  - 时间格式仅支持：`YYYY/MM/DD` 或 `YYYY/MM/DD HH:mm`。
+  - 日期格式会自动展开：`from -> 00:00`，`to -> 23:59`。
 - **实体查询**：`/query entity <name>` (缩写: `/query e`)
 - **关系查询**：`/query relation <spec>` (缩写: `/query r`) - 支持自然语言或 `S|P|O` 格式。
 - **统计信息**：`/query stats`
@@ -167,6 +199,7 @@ python plugins/A_memorix/scripts/convert_lpmm.py -i <lpmm_data_dir> -o <output_d
 ### 4. 核心配置说明 (`config.toml`)
 
 你可以通过修改 `config.toml` 来定制插件行为。v0.2.0 版本提供了更细粒度的控制。
+完整逐项说明请查看：[📘 配置参数详解（config.toml）](CONFIG_REFERENCE.md)。
 
 #### 💾 存储与嵌入 `[storage] & [embedding]`
 
@@ -182,6 +215,19 @@ python plugins/A_memorix/scripts/convert_lpmm.py -i <lpmm_data_dir> -o <output_d
 - **`enable_ppr`**: 是否启用 Personalized PageRank 算法优化排序。
 - **`top_k_relations` / `top_k_paragraphs`**: 分别控制单路检索召回数量。
 - **`relation_semantic_fallback`**: 是否允许关系检索回退到语义搜索。
+- **`sparse.mode`**: 稀疏检索模式（`auto/fallback_only/hybrid`），默认 `auto`。
+- **`sparse.tokenizer_mode`**: 分词模式（`jieba/mixed/char_2gram`）。
+- **`sparse.enable_ngram_fallback_index`**: FTS miss 时启用 ngram 倒排回退（默认开）。
+- **`sparse.enable_relation_sparse_fallback`**: 关系通道稀疏回退独立开关（默认开）。
+- **`fusion.method`**: 融合方法（默认 `weighted_rrf`，支持向量+BM25 候选融合）。
+- **`fusion.vector_weight + fusion.bm25_weight`**: 若和不为 1，会自动归一化。
+
+#### 🧩 稀疏检索行为说明
+
+- `sparse.mode=auto` 下，满足任一条件会触发段落 sparse：embedding 不可用、向量结果为空、向量最高分 `< 0.45`。
+- 段落 sparse 回退链路：`FTS5 BM25 -> ngram 倒排 -> (可选)LIKE 扫描`。
+- 关系 sparse 是否参与由 `sparse.enable_relation_sparse_fallback` 控制。
+- 首次加载 sparse 可能触发 FTS/倒排回填，冷启动时延会高于常态。
 
 #### 🧬 记忆系统 (V5) `[memory]`
 

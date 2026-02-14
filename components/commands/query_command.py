@@ -5,6 +5,7 @@
 """
 
 import time
+import re
 from typing import Tuple, Optional, List, Dict, Any
 from pathlib import Path
 
@@ -17,10 +18,14 @@ from ...core import (
     DualPathRetriever,
     RetrievalStrategy,
     DualPathRetrieverConfig,
+    TemporalQueryOptions,
     DynamicThresholdFilter,
     ThresholdMethod,
     ThresholdConfig,
+    SparseBM25Config,
+    FusionConfig,
 )
+from ...core.utils.time_parser import parse_query_time_range
 
 logger = get_logger("A_Memorix.QueryCommand")
 
@@ -52,6 +57,7 @@ class QueryCommand(BaseCommand):
         self.graph_store = self.plugin_config.get("graph_store")
         self.metadata_store = self.plugin_config.get("metadata_store")
         self.embedding_manager = self.plugin_config.get("embedding_manager")
+        self.sparse_index = self.plugin_config.get("sparse_index")
 
         logger.info(f"  从 plugin_config 获取: vector_store={self.vector_store is not None}, "
                    f"graph_store={self.graph_store is not None}, "
@@ -77,6 +83,7 @@ class QueryCommand(BaseCommand):
                     self.graph_store = self.graph_store or instances.get("graph_store")
                     self.metadata_store = self.metadata_store or instances.get("metadata_store")
                     self.embedding_manager = self.embedding_manager or instances.get("embedding_manager")
+                    self.sparse_index = self.sparse_index or instances.get("sparse_index")
                     
                     logger.info(f"  兜底后: vector_store={self.vector_store is not None}, "
                                f"graph_store={self.graph_store is not None}, "
@@ -124,6 +131,22 @@ class QueryCommand(BaseCommand):
                 return
 
             # 创建检索器配置
+            sparse_cfg_raw = self.get_config("retrieval.sparse", {}) or {}
+            if not isinstance(sparse_cfg_raw, dict):
+                sparse_cfg_raw = {}
+            fusion_cfg_raw = self.get_config("retrieval.fusion", {}) or {}
+            if not isinstance(fusion_cfg_raw, dict):
+                fusion_cfg_raw = {}
+            try:
+                sparse_cfg = SparseBM25Config(**sparse_cfg_raw)
+            except Exception as e:
+                logger.warning(f"{self.log_prefix} sparse 配置非法，回退默认: {e}")
+                sparse_cfg = SparseBM25Config()
+            try:
+                fusion_cfg = FusionConfig(**fusion_cfg_raw)
+            except Exception as e:
+                logger.warning(f"{self.log_prefix} fusion 配置非法，回退默认: {e}")
+                fusion_cfg = FusionConfig()
             config = DualPathRetrieverConfig(
                 top_k_paragraphs=self.get_config("retrieval.top_k_paragraphs", 20),
                 top_k_relations=self.get_config("retrieval.top_k_relations", 10),
@@ -135,6 +158,8 @@ class QueryCommand(BaseCommand):
                 enable_parallel=self.get_config("retrieval.enable_parallel", True),
                 retrieval_strategy=RetrievalStrategy.DUAL_PATH,
                 debug=self.debug_enabled,
+                sparse=sparse_cfg,
+                fusion=fusion_cfg,
             )
 
             # 创建检索器
@@ -143,6 +168,7 @@ class QueryCommand(BaseCommand):
                 graph_store=self.graph_store,
                 metadata_store=self.metadata_store,
                 embedding_manager=self.embedding_manager,
+                sparse_index=self.sparse_index,
                 config=config,
             )
 
@@ -173,7 +199,7 @@ class QueryCommand(BaseCommand):
         # 检查组件是否初始化
         if not self.retriever:
             error_msg = "❌ 查询组件未初始化"
-            return False, error_msg, 0
+            return False, error_msg, 1
 
         # 获取匹配的参数
         mode = self.matched_groups.get("mode", "search")
@@ -182,7 +208,7 @@ class QueryCommand(BaseCommand):
         # 如果没有内容，显示帮助
         if not content and mode not in ["stats", "help"]:
             help_msg = self._get_help_message()
-            return True, help_msg, 0
+            return True, help_msg, 1
 
         logger.info(f"{self.log_prefix} 执行查询: mode={mode}, content='{content}'")
 
@@ -190,6 +216,8 @@ class QueryCommand(BaseCommand):
             # 根据模式执行查询
             if mode == "search" or mode == "s":
                 success, result = await self._query_search(content)
+            elif mode == "time" or mode == "t":
+                success, result = await self._query_time(content)
             elif mode == "entity" or mode == "e":
                 success, result = await self._query_entity(content)
             elif mode == "relation" or mode == "r":
@@ -201,12 +229,19 @@ class QueryCommand(BaseCommand):
             else:
                 success, result = False, f"❌ 未知的查询模式: {mode}"
 
-            return success, result, 0
+            # 显式回消息到当前对话流，避免仅返回结果导致输出丢失或落到错误链路。
+            if result:
+                try:
+                    await self.send_text(result)
+                except Exception as send_err:
+                    logger.warning(f"{self.log_prefix} 发送查询结果失败: {send_err}")
+
+            return success, result, 1
 
         except Exception as e:
             error_msg = f"❌ 查询失败: {str(e)}"
             logger.error(f"{self.log_prefix} {error_msg}")
-            return False, error_msg, 0
+            return False, error_msg, 1
 
     async def _query_search(self, query: str) -> Tuple[bool, str]:
         """执行检索查询
@@ -269,6 +304,122 @@ class QueryCommand(BaseCommand):
 
         lines.append(f"📊 共 {len(results)} 条结果（段落: {len(paragraphs)}, 关系: {len(relations)}）")
 
+        return True, "\n".join(lines)
+
+    def _parse_kv_args(self, raw: str) -> Dict[str, str]:
+        """
+        解析 k=v 参数，支持引号。
+        示例: q="项目进展" from=2025/01/01 to="2025/01/31 12:00"
+        """
+        pattern = re.compile(r"(\w+)=((?:\"[^\"]*\")|(?:'[^']*')|(?:\S+))")
+        parsed: Dict[str, str] = {}
+        for match in pattern.finditer(raw):
+            key = match.group(1).strip().lower()
+            value = match.group(2).strip()
+            if len(value) >= 2 and (
+                (value[0] == '"' and value[-1] == '"')
+                or (value[0] == "'" and value[-1] == "'")
+            ):
+                value = value[1:-1]
+            parsed[key] = value.strip()
+        return parsed
+
+    async def _query_time(self, content: str) -> Tuple[bool, str]:
+        """
+        时序检索: /query time q=... from=... to=... person=... source=... top_k=...
+        """
+        if not bool(self.get_config("retrieval.temporal.enabled", True)):
+            return False, "❌ 时序检索已禁用（retrieval.temporal.enabled=false）"
+
+        args = self._parse_kv_args(content)
+        query = args.get("q") or args.get("query") or ""
+        time_from = args.get("from") or args.get("start")
+        time_to = args.get("to") or args.get("end")
+        person = args.get("person")
+        source = args.get("source")
+
+        if not time_from and not time_to:
+            return False, "❌ time 模式至少需要 from/start 或 to/end 参数"
+
+        top_k = int(self.get_config("retrieval.temporal.default_top_k", 10))
+        if "top_k" in args:
+            try:
+                top_k = max(1, int(args["top_k"]))
+            except ValueError:
+                return False, "❌ top_k 必须是整数"
+
+        try:
+            ts_from, ts_to = parse_query_time_range(time_from, time_to)
+        except ValueError as e:
+            return False, f"❌ 时间参数错误: {e}"
+
+        temporal = TemporalQueryOptions(
+            time_from=ts_from,
+            time_to=ts_to,
+            person=person,
+            source=source,
+            allow_created_fallback=self.get_config(
+                "retrieval.temporal.allow_created_fallback",
+                True,
+            ),
+            candidate_multiplier=int(
+                self.get_config("retrieval.temporal.candidate_multiplier", 8)
+            ),
+            max_scan=int(self.get_config("retrieval.temporal.max_scan", 1000)),
+        )
+
+        start_time = time.time()
+        results = await self.retriever.retrieve(
+            query=query,
+            top_k=top_k,
+            temporal=temporal,
+        )
+
+        # query 非空时可以应用阈值；纯 time 窗口扫描时不做阈值过滤
+        if query and self.threshold_filter:
+            results = self.threshold_filter.filter(results)
+
+        elapsed = time.time() - start_time
+        if not results:
+            return True, f"🕒 未找到符合时间条件的内容（耗时: {elapsed*1000:.1f}ms）"
+
+        paragraphs = [r for r in results if r.result_type == "paragraph"]
+        relations = [r for r in results if r.result_type == "relation"]
+
+        lines = [
+            f"🕒 时间检索结果（query='{query or 'N/A'}'，耗时: {elapsed*1000:.1f}ms）",
+            "",
+        ]
+
+        if paragraphs:
+            lines.append("📄 匹配段落：")
+            for i, result in enumerate(paragraphs[:top_k], 1):
+                score_pct = result.score * 100
+                content_text = result.content[:80] + "..." if len(result.content) > 80 else result.content
+                time_meta = result.metadata.get("time_meta", {})
+                s_text = time_meta.get("effective_start_text", "N/A")
+                e_text = time_meta.get("effective_end_text", "N/A")
+                basis = time_meta.get("match_basis", "none")
+                lines.append(f"  {i}. [{score_pct:.1f}%] {content_text}")
+                lines.append(f"     ⏱️ {s_text} ~ {e_text} ({basis})")
+            lines.append("")
+
+        if relations:
+            lines.append("🔗 匹配关系：")
+            for i, result in enumerate(relations[:top_k], 1):
+                score_pct = result.score * 100
+                subject = result.metadata.get("subject", "")
+                predicate = result.metadata.get("predicate", "")
+                obj = result.metadata.get("object", "")
+                time_meta = result.metadata.get("time_meta", {})
+                s_text = time_meta.get("effective_start_text", "N/A")
+                e_text = time_meta.get("effective_end_text", "N/A")
+                basis = time_meta.get("match_basis", "none")
+                lines.append(f"  {i}. [{score_pct:.1f}%] {subject} {predicate} {obj}")
+                lines.append(f"     ⏱️ {s_text} ~ {e_text} ({basis})")
+            lines.append("")
+
+        lines.append(f"📊 共 {len(results)} 条结果（段落: {len(paragraphs)}, 关系: {len(relations)}）")
         return True, "\n".join(lines)
 
     async def _query_entity(self, entity_name: str) -> Tuple[bool, str]:
@@ -391,6 +542,7 @@ class QueryCommand(BaseCommand):
                 "关系数": self.metadata_store.count_relations() if self.metadata_store else 0,
                 "实体数": self.metadata_store.count_entities() if self.metadata_store else 0,
             },
+            "sparse": self.sparse_index.stats() if self.sparse_index else None,
         }
         
         # 获取知识类型分布
@@ -424,6 +576,17 @@ class QueryCommand(BaseCommand):
             f"  - 关系数: {stats['metadata_store']['关系数']}",
             f"  - 实体数: {stats['metadata_store']['实体数']}",
         ]
+
+        sparse_stats = stats.get("sparse")
+        if sparse_stats:
+            lines.extend([
+                "",
+                "🧩 稀疏检索:",
+                f"  - 启用: {'是' if sparse_stats.get('enabled') else '否'}",
+                f"  - 已加载: {'是' if sparse_stats.get('loaded') else '否'}",
+                f"  - Tokenizer: {sparse_stats.get('tokenizer_mode', 'N/A')}",
+                f"  - FTS文档数: {sparse_stats.get('doc_count', 0)}",
+            ])
         
         # 添加类型分布
         if type_distribution:
@@ -445,6 +608,7 @@ class QueryCommand(BaseCommand):
 
 用法:
   /query search <查询文本>      - 检索相关内容（默认模式）
+  /query time <k=v参数>         - 时间检索（支持语义+时间）
   /query entity <实体名称>      - 查询实体信息
   /query relation <关系规格>    - 查询关系信息
   /query stats                  - 显示统计信息
@@ -452,11 +616,13 @@ class QueryCommand(BaseCommand):
 
 快捷模式:
   /query s <查询文本>           - 检索（search的简写）
+  /query t <k=v参数>            - 时间检索（time的简写）
   /query e <实体名称>           - 实体查询（entity的简写）
   /query r <关系规格>           - 关系查询（relation的简写）
 
 示例:
   /query search 人工智能的应用
+  /query time q="项目进展" from=2025/01/01 to="2025/01/31 18:30"
   /query entity Apple
   /query relation Apple|founded|Steve Jobs
   /query relation founded by
@@ -464,6 +630,8 @@ class QueryCommand(BaseCommand):
 
 说明:
   - 检索模式会同时搜索段落和关系
+  - time 模式参数: q/query, from/start, to/end, person, source, top_k
+  - time 格式仅支持 YYYY/MM/DD 或 YYYY/MM/DD HH:mm
   - 实体查询显示关联实体和相关段落
   - 关系格式支持 "|" 或空格分隔
   - 统计模式显示知识库概览

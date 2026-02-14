@@ -52,7 +52,7 @@ class SummaryImportAction(BaseAction):
             metadata_store = self.plugin_config.get("metadata_store")
             embedding_manager = self.plugin_config.get("embedding_manager")
 
-            if not all([vector_store, graph_store, metadata_store, embedding_manager]):
+            if any(x is None for x in [vector_store, graph_store, metadata_store, embedding_manager]):
                 from ...plugin import A_MemorixPlugin
                 instances = A_MemorixPlugin.get_storage_instances()
                 if instances:
@@ -61,7 +61,7 @@ class SummaryImportAction(BaseAction):
                     metadata_store = metadata_store or instances.get("metadata_store")
                     embedding_manager = embedding_manager or instances.get("embedding_manager")
 
-            if not all([vector_store, graph_store, metadata_store, embedding_manager]):
+            if any(x is None for x in [vector_store, graph_store, metadata_store, embedding_manager]):
                 logger.warning(f"{self.log_prefix} 存储组件未完全初始化，概括导入功能暂不可用")
                 return
 

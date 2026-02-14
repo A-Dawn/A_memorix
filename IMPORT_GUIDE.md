@@ -143,6 +143,50 @@ python plugins/A_memorix/scripts/convert_lpmm.py -i data/lpmm_storage -o plugins
 
 ## 常用命令速查
 
+### 时间元数据导入（时序检索）
+
+如果希望后续可按时间窗口（含分钟）精确检索，建议在导入时为段落提供时间字段。
+
+#### 1. `/import json` 支持的段落时间字段
+
+在 `paragraphs[*]` 中可直接传：
+
+- `event_time`
+- `event_time_start`
+- `event_time_end`
+- `time_range`（`[start, end]`）
+- `time_granularity`（可选，未传会自动推断 `day/minute`）
+- `time_confidence`（可选）
+
+示例：
+
+```json
+{
+  "paragraphs": [
+    {
+      "content": "2025年1月1日上午项目例会确定了里程碑。",
+      "event_time_start": "2025/01/01 09:00",
+      "event_time_end": "2025/01/01 10:30",
+      "time_granularity": "minute",
+      "time_confidence": 0.95
+    }
+  ]
+}
+```
+
+#### 2. 脚本导入 (`process_knowledge.py`) 的时间输入
+
+- 脚本在处理 JSON payload 时支持 `paragraphs[*].time_meta`；
+- `time_meta` 可传 timestamp（秒）或时间字符串；
+- 若未提供 `event_time*`，系统仍可回退 `created_at` 参与时序检索（取决于 `retrieval.temporal.allow_created_fallback`）。
+
+#### 3. 查询时间参数（与导入不同）
+
+注意：查询入口（Action/Tool/`/query time`）时间格式更严格，仅接受：
+
+- `YYYY/MM/DD`
+- `YYYY/MM/DD HH:mm`
+
 ### 自动导入 (推荐)
 
 将 `.txt` 文件放入 `plugins/A_memorix/data/raw/` 后运行：
@@ -155,6 +199,8 @@ _主要参数：_
 
 - `--force`: 强制重新处理所有文件
 - `--type [narrative|factual|quote]`: 强制指定策略（不使用自动检测）
+- `--chat-log`: 聊天记录导入模式。强制使用 narrative 策略，并通过 LLM 语义抽取 `time_meta`（`event_time` 或 `event_time_start/end`）
+- `--chat-reference-time <datetime>`: 聊天记录模式下相对时间参考点（如 `2026/02/12 10:30`）；不传默认当前本地时间
 
 ### 清空知识库
 
