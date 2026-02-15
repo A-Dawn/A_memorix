@@ -6,7 +6,7 @@ A_Memorix 插件主入口
 
 import sys
 from pathlib import Path
-from typing import List, Tuple, Type, Optional, Dict, Union, Any
+from typing import List, Tuple, Type, Optional, Dict, Union, Any, Set
 from src.plugin_system import (
     BasePlugin,
     BaseAction,
@@ -88,6 +88,7 @@ class A_MemorixPlugin(BasePlugin):
         "summarization": "总结与导入配置",
         "schedule": "定时任务配置",
         "filter": "消息过滤配置",
+        "person_profile": "人物画像配置",
         "memory": "记忆衰减与强化配置",
     }
 
@@ -374,6 +375,48 @@ class A_MemorixPlugin(BasePlugin):
                 description="聊天流 ID 列表。支持填写: 1. 群号 (group_id, 如: 123456); 2. 私聊用户ID (user_id, 如: 10001); 3. 聊天流唯一标识 (stream_id, MD5格式)。"
             ),
         },
+        "person_profile": {
+            "enabled": ConfigField(
+                type=bool,
+                default=True,
+                description="人物画像模块总开关"
+            ),
+            "opt_in_required": ConfigField(
+                type=bool,
+                default=True,
+                description="是否要求用户显式开启（默认开启显式开关模式）"
+            ),
+            "default_injection_enabled": ConfigField(
+                type=bool,
+                default=False,
+                description="当不存在用户开关记录时的默认注入状态"
+            ),
+            "profile_ttl_minutes": ConfigField(
+                type=float,
+                default=360.0,
+                description="人物画像快照 TTL（分钟）"
+            ),
+            "refresh_interval_minutes": ConfigField(
+                type=int,
+                default=30,
+                description="定时刷新周期（分钟）"
+            ),
+            "active_window_hours": ConfigField(
+                type=float,
+                default=72.0,
+                description="活跃人物窗口（小时），仅刷新窗口内人物"
+            ),
+            "max_refresh_per_cycle": ConfigField(
+                type=int,
+                default=50,
+                description="每轮最多刷新的人物数"
+            ),
+            "top_k_evidence": ConfigField(
+                type=int,
+                default=12,
+                description="人物画像构建时的向量证据数量上限"
+            ),
+        },
         "memory": {
              "half_life_hours": ConfigField(type=float, default=24.0, description="记忆强度半衰期 (小时)"),
              "base_decay_interval_hours": ConfigField(type=float, default=1.0, description="衰减任务执行间隔 (小时)"),
@@ -422,6 +465,7 @@ class A_MemorixPlugin(BasePlugin):
         self._memory_lock = asyncio.Lock()
         self._scheduled_import_task: Optional[asyncio.Task] = None
         self._auto_save_task: Optional[asyncio.Task] = None
+        self._person_profile_refresh_task: Optional[asyncio.Task] = None
         self._memory_maintenance_task: Optional[asyncio.Task] = None
 
     @property
@@ -453,6 +497,7 @@ class A_MemorixPlugin(BasePlugin):
             QueryCommand,
             DeleteCommand,
             VisualizeCommand,
+            PersonProfileCommand,
             KnowledgeQueryTool,
             MemoryModifierTool,
             SummaryImportAction,
@@ -584,6 +629,19 @@ class A_MemorixPlugin(BasePlugin):
             )
         )
 
+        # PersonProfileCommand
+        components.append(
+            (
+                CommandInfo(
+                    name="person_profile",
+                    component_type="command",
+                    description="控制人物画像自动注入开关（on/off/status）",
+                    command_pattern=r"^\/person_profile(?:\s+(?P<action>\w+))?$",
+                ),
+                PersonProfileCommand,
+            )
+        )
+
         # DeleteCommand
         components.append(
             (
@@ -616,20 +674,27 @@ class A_MemorixPlugin(BasePlugin):
                 ToolInfo(
                     name="knowledge_query",
                     component_type="tool",
-                    tool_description="查询A_Memorix知识库，支持检索、实体查询、关系查询和统计信息",
+                    tool_description="查询A_Memorix知识库，支持检索、实体查询、关系查询、人物画像和统计信息",
                     enabled=True,
                     tool_parameters=[
                         (
                             "query_type",
                             "string",
-                            "查询类型：search(检索)、time(时序检索)、entity(实体)、relation(关系)、stats(统计)",
+                            "查询类型：search(检索)、time(时序检索)、entity(实体)、relation(关系)、person(人物画像)、stats(统计)",
                             True,
-                            ["search", "time", "entity", "relation", "stats"],
+                            ["search", "time", "entity", "relation", "person", "stats"],
                         ),
                         (
                             "query",
                             "string",
                             "查询内容（检索文本/实体名称/关系规格），stats模式不需要",
+                            False,
+                            None,
+                        ),
+                        (
+                            "person_id",
+                            "string",
+                            "人物ID（person模式可选；为空时自动解析）",
                             False,
                             None,
                         ),
@@ -869,6 +934,12 @@ class A_MemorixPlugin(BasePlugin):
         ):
             self._auto_save_task = asyncio.create_task(self._auto_save_loop())
 
+        if (
+            self.get_config("person_profile.enabled", True)
+            and (self._person_profile_refresh_task is None or self._person_profile_refresh_task.done())
+        ):
+            self._person_profile_refresh_task = asyncio.create_task(self._person_profile_refresh_loop())
+
         if self._memory_maintenance_task is None or self._memory_maintenance_task.done():
             self._memory_maintenance_task = asyncio.create_task(self._memory_maintenance_loop())
 
@@ -877,6 +948,7 @@ class A_MemorixPlugin(BasePlugin):
         tasks = [
             ("scheduled_import", self._scheduled_import_task),
             ("auto_save", self._auto_save_task),
+            ("person_profile_refresh", self._person_profile_refresh_task),
             ("memory_maintenance", self._memory_maintenance_task),
         ]
         for _, task in tasks:
@@ -895,6 +967,7 @@ class A_MemorixPlugin(BasePlugin):
 
         self._scheduled_import_task = None
         self._auto_save_task = None
+        self._person_profile_refresh_task = None
         self._memory_maintenance_task = None
 
     async def on_unload(self):
@@ -1218,6 +1291,96 @@ class A_MemorixPlugin(BasePlugin):
         else:
             # 黑名单模式：匹配到的被禁用
             return not is_matched
+
+    def is_person_profile_injection_enabled(self, stream_id: str, user_id: str) -> bool:
+        """检查人物画像自动注入是否开启（按 stream_id + user_id）。"""
+        if not bool(self.get_config("person_profile.enabled", True)):
+            return False
+
+        opt_in_required = bool(self.get_config("person_profile.opt_in_required", True))
+        default_enabled = bool(self.get_config("person_profile.default_injection_enabled", False))
+
+        if not opt_in_required:
+            return default_enabled
+
+        if not stream_id or not user_id or self.metadata_store is None:
+            return False
+
+        try:
+            return bool(self.metadata_store.get_person_profile_switch(stream_id, user_id, default=default_enabled))
+        except Exception as e:
+            logger.warning(f"读取人物画像开关失败: {e}")
+            return False
+
+    async def _person_profile_refresh_loop(self):
+        """按需刷新人物画像快照（仅针对已开启范围内活跃人物）。"""
+        logger.info("A_Memorix 人物画像定时刷新任务已启动")
+        try:
+            while True:
+                interval_minutes = int(self.get_config("person_profile.refresh_interval_minutes", 30))
+                await asyncio.sleep(max(60, interval_minutes * 60))
+
+                if not bool(self.get_config("person_profile.enabled", True)):
+                    continue
+
+                await self._refresh_person_profiles_for_enabled_switches()
+        except asyncio.CancelledError:
+            logger.info("人物画像定时刷新任务已取消")
+        except Exception as e:
+            logger.error(f"人物画像定时刷新循环异常: {e}")
+
+    async def _refresh_person_profiles_for_enabled_switches(self):
+        """刷新已开启范围内活跃人物画像。"""
+        if self.metadata_store is None:
+            return
+
+        active_window_hours = float(self.get_config("person_profile.active_window_hours", 72.0))
+        active_after = time.time() - max(0.0, active_window_hours) * 3600.0
+        max_refresh = int(self.get_config("person_profile.max_refresh_per_cycle", 50))
+        top_k_evidence = int(self.get_config("person_profile.top_k_evidence", 12))
+        ttl_minutes = float(self.get_config("person_profile.profile_ttl_minutes", 360.0))
+        ttl_seconds = max(60.0, ttl_minutes * 60.0)
+
+        try:
+            person_ids = self.metadata_store.get_active_person_ids_for_enabled_switches(
+                active_after=active_after,
+                limit=max_refresh,
+            )
+        except Exception as e:
+            logger.warning(f"获取待刷新人物集合失败: {e}")
+            return
+
+        if not person_ids:
+            logger.debug("人物画像刷新跳过：暂无已开启范围内活跃人物")
+            return
+
+        from .core.utils.person_profile_service import PersonProfileService
+
+        service = PersonProfileService(
+            metadata_store=self.metadata_store,
+            graph_store=self.graph_store,
+            vector_store=self.vector_store,
+            embedding_manager=self.embedding_manager,
+            sparse_index=self.sparse_index,
+            plugin_config=self.config,
+        )
+
+        refreshed = 0
+        for person_id in person_ids:
+            try:
+                result = await service.query_person_profile(
+                    person_id=person_id,
+                    top_k=top_k_evidence,
+                    ttl_seconds=ttl_seconds,
+                    force_refresh=True,
+                    source_note="schedule_refresh",
+                )
+                if result.get("success"):
+                    refreshed += 1
+            except Exception as e:
+                logger.warning(f"刷新人物画像失败: person_id={person_id}, err={e}")
+
+        logger.info(f"人物画像按需刷新完成: refreshed={refreshed}, candidates={len(person_ids)}")
 
     async def _perform_bulk_summary_import(self):
         """为所有活跃聊天执行总结导入"""

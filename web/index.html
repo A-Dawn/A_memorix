@@ -679,6 +679,10 @@
         <div class="dock-icon">📂</div>
         <span>记忆溯源</span>
       </div>
+      <div class="dock-btn" onclick="openPanel('person-profile-panel')">
+        <div class="dock-icon">👤</div>
+        <span>人物画像</span>
+      </div>
       <div class="dock-btn" onclick="manualSave()">
         <div class="dock-icon">💾</div>
         <span>持久化</span>
@@ -923,6 +927,94 @@
           id="source-files-list"
         >
           <!-- Records -->
+        </div>
+      </div>
+
+      <!-- 人物画像面板 (Person Profile Panel) -->
+      <div id="person-profile-tpl">
+        <div class="form-group">
+          <label>人物ID / 人名 / 别名</label>
+          <input
+            type="text"
+            id="person-profile-keyword"
+            placeholder="例如: person_id 或 小明"
+          />
+        </div>
+        <div style="display: flex; gap: 8px; margin-bottom: 12px">
+          <button class="btn btn-primary btn-full" onclick="queryPersonProfile()">
+            查询画像
+          </button>
+          <button class="btn btn-ghost" onclick="queryPersonProfile(true)">
+            强制刷新
+          </button>
+          <button class="btn btn-ghost" onclick="loadPersonProfileList(1)">
+            人物列表
+          </button>
+        </div>
+        <div
+          id="person-profile-list-meta"
+          style="font-size: 0.78rem; color: var(--text-dim); margin-bottom: 6px"
+        >
+          列表未加载
+        </div>
+        <div
+          id="person-profile-list-root"
+          style="
+            max-height: 180px;
+            overflow-y: auto;
+            margin-bottom: 10px;
+            border: 1px solid var(--glass-border);
+            border-radius: 8px;
+            padding: 6px;
+          "
+        >
+          <div style="font-size: 0.8rem; color: var(--text-dim); text-align: center; padding: 8px">
+            点击“人物列表”加载
+          </div>
+        </div>
+        <div style="display: flex; gap: 8px; margin-bottom: 12px">
+          <button class="btn btn-ghost btn-full" onclick="prevPersonProfilePage()">上一页</button>
+          <button class="btn btn-ghost btn-full" onclick="nextPersonProfilePage()">下一页</button>
+        </div>
+        <div
+          id="person-profile-meta"
+          style="font-size: 0.78rem; color: var(--text-dim); margin-bottom: 12px"
+        >
+          未查询
+        </div>
+        <div class="form-group">
+          <label>系统画像（自动生成）</label>
+          <textarea
+            id="person-profile-auto"
+            rows="8"
+            readonly
+            placeholder="查询后显示自动画像"
+          ></textarea>
+        </div>
+        <div class="form-group">
+          <label>手工修订画像（优先注入）</label>
+          <textarea
+            id="person-profile-override"
+            rows="6"
+            placeholder="可填写人工修订内容；保存后将覆盖自动注入文本"
+          ></textarea>
+        </div>
+        <div style="display: flex; gap: 8px; margin-bottom: 12px">
+          <button class="btn btn-primary btn-full" onclick="savePersonProfileOverride()">
+            保存修订
+          </button>
+          <button class="btn btn-danger" onclick="clearPersonProfileOverride()">
+            清除修订
+          </button>
+        </div>
+        <div class="form-group">
+          <label>最终注入画像（当前生效）</label>
+          <textarea
+            id="person-profile-merged"
+            rows="8"
+            readonly
+            placeholder="查询后显示最终注入文本"
+          ></textarea>
         </div>
       </div>
 
@@ -1812,6 +1904,18 @@
             document.getElementById("auto-save-toggle").checked =
               res.data.auto_save_enabled;
           });
+        } else if (type === "person-profile-panel") {
+          title.innerText = "人物画像管理";
+          body.innerHTML =
+            document.getElementById("person-profile-tpl").innerHTML;
+          window.currentPersonProfile = null;
+          window.personProfileListState = {
+            page: 1,
+            pageSize: 20,
+            total: 0,
+            keyword: "",
+          };
+          loadPersonProfileList(1);
         } else if (type === "content-browser-panel") {
           title.innerText = "知识字典";
           body.innerHTML = document.getElementById(
@@ -1839,6 +1943,217 @@
       function closePanel() {
         document.getElementById("side-panel").style.display = "none";
         currentSelection = null;
+      }
+
+      function renderPersonProfileList(resp) {
+        const root = document.getElementById("person-profile-list-root");
+        const meta = document.getElementById("person-profile-list-meta");
+        if (!root || !meta) return;
+
+        const items = resp.items || [];
+        const page = Number(resp.page || 1);
+        const pageSize = Number(resp.page_size || 20);
+        const total = Number(resp.total || 0);
+        const totalPages = Math.max(1, Math.ceil(total / Math.max(1, pageSize)));
+        const keyword = resp.keyword || "";
+
+        window.personProfileListState = {
+          page,
+          pageSize,
+          total,
+          keyword,
+        };
+
+        meta.innerText = `关键词: ${keyword || "(全部)"} | 第 ${page}/${totalPages} 页 | 总数: ${total}`;
+
+        if (!items.length) {
+          root.innerHTML =
+            '<div style="font-size: 0.8rem; color: var(--text-dim); text-align: center; padding: 8px">暂无人物</div>';
+          return;
+        }
+
+        root.innerHTML = items
+          .map((item) => {
+            const name = escapeHtml(item.display_name || item.person_id || "未知");
+            const pidRaw = item.person_id || "";
+            const pid = escapeHtml(pidRaw);
+            const pidEncoded = encodeURIComponent(pidRaw);
+            const nick = escapeHtml(item.nickname || "");
+            const aliasCount = Array.isArray(item.aliases) ? item.aliases.length : 0;
+            const flagSnapshot = item.has_snapshot ? "S" : "-";
+            const flagOverride = item.has_override ? "M" : "-";
+            return `
+              <div class="list-item" style="cursor: pointer; margin-bottom: 6px;" onclick="pickPersonProfileCandidate('${pidEncoded}')">
+                <div style="font-weight: 600; color: var(--text-main);">${name}</div>
+                <div style="font-size: 0.72rem; color: var(--text-dim); margin-top: 2px;">
+                  id=${pid} | nick=${nick || "-"} | aliases=${aliasCount} | flags=${flagSnapshot}/${flagOverride}
+                </div>
+              </div>
+            `;
+          })
+          .join("");
+      }
+
+      async function loadPersonProfileList(page = 1) {
+        const root = document.getElementById("person-profile-list-root");
+        if (!root) return;
+
+        const keywordEl = document.getElementById("person-profile-keyword");
+        const state = window.personProfileListState || {
+          page: 1,
+          pageSize: 20,
+          total: 0,
+          keyword: "",
+        };
+        const keyword = (keywordEl ? keywordEl.value.trim() : state.keyword) || "";
+
+        try {
+          root.innerHTML =
+            '<div style="font-size: 0.8rem; color: var(--text-dim); text-align: center; padding: 8px">加载中...</div>';
+          const res = await axios.get("/api/person_profile/list", {
+            params: {
+              keyword: keyword,
+              page: page,
+              page_size: state.pageSize || 20,
+            },
+          });
+          renderPersonProfileList(res.data || {});
+        } catch (err) {
+          const msg = err.response?.data?.detail || err.message || "未知错误";
+          root.innerHTML = `<div style="font-size: 0.8rem; color: rgba(239, 68, 68, 0.9); padding: 8px">加载失败: ${escapeHtml(msg)}</div>`;
+        }
+      }
+
+      function prevPersonProfilePage() {
+        const state = window.personProfileListState || { page: 1 };
+        const prev = Math.max(1, Number(state.page || 1) - 1);
+        loadPersonProfileList(prev);
+      }
+
+      function nextPersonProfilePage() {
+        const state = window.personProfileListState || { page: 1, pageSize: 20, total: 0 };
+        const page = Number(state.page || 1);
+        const totalPages = Math.max(1, Math.ceil(Number(state.total || 0) / Math.max(1, Number(state.pageSize || 20))));
+        const next = Math.min(totalPages, page + 1);
+        loadPersonProfileList(next);
+      }
+
+      function pickPersonProfileCandidate(personIdEncoded) {
+        const personId = decodeURIComponent(personIdEncoded || "");
+        const keywordEl = document.getElementById("person-profile-keyword");
+        if (keywordEl) keywordEl.value = personId || "";
+        queryPersonProfile(false, personId || "");
+      }
+
+      function formatUnixSeconds(sec) {
+        if (!sec) return "-";
+        const n = Number(sec);
+        if (!Number.isFinite(n) || n <= 0) return "-";
+        return new Date(n * 1000).toLocaleString();
+      }
+
+      function renderPersonProfileResult(data) {
+        const metaEl = document.getElementById("person-profile-meta");
+        const autoEl = document.getElementById("person-profile-auto");
+        const overrideEl = document.getElementById("person-profile-override");
+        const mergedEl = document.getElementById("person-profile-merged");
+        const keywordEl = document.getElementById("person-profile-keyword");
+        if (!metaEl || !autoEl || !overrideEl || !mergedEl) return;
+
+        const personId = data.person_id || "";
+        const personName = data.person_name || "-";
+        const profileVersion = data.profile_version || "-";
+        const fromCache = data.from_cache ? "是" : "否";
+        const source = data.profile_source || "auto_snapshot";
+        const hasManual = data.has_manual_override ? "是" : "否";
+
+        metaEl.innerText =
+          `person_id: ${personId} | 名称: ${personName} | 版本: ${profileVersion}\n` +
+          `来源: ${source} | 缓存: ${fromCache} | 手工覆盖: ${hasManual}\n` +
+          `更新时间: ${formatUnixSeconds(data.updated_at)} | 覆盖更新时间: ${formatUnixSeconds(data.override_updated_at)}`;
+
+        autoEl.value = data.auto_profile_text || data.profile_text || "";
+        overrideEl.value = data.manual_override_text || "";
+        mergedEl.value = data.profile_text || "";
+        if (keywordEl && personId) keywordEl.value = personId;
+        window.currentPersonProfile = data;
+      }
+
+      async function queryPersonProfile(forceRefresh = false, explicitPersonId = "") {
+        const keywordEl = document.getElementById("person-profile-keyword");
+        if (!keywordEl) return;
+
+        const raw = explicitPersonId || keywordEl.value.trim();
+        if (!raw) {
+          showToast("请输入人物ID或名称");
+          return;
+        }
+
+        const payload = {
+          force_refresh: !!forceRefresh,
+          top_k: 12,
+        };
+        if (/^[0-9a-fA-F]{32}$/.test(raw)) payload.person_id = raw;
+        else payload.person_keyword = raw;
+
+        try {
+          const res = await axios.post("/api/person_profile/query", payload);
+          renderPersonProfileResult(res.data || {});
+          showToast("人物画像已加载");
+        } catch (err) {
+          const msg = err.response?.data?.detail || err.message || "未知错误";
+          showToast(`画像查询失败: ${msg}`);
+        }
+      }
+
+      async function savePersonProfileOverride() {
+        const overrideEl = document.getElementById("person-profile-override");
+        if (!overrideEl) return;
+
+        const current = window.currentPersonProfile || {};
+        const personId = (current.person_id || "").trim();
+        if (!personId) {
+          showToast("请先查询人物画像");
+          return;
+        }
+
+        try {
+          const res = await axios.post("/api/person_profile/override", {
+            person_id: personId,
+            override_text: overrideEl.value || "",
+            updated_by: "webui",
+          });
+          if (res.data?.profile?.success) {
+            renderPersonProfileResult(res.data.profile);
+          } else {
+            await queryPersonProfile(false, personId);
+          }
+          showToast("画像修订已保存");
+        } catch (err) {
+          const msg = err.response?.data?.detail || err.message || "未知错误";
+          showToast(`保存失败: ${msg}`);
+        }
+      }
+
+      async function clearPersonProfileOverride() {
+        const current = window.currentPersonProfile || {};
+        const personId = (current.person_id || "").trim();
+        if (!personId) {
+          showToast("请先查询人物画像");
+          return;
+        }
+        if (!confirm("确认清除此人物的手工修订画像？")) return;
+
+        try {
+          await axios.delete("/api/person_profile/override", {
+            data: { person_id: personId },
+          });
+          await queryPersonProfile(false, personId);
+          showToast("已清除手工修订");
+        } catch (err) {
+          const msg = err.response?.data?.detail || err.message || "未知错误";
+          showToast(`清除失败: ${msg}`);
+        }
       }
 
       // --- Event Handlers ---

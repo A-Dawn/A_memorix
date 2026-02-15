@@ -6,6 +6,7 @@
 
 import sqlite3
 import pickle
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Union, List, Dict, Any, Tuple
@@ -210,6 +211,72 @@ class MetadataStore:
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_paragraphs_source
             ON paragraphs(source)
+        """)
+
+        # 人物画像开关表（按 stream_id + user_id 维度）
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS person_profile_switches (
+                stream_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY (stream_id, user_id)
+            )
+        """)
+
+        # 人物画像快照表（版本化）
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS person_profile_snapshots (
+                snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                person_id TEXT NOT NULL,
+                profile_version INTEGER NOT NULL,
+                profile_text TEXT NOT NULL,
+                aliases_json TEXT,
+                relation_edges_json TEXT,
+                vector_evidence_json TEXT,
+                evidence_ids_json TEXT,
+                updated_at REAL NOT NULL,
+                expires_at REAL,
+                source_note TEXT,
+                UNIQUE(person_id, profile_version)
+            )
+        """)
+
+        # 已开启范围内的活跃人物集合
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS person_profile_active_persons (
+                stream_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                person_id TEXT NOT NULL,
+                last_seen_at REAL NOT NULL,
+                PRIMARY KEY (stream_id, user_id, person_id)
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS person_profile_overrides (
+                person_id TEXT PRIMARY KEY,
+                override_text TEXT NOT NULL,
+                updated_at REAL NOT NULL,
+                updated_by TEXT,
+                source TEXT
+            )
+        """)
+
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_person_profile_switches_enabled
+            ON person_profile_switches(enabled)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_person_profile_snapshots_person
+            ON person_profile_snapshots(person_id, updated_at DESC)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_person_profile_active_seen
+            ON person_profile_active_persons(last_seen_at DESC)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_person_profile_overrides_updated
+            ON person_profile_overrides(updated_at DESC)
         """)
         self._conn.commit()
         logger.debug("数据库表结构初始化完成")
@@ -2619,6 +2686,330 @@ class MetadataStore:
                     "deleted_at": row[2]
                 }
         return result
+
+    # =========================================================================
+    # Person Profile (问题3) - Switches / Active Set / Snapshots
+    # =========================================================================
+
+    def set_person_profile_switch(
+        self,
+        stream_id: str,
+        user_id: str,
+        enabled: bool,
+        updated_at: Optional[float] = None,
+    ) -> None:
+        """设置人物画像自动注入开关（按 stream_id + user_id）。"""
+        if not stream_id or not user_id:
+            raise ValueError("stream_id 和 user_id 不能为空")
+
+        ts = float(updated_at) if updated_at is not None else datetime.now().timestamp()
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO person_profile_switches (stream_id, user_id, enabled, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(stream_id, user_id) DO UPDATE SET
+                enabled = excluded.enabled,
+                updated_at = excluded.updated_at
+            """,
+            (str(stream_id), str(user_id), 1 if enabled else 0, ts),
+        )
+        self._conn.commit()
+
+    def get_person_profile_switch(self, stream_id: str, user_id: str, default: bool = False) -> bool:
+        """读取人物画像自动注入开关。"""
+        if not stream_id or not user_id:
+            return bool(default)
+
+        cursor = self._conn.cursor()
+        cursor.execute(
+            "SELECT enabled FROM person_profile_switches WHERE stream_id = ? AND user_id = ?",
+            (str(stream_id), str(user_id)),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return bool(default)
+        return bool(row[0])
+
+    def get_enabled_person_profile_switches(self, limit: int = 1000) -> List[Dict[str, Any]]:
+        """获取已开启人物画像注入开关的会话范围。"""
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            SELECT stream_id, user_id, enabled, updated_at
+            FROM person_profile_switches
+            WHERE enabled = 1
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            (int(max(1, limit)),),
+        )
+        return [
+            {
+                "stream_id": row[0],
+                "user_id": row[1],
+                "enabled": bool(row[2]),
+                "updated_at": row[3],
+            }
+            for row in cursor.fetchall()
+        ]
+
+    def mark_person_profile_active(
+        self,
+        stream_id: str,
+        user_id: str,
+        person_id: str,
+        seen_at: Optional[float] = None,
+    ) -> None:
+        """记录活跃人物（用于定时按需刷新）。"""
+        if not stream_id or not user_id or not person_id:
+            return
+        ts = float(seen_at) if seen_at is not None else datetime.now().timestamp()
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO person_profile_active_persons (stream_id, user_id, person_id, last_seen_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(stream_id, user_id, person_id) DO UPDATE SET
+                last_seen_at = excluded.last_seen_at
+            """,
+            (str(stream_id), str(user_id), str(person_id), ts),
+        )
+        self._conn.commit()
+
+    def get_active_person_ids_for_enabled_switches(
+        self,
+        active_after: Optional[float] = None,
+        limit: int = 200,
+    ) -> List[str]:
+        """获取“已开启开关范围内”的活跃人物集合。"""
+        cursor = self._conn.cursor()
+        sql = """
+            SELECT a.person_id, MAX(a.last_seen_at) AS last_seen
+            FROM person_profile_active_persons a
+            JOIN person_profile_switches s
+              ON a.stream_id = s.stream_id AND a.user_id = s.user_id
+            WHERE s.enabled = 1
+        """
+        params: List[Any] = []
+        if active_after is not None:
+            sql += " AND a.last_seen_at >= ?"
+            params.append(float(active_after))
+        sql += """
+            GROUP BY a.person_id
+            ORDER BY last_seen DESC
+            LIMIT ?
+        """
+        params.append(int(max(1, limit)))
+        cursor.execute(sql, tuple(params))
+        return [str(row[0]) for row in cursor.fetchall() if row and row[0]]
+
+    def get_latest_person_profile_snapshot(self, person_id: str) -> Optional[Dict[str, Any]]:
+        """获取人物最新画像快照。"""
+        if not person_id:
+            return None
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            SELECT
+                snapshot_id, person_id, profile_version, profile_text,
+                aliases_json, relation_edges_json, vector_evidence_json, evidence_ids_json,
+                updated_at, expires_at, source_note
+            FROM person_profile_snapshots
+            WHERE person_id = ?
+            ORDER BY profile_version DESC
+            LIMIT 1
+            """,
+            (str(person_id),),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+
+        def _load_list(raw: Any) -> List[Any]:
+            if not raw:
+                return []
+            try:
+                data = json.loads(raw)
+                return data if isinstance(data, list) else []
+            except Exception:
+                return []
+
+        return {
+            "snapshot_id": row[0],
+            "person_id": row[1],
+            "profile_version": int(row[2]),
+            "profile_text": row[3] or "",
+            "aliases": _load_list(row[4]),
+            "relation_edges": _load_list(row[5]),
+            "vector_evidence": _load_list(row[6]),
+            "evidence_ids": _load_list(row[7]),
+            "updated_at": row[8],
+            "expires_at": row[9],
+            "source_note": row[10] or "",
+        }
+
+    def upsert_person_profile_snapshot(
+        self,
+        person_id: str,
+        profile_text: str,
+        aliases: Optional[List[str]] = None,
+        relation_edges: Optional[List[Dict[str, Any]]] = None,
+        vector_evidence: Optional[List[Dict[str, Any]]] = None,
+        evidence_ids: Optional[List[str]] = None,
+        expires_at: Optional[float] = None,
+        source_note: str = "",
+        updated_at: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """写入人物画像快照（按 person_id 自动递增版本）。"""
+        if not person_id:
+            raise ValueError("person_id 不能为空")
+
+        aliases = aliases or []
+        relation_edges = relation_edges or []
+        vector_evidence = vector_evidence or []
+        evidence_ids = evidence_ids or []
+        ts = float(updated_at) if updated_at is not None else datetime.now().timestamp()
+
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            SELECT profile_version
+            FROM person_profile_snapshots
+            WHERE person_id = ?
+            ORDER BY profile_version DESC
+            LIMIT 1
+            """,
+            (str(person_id),),
+        )
+        row = cursor.fetchone()
+        next_version = int(row[0]) + 1 if row else 1
+
+        cursor.execute(
+            """
+            INSERT INTO person_profile_snapshots (
+                person_id, profile_version, profile_text,
+                aliases_json, relation_edges_json, vector_evidence_json, evidence_ids_json,
+                updated_at, expires_at, source_note
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(person_id),
+                next_version,
+                str(profile_text or ""),
+                json.dumps(aliases, ensure_ascii=False),
+                json.dumps(relation_edges, ensure_ascii=False),
+                json.dumps(vector_evidence, ensure_ascii=False),
+                json.dumps(evidence_ids, ensure_ascii=False),
+                ts,
+                float(expires_at) if expires_at is not None else None,
+                str(source_note or ""),
+            ),
+        )
+        self._conn.commit()
+        latest = self.get_latest_person_profile_snapshot(person_id)
+        return latest or {
+            "person_id": person_id,
+            "profile_version": next_version,
+            "profile_text": str(profile_text or ""),
+            "aliases": aliases,
+            "relation_edges": relation_edges,
+            "vector_evidence": vector_evidence,
+            "evidence_ids": evidence_ids,
+            "updated_at": ts,
+            "expires_at": expires_at,
+            "source_note": source_note,
+        }
+
+    def get_person_profile_override(self, person_id: str) -> Optional[Dict[str, Any]]:
+        """获取人物画像手工覆盖内容。"""
+        if not person_id:
+            return None
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            SELECT person_id, override_text, updated_at, updated_by, source
+            FROM person_profile_overrides
+            WHERE person_id = ?
+            LIMIT 1
+            """,
+            (str(person_id),),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "person_id": str(row[0]),
+            "override_text": str(row[1] or ""),
+            "updated_at": row[2],
+            "updated_by": str(row[3] or ""),
+            "source": str(row[4] or ""),
+        }
+
+    def set_person_profile_override(
+        self,
+        person_id: str,
+        override_text: str,
+        updated_by: str = "",
+        source: str = "webui",
+        updated_at: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """写入人物画像手工覆盖；空文本等价于清除覆盖。"""
+        if not person_id:
+            raise ValueError("person_id 不能为空")
+
+        text = str(override_text or "").strip()
+        if not text:
+            self.delete_person_profile_override(person_id)
+            return {
+                "person_id": str(person_id),
+                "override_text": "",
+                "updated_at": None,
+                "updated_by": str(updated_by or ""),
+                "source": str(source or ""),
+            }
+
+        ts = float(updated_at) if updated_at is not None else datetime.now().timestamp()
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO person_profile_overrides (
+                person_id, override_text, updated_at, updated_by, source
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(person_id) DO UPDATE SET
+                override_text = excluded.override_text,
+                updated_at = excluded.updated_at,
+                updated_by = excluded.updated_by,
+                source = excluded.source
+            """,
+            (
+                str(person_id),
+                text,
+                ts,
+                str(updated_by or ""),
+                str(source or ""),
+            ),
+        )
+        self._conn.commit()
+        return self.get_person_profile_override(person_id) or {
+            "person_id": str(person_id),
+            "override_text": text,
+            "updated_at": ts,
+            "updated_by": str(updated_by or ""),
+            "source": str(source or ""),
+        }
+
+    def delete_person_profile_override(self, person_id: str) -> bool:
+        """删除人物画像手工覆盖。"""
+        if not person_id:
+            return False
+        cursor = self._conn.cursor()
+        cursor.execute(
+            "DELETE FROM person_profile_overrides WHERE person_id = ?",
+            (str(person_id),),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
 
     def has_table(self, table_name: str) -> bool:
         """检查数据库是否存在指定表。"""
