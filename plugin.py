@@ -6,7 +6,7 @@ A_Memorix 插件主入口
 
 import sys
 from pathlib import Path
-from typing import List, Tuple, Type, Optional, Dict, Union, Any, Set
+from typing import List, Tuple, Type, Optional, Dict, Union, Any, Set, Callable, Awaitable
 from src.plugin_system import (
     BasePlugin,
     BaseAction,
@@ -67,8 +67,8 @@ class A_MemorixPlugin(BasePlugin):
 
     # 插件基本信息（PluginBase要求的抽象属性）
     plugin_name = "A_Memorix"
-    plugin_version = "0.4.0"
-    plugin_description = "轻量级知识库插件 - 完全独立的记忆增强系统"
+    plugin_version = "0.5.0"
+    plugin_description = "轻量级知识库插件 - 含人物画像能力的独立记忆增强系统"
     plugin_author = "A_Dawn"
     enable_plugin = False  # 默认禁用，需要在config.toml中启用
     dependencies: list[str] = []
@@ -88,6 +88,7 @@ class A_MemorixPlugin(BasePlugin):
         "summarization": "总结与导入配置",
         "schedule": "定时任务配置",
         "filter": "消息过滤配置",
+        "routing": "检索路由与兼容开关",
         "person_profile": "人物画像配置",
         "memory": "记忆衰减与强化配置",
     }
@@ -97,7 +98,7 @@ class A_MemorixPlugin(BasePlugin):
         "plugin": {
             "config_version": ConfigField(
                 type=str,
-                default="3.1.0",
+                default="4.0.0",
                 description="配置文件版本"
             ),
             "enabled": ConfigField(
@@ -205,6 +206,26 @@ class A_MemorixPlugin(BasePlugin):
                     "max_scan": 1000,
                 },
                 description="时序检索配置"
+            ),
+            "search": ConfigField(
+                type=dict,
+                default={
+                    "smart_fallback": {
+                        "enabled": True,
+                        "threshold": 0.6,
+                    },
+                    "safe_content_dedup": {
+                        "enabled": True,
+                    },
+                },
+                description="统一检索后处理配置（smart fallback / safe dedup）"
+            ),
+            "time": ConfigField(
+                type=dict,
+                default={
+                    "skip_threshold_when_query_empty": True,
+                },
+                description="time 模式行为兼容配置"
             ),
             "sparse": ConfigField(
                 type=dict,
@@ -375,6 +396,28 @@ class A_MemorixPlugin(BasePlugin):
                 description="聊天流 ID 列表。支持填写: 1. 群号 (group_id, 如: 123456); 2. 私聊用户ID (user_id, 如: 10001); 3. 聊天流唯一标识 (stream_id, MD5格式)。"
             ),
         },
+        "routing": {
+            "search_owner": ConfigField(
+                type=str,
+                default="action",
+                description="search/time 主责入口：action|tool|dual"
+            ),
+            "tool_search_mode": ConfigField(
+                type=str,
+                default="forward",
+                description="knowledge_query 的 search/time 模式：forward|disabled（legacy 兼容别名）"
+            ),
+            "enable_request_dedup": ConfigField(
+                type=bool,
+                default=True,
+                description="是否启用短时请求去重（抑制 Action+Tool 同轮重复检索）"
+            ),
+            "request_dedup_ttl_seconds": ConfigField(
+                type=int,
+                default=2,
+                description="请求去重 TTL（秒）"
+            ),
+        },
         "person_profile": {
             "enabled": ConfigField(
                 type=bool,
@@ -468,6 +511,11 @@ class A_MemorixPlugin(BasePlugin):
         self._person_profile_refresh_task: Optional[asyncio.Task] = None
         self._memory_maintenance_task: Optional[asyncio.Task] = None
 
+        # 检索请求去重（短 TTL + in-flight 合并）
+        self._request_dedup_cache: Dict[str, Dict[str, Any]] = {}
+        self._request_dedup_inflight: Dict[str, asyncio.Future] = {}
+        self._request_dedup_lock = asyncio.Lock()
+
     @property
     def debug_enabled(self) -> bool:
         return self.get_config("advanced.debug", False)
@@ -511,7 +559,7 @@ class A_MemorixPlugin(BasePlugin):
                 ActionInfo(
                     name="knowledge_search",
                     component_type="action",
-                    description="在知识库中搜索相关内容，支持段落和关系的双路检索，可用于记忆查询和知识问答",
+                    description="主责 search/time 检索链路：在知识库中搜索相关内容，支持段落和关系的双路检索",
                     activation_type=ActionActivationType.ALWAYS,
                     activation_keywords=[],
                     keyword_case_sensitive=False,
@@ -674,7 +722,7 @@ class A_MemorixPlugin(BasePlugin):
                 ToolInfo(
                     name="knowledge_query",
                     component_type="tool",
-                    tool_description="查询A_Memorix知识库，支持检索、实体查询、关系查询、人物画像和统计信息",
+                    tool_description="查询A_Memorix知识库（entity/relation/person/stats 主责；search/time 可按 routing 转发或兼容）",
                     enabled=True,
                     tool_parameters=[
                         (
@@ -708,7 +756,7 @@ class A_MemorixPlugin(BasePlugin):
                         (
                             "use_threshold",
                             "boolean",
-                            "是否使用动态阈值过滤（仅search模式）",
+                            "是否使用动态阈值过滤（search/time模式）",
                             False,
                             None,
                         ),
@@ -982,6 +1030,7 @@ class A_MemorixPlugin(BasePlugin):
             "metadata_store": self.metadata_store,
             "embedding_manager": self.embedding_manager,
             "sparse_index": self.sparse_index,
+            "plugin_instance": self,
         }
         
         # 同时更新私有配置和主配置，确保命令可以通过其获取实例
@@ -1291,6 +1340,106 @@ class A_MemorixPlugin(BasePlugin):
         else:
             # 黑名单模式：匹配到的被禁用
             return not is_matched
+
+    def _get_routing_mode_value(self, key: str, default: str) -> str:
+        value = str(self.get_config(f"routing.{key}", default) or default).strip().lower()
+        return value or default
+
+    def get_search_owner(self) -> str:
+        owner = self._get_routing_mode_value("search_owner", "action")
+        if owner not in {"action", "tool", "dual"}:
+            return "action"
+        return owner
+
+    def get_tool_search_mode(self) -> str:
+        mode = self._get_routing_mode_value("tool_search_mode", "forward")
+        if mode == "legacy":
+            logger.warning("routing.tool_search_mode=legacy 已废弃，按 forward 处理")
+            return "forward"
+        if mode not in {"forward", "disabled"}:
+            return "forward"
+        return mode
+
+    def _is_request_dedup_enabled(self) -> bool:
+        return bool(self.get_config("routing.enable_request_dedup", True))
+
+    def _get_request_dedup_ttl_seconds(self) -> float:
+        try:
+            ttl = float(self.get_config("routing.request_dedup_ttl_seconds", 2))
+        except (TypeError, ValueError):
+            ttl = 2.0
+        return max(0.1, ttl)
+
+    def _cleanup_request_dedup_cache_locked(self, now_ts: Optional[float] = None) -> None:
+        now_ts = now_ts if now_ts is not None else time.time()
+        stale_keys = [
+            key
+            for key, entry in self._request_dedup_cache.items()
+            if float(entry.get("expires_at", 0.0)) <= now_ts
+        ]
+        for key in stale_keys:
+            self._request_dedup_cache.pop(key, None)
+
+    async def execute_request_with_dedup(
+        self,
+        request_key: str,
+        executor: Callable[[], Awaitable[Any]],
+    ) -> Tuple[bool, Any]:
+        """
+        执行短时请求去重。
+
+        Returns:
+            Tuple[bool, Any]: (是否命中去重缓存/并发复用, 执行结果)
+        """
+        if not self._is_request_dedup_enabled():
+            result = await executor()
+            return False, result
+
+        wait_future: Optional[asyncio.Future] = None
+        is_owner = False
+        now_ts = time.time()
+
+        async with self._request_dedup_lock:
+            self._cleanup_request_dedup_cache_locked(now_ts)
+
+            cached = self._request_dedup_cache.get(request_key)
+            if cached and float(cached.get("expires_at", 0.0)) > now_ts:
+                return True, cached.get("result")
+
+            inflight = self._request_dedup_inflight.get(request_key)
+            if inflight is not None:
+                wait_future = inflight
+            else:
+                loop = asyncio.get_running_loop()
+                new_future: asyncio.Future = loop.create_future()
+                self._request_dedup_inflight[request_key] = new_future
+                wait_future = new_future
+                is_owner = True
+
+        if not is_owner and wait_future is not None:
+            result = await wait_future
+            return True, result
+
+        assert wait_future is not None
+        try:
+            result = await executor()
+            ttl = self._get_request_dedup_ttl_seconds()
+            expires_at = time.time() + ttl
+            async with self._request_dedup_lock:
+                self._request_dedup_cache[request_key] = {
+                    "result": result,
+                    "expires_at": expires_at,
+                }
+                future = self._request_dedup_inflight.pop(request_key, None)
+                if future is not None and not future.done():
+                    future.set_result(result)
+            return False, result
+        except Exception as e:
+            async with self._request_dedup_lock:
+                future = self._request_dedup_inflight.pop(request_key, None)
+                if future is not None and not future.done():
+                    future.set_exception(e)
+            raise
 
     def is_person_profile_injection_enabled(self, stream_id: str, user_id: str) -> bool:
         """检查人物画像自动注入是否开启（按 stream_id + user_id）。"""

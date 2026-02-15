@@ -1,6 +1,6 @@
 # A_Memorix 配置参数详解（config.toml）
 
-适用版本：`plugins/A_memorix/config.toml`（`config_version = "3.1.0"`，插件代码 `v0.4.0`）。
+适用版本：`plugins/A_memorix/config.toml`（`config_version = "4.0.0"`，插件代码 `v0.5.0`）。
 
 ---
 
@@ -8,6 +8,7 @@
 
 - `embedding.quantization_type` 当前**基本不生效**：虽然配置支持 `float32/int8/pq`，但 `VectorStore` 内部目前固定走 SQ8（`int8`）实现（后期预期不会走其他实现）。
 - `retrieval.sparse` 与 `retrieval.fusion` 是新增检索增强配置：可在 embedding 异常时自动回退 BM25，并通过 weighted RRF 融合候选。
+- `routing.search_owner=action` + `routing.tool_search_mode=forward` 是默认推荐：Action 主责 `search/time`，Tool 在 `search/time` 上走统一转发链路。
 - `memory.reinforce_buffer_max_size`、`memory.min_active_weight_protected` 当前代码里**未实际使用**。
 - `filter.mode = "blacklist"` 且 `filter.chats = []` 时，会导致“全部聊天流被禁用”。
 - `retrieval.sparse.enable_relation_sparse_fallback = false` 会关闭关系 sparse 召回，但当前段落 sparse 查询路径仍会幂等检查 `relations_fts` schema/backfill（有轻微额外开销）。
@@ -87,6 +88,15 @@
 - `retrieval.relation_fallback_min_score`
   - 功能：关系语义回退最低分数阈值。
   - 生效：过滤低分语义关系候选。
+- `retrieval.search.smart_fallback.enabled`
+  - 功能：统一链路 search 低分时是否启用路径回退。
+  - 生效：search 最高分低于阈值时，尝试基于图路径补充间接关系结果。
+- `retrieval.search.smart_fallback.threshold`
+  - 功能：统一链路 search 的低分触发阈值。
+  - 生效：当 search 最高分小于该值时触发路径回退（默认 `0.6`）。
+- `retrieval.search.safe_content_dedup.enabled`
+  - 功能：统一链路结果安全去重开关。
+  - 生效：按 hash/内容相似度去重，并保证至少保留一条结果。
 
 ### `[retrieval.sparse]` 稀疏检索（FTS5 + BM25）
 
@@ -214,6 +224,9 @@
 - `retrieval.temporal.max_scan`
   - 功能：时序模式最大扫描候选上限。
   - 生效：对放大后的候选数量做硬上限裁剪。
+- `retrieval.time.skip_threshold_when_query_empty`
+  - 功能：time 模式在 query 为空时是否跳过阈值过滤。
+  - 生效：为 `true` 时与 legacy 行为对齐（仅按时序过滤，不做阈值筛除）。
 
 ### 时序参数格式约束（Action/Tool/Command）
 
@@ -323,6 +336,54 @@
   - 功能：过滤目标列表。
   - 生效：支持 `group:123`、`user:10001`、`private:10001`、`stream:<md5>` 或纯 ID（兼容匹配 stream/group/user）。
   - 注意：当列表为空时，`whitelist`=全部放行，`blacklist`=全部拒绝。
+
+## `[routing]` 检索路由与兼容
+
+- `routing.search_owner`
+  - 功能：`search/time` 主责入口（`action|tool|dual`）。
+  - 生效：
+    - `action`：Action 主责（推荐）。
+    - `tool`：Action 侧检索链路跳过，由 Tool 侧负责。
+    - `dual`：Action 与 Tool 都可触发（依赖去重抑制重复执行）。
+- `routing.tool_search_mode`
+  - 功能：Tool 在 `search/time` 上的执行模式（`forward|disabled`）。
+  - 生效：
+    - `forward`：Tool 转发到统一检索执行服务（与 Action 同链路）。
+    - `disabled`：Tool 的 `search/time` 直接拒绝并提示改走 Action。
+  - 兼容：历史配置值 `legacy` 仍可读取，但会被按 `forward` 处理并输出废弃告警。
+- `routing.enable_request_dedup`
+  - 功能：是否开启短时请求去重。
+  - 生效：同键请求在 TTL 内复用结果，并复用进行中的同键请求，避免 Action+Tool 同轮重复检索与重复强化。
+- `routing.request_dedup_ttl_seconds`
+  - 功能：去重窗口（秒）。
+  - 生效：命中窗口内请求直接复用缓存结果；超时后重新执行检索。
+
+## `[person_profile]` 人物画像
+
+- `person_profile.enabled`
+  - 功能：人物画像模块总开关。
+  - 生效：关闭后 `/query person`、`knowledge_query(query_type=person)` 与自动注入都会直接禁用。
+- `person_profile.opt_in_required`
+  - 功能：是否要求显式开启注入。
+  - 生效：为 `true` 时，只有执行 `/person_profile on` 的 `stream_id + user_id` 组合才会注入画像。
+- `person_profile.default_injection_enabled`
+  - 功能：无开关记录时的默认注入状态。
+  - 生效：`opt_in_required=false` 或缺省记录时作为默认值。
+- `person_profile.profile_ttl_minutes`
+  - 功能：画像快照 TTL（分钟）。
+  - 生效：画像查询优先复用 TTL 内快照，过期后重建并写入新版本。
+- `person_profile.refresh_interval_minutes`
+  - 功能：后台刷新周期（分钟）。
+  - 生效：定时任务每轮 sleep 周期；最小有效周期由实现限制。
+- `person_profile.active_window_hours`
+  - 功能：活跃人物窗口（小时）。
+  - 生效：仅刷新最近活跃窗口内、且开关启用范围内的人物。
+- `person_profile.max_refresh_per_cycle`
+  - 功能：每轮最大刷新人数。
+  - 生效：限制单轮刷新负载，防止后台任务抢占过多资源。
+- `person_profile.top_k_evidence`
+  - 功能：画像构建时的证据数量上限。
+  - 生效：控制向量/关系证据采样规模与输出稳定性。
 
 ## `[memory]` 记忆系统（V5）
 

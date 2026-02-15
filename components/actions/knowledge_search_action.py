@@ -4,9 +4,7 @@
 提供基于双路检索的知识搜索功能。
 """
 
-import time
 from typing import Tuple, Optional, List, Dict, Any
-from pathlib import Path
 
 from src.common.logger import get_logger
 from src.plugin_system.base.base_action import BaseAction
@@ -18,11 +16,16 @@ from ...core import (
     DualPathRetriever,
     RetrievalStrategy,
     DualPathRetrieverConfig,
-    TemporalQueryOptions,
+    DynamicThresholdFilter,
+    ThresholdConfig,
+    ThresholdMethod,
     SparseBM25Config,
     FusionConfig,
 )
-from ...core.utils.time_parser import parse_query_time_range
+from ...core.utils.search_execution_service import (
+    SearchExecutionRequest,
+    SearchExecutionService,
+)
 
 logger = get_logger("A_Memorix.KnowledgeSearchAction")
 
@@ -107,6 +110,7 @@ class KnowledgeSearchAction(BaseAction):
 
         # 初始化检索器
         self.retriever: Optional[DualPathRetriever] = None
+        self.threshold_filter: Optional[DynamicThresholdFilter] = None
         self._initialize_retriever()
  
     @property
@@ -198,6 +202,17 @@ class KnowledgeSearchAction(BaseAction):
                 config=config,
             )
 
+            threshold_config = ThresholdConfig(
+                method=ThresholdMethod.ADAPTIVE,
+                min_threshold=self.get_config("threshold.min_threshold", 0.3),
+                max_threshold=self.get_config("threshold.max_threshold", 0.95),
+                percentile=self.get_config("threshold.percentile", 75.0),
+                std_multiplier=self.get_config("threshold.std_multiplier", 1.5),
+                min_results=self.get_config("threshold.min_results", 3),
+                enable_auto_adjust=self.get_config("threshold.enable_auto_adjust", True),
+            )
+            self.threshold_filter = DynamicThresholdFilter(threshold_config)
+
             logger.info(f"{self.log_prefix} 知识检索器初始化完成")
 
         except Exception as e:
@@ -229,165 +244,54 @@ class KnowledgeSearchAction(BaseAction):
                 query_type = "hybrid" if query else "time"
             else:
                 query_type = "semantic"
+        search_owner = str(self.get_config("routing.search_owner", "action") or "action").strip().lower()
+        if search_owner == "tool":
+            logger.info(f"{self.log_prefix} routing.search_owner=tool，Action检索链路跳过")
+            return True, ""
 
-        if query_type not in {"semantic", "time", "hybrid"}:
-            return False, f"query_type 无效: {query_type}（仅支持 semantic/time/hybrid）"
-
-        if query_type in {"semantic", "hybrid"} and not query:
-            return False, "semantic/hybrid 模式必须提供 query"
-
-        temporal_enabled = bool(self.get_config("retrieval.temporal.enabled", True))
-        if query_type in {"time", "hybrid"} and not temporal_enabled:
-            return False, "时序检索已禁用（retrieval.temporal.enabled=false）"
-
-        temporal_default_top_k = int(
-            self.get_config("retrieval.temporal.default_top_k", 10)
-        )
-        default_top_k = temporal_default_top_k if query_type in {"time", "hybrid"} else 10
-        if top_k_raw is None:
-            top_k = default_top_k
-        else:
-            try:
-                top_k = int(top_k_raw)
-            except (TypeError, ValueError):
-                return False, "top_k 参数必须为整数"
-        top_k = max(1, min(50, top_k))
-
-        temporal: Optional[TemporalQueryOptions] = None
-        if query_type in {"time", "hybrid"}:
-            if not time_from_raw and not time_to_raw:
-                return False, "time/hybrid 模式至少需要 time_from 或 time_to"
-            try:
-                ts_from, ts_to = parse_query_time_range(
-                    str(time_from_raw) if time_from_raw is not None else None,
-                    str(time_to_raw) if time_to_raw is not None else None,
-                )
-            except ValueError as e:
-                return False, f"时间参数错误: {e}"
-            temporal = TemporalQueryOptions(
-                time_from=ts_from,
-                time_to=ts_to,
-                person=str(person).strip() if person else None,
-                source=str(source).strip() if source else None,
-                allow_created_fallback=self.get_config(
-                    "retrieval.temporal.allow_created_fallback",
-                    True,
-                ),
-                candidate_multiplier=int(
-                    self.get_config("retrieval.temporal.candidate_multiplier", 8)
-                ),
-                max_scan=int(self.get_config("retrieval.temporal.max_scan", 1000)),
-            )
-
-        # 0. 检查是否在允许的聊天流中
-        from ...plugin import A_MemorixPlugin
-        plugin_instance = A_MemorixPlugin.get_global_instance()
-        if plugin_instance:
-             # 获取当前聊天流ID, 群组ID, 用户ID
-            stream_id = self.chat_id
-            group_id = self.group_id
-            user_id = self.user_id
-            
-            if not plugin_instance.is_chat_enabled(stream_id, group_id, user_id):
-                # 如果未启用，安静地返回（视为成功但无结果，避免打扰）
-                logger.info(f"{self.log_prefix} 聊天流已被过滤配置禁用，跳过检索")
-                return True, ""
-
-        logger.info(
-            f"{self.log_prefix} 开始知识检索: query_type={query_type}, query='{query}', top_k={top_k}"
+        request = SearchExecutionRequest(
+            caller="action",
+            stream_id=self.chat_id,
+            group_id=self.group_id,
+            user_id=self.user_id,
+            query_type=query_type,
+            query=query,
+            top_k=top_k_raw,
+            time_from=str(time_from_raw) if time_from_raw is not None else None,
+            time_to=str(time_to_raw) if time_to_raw is not None else None,
+            person=str(person).strip() if person else None,
+            source=str(source).strip() if source else None,
+            use_threshold=bool(use_threshold),
+            enable_ppr=bool(enable_ppr),
         )
 
-        try:
-            # 记录开始时间
-            start_time = time.time()
+        execution = await SearchExecutionService.execute(
+            retriever=self.retriever,
+            threshold_filter=self.threshold_filter,
+            plugin_config=self.plugin_config,
+            request=request,
+            enforce_chat_filter=True,
+            reinforce_access=True,
+        )
+        if not execution.success:
+            return False, execution.error
 
-            # 执行检索
-            results = await self._search_knowledge(
-                query=query,
-                top_k=top_k,
-                use_threshold=use_threshold,
-                enable_ppr=enable_ppr,
-                temporal=temporal,
-            )
+        if execution.chat_filtered:
+            return True, ""
 
-            # 计算耗时
-            elapsed_ms = (time.time() - start_time) * 1000
-
-            # 格式化结果
-            if not results:
-                response = f"未找到相关内容（检索耗时: {elapsed_ms:.1f}ms）"
-                logger.info(f"{self.log_prefix} {response}")
-                return True, response
-
-            # 构建响应
-            query_display = query if query else "N/A"
-            response = self._format_results(results, query_display, elapsed_ms)
-
-            logger.info(
-                f"{self.log_prefix} 检索完成: 返回{len(results)}条结果, 耗时{elapsed_ms:.1f}ms"
-            )
-
+        results = execution.results
+        elapsed_ms = execution.elapsed_ms
+        if not results:
+            response = f"未找到相关内容（检索耗时: {elapsed_ms:.1f}ms）"
+            logger.info(f"{self.log_prefix} {response}")
             return True, response
 
-        except Exception as e:
-            error_msg = f"知识检索失败: {str(e)}"
-            logger.error(f"{self.log_prefix} {error_msg}")
-            return False, error_msg
-
-    async def _search_knowledge(
-        self,
-        query: str,
-        top_k: int,
-        use_threshold: bool,
-        enable_ppr: bool,
-        temporal: Optional[TemporalQueryOptions] = None,
-    ) -> List[Any]:
-        """执行知识检索
-
-        Args:
-            query: 查询文本
-            top_k: 返回结果数量
-            use_threshold: 是否使用阈值过滤
-            enable_ppr: 是否启用PPR
-
-        Returns:
-            检索结果列表
-        """
-        # 临时配置PPR
-        original_ppr_setting = self.retriever.config.enable_ppr
-        self.retriever.config.enable_ppr = enable_ppr
-
-        try:
-            # 执行检索 (异步)
-            results = await self.retriever.retrieve(
-                query,
-                top_k=top_k,
-                temporal=temporal,
-            )
-
-            # 应用阈值过滤
-            if use_threshold and hasattr(self.retriever, "threshold_filter"):
-                threshold_filter = self.retriever.threshold_filter
-                if threshold_filter:
-                    results = threshold_filter.filter(results)
-
-            # V5: Hook for Memory Reinforcement
-            from ...plugin import A_MemorixPlugin
-            plugin_instance = A_MemorixPlugin.get_global_instance()
-            if plugin_instance:
-                 # Reinforce only relations that survived filtering
-                 relation_hashes = [
-                     r.hash_value for r in results if r.result_type == "relation"
-                 ]
-                 if relation_hashes:
-                     # Fire and forget (it pushes to buffer)
-                     await plugin_instance.reinforce_access(relation_hashes)
-
-            return results
-
-        finally:
-            # 恢复原始配置
-            self.retriever.config.enable_ppr = original_ppr_setting
+        query_display = query if query else "N/A"
+        response = self._format_results(results, query_display, elapsed_ms)
+        logger.info(
+            f"{self.log_prefix} 检索完成: 返回{len(results)}条结果, 耗时{elapsed_ms:.1f}ms"
+        )
+        return True, response
 
     def _format_results(self, results: List[Any], query: str, elapsed_ms: float) -> str:
         """格式化检索结果
