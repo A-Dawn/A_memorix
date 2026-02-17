@@ -1,8 +1,8 @@
 {
   "manifest_version": 1,
   "name": "A_Memorix",
-  "version": "0.4.0",
-  "description": "轻量级知识库插件 - 基于双路检索的完全独立的记忆增强系统，优化低资源环境下的知识存储与检索",
+  "version": "0.5.0",
+  "description": "轻量级知识库插件 - 基于双路检索与人物画像的独立记忆增强系统，优化低资源环境下的知识存储与检索",
   "author": {
     "name": "A_Dawn"
   },
@@ -427,6 +427,48 @@
         },
         "default": [],
         "description": "聊天流 ID 列表。支持格式: 1. 纯数字 (兼容模式); 2. 显式指定: 'group:12345'(群号), 'user:10001'(私聊), 'stream:hash'(流ID)"
+      }
+    },
+    "person_profile": {
+      "enabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "人物画像模块总开关"
+      },
+      "opt_in_required": {
+        "type": "boolean",
+        "default": true,
+        "description": "是否要求显式开启画像注入"
+      },
+      "default_injection_enabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "无开关记录时的默认注入状态"
+      },
+      "profile_ttl_minutes": {
+        "type": "number",
+        "default": 360.0,
+        "description": "人物画像快照 TTL（分钟）"
+      },
+      "refresh_interval_minutes": {
+        "type": "integer",
+        "default": 30,
+        "description": "人物画像定时刷新周期（分钟）"
+      },
+      "active_window_hours": {
+        "type": "number",
+        "default": 72.0,
+        "description": "活跃人物窗口（小时）"
+      },
+      "max_refresh_per_cycle": {
+        "type": "integer",
+        "default": 50,
+        "description": "每轮最多刷新的人物数量"
+      },
+      "top_k_evidence": {
+        "type": "integer",
+        "default": 12,
+        "description": "构建画像时的证据数量上限"
       }
     },
     "memory": {

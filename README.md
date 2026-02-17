@@ -1,6 +1,6 @@
 # A_Memorix
 
-**轻量级知识图谱插件** - 基于双路检索的完全独立的记忆增强系统 (v0.4.0)
+**轻量级知识图谱插件** - 基于双路检索 + 人物画像的独立记忆增强系统 (v0.5.0)
 
 > 消えていかない感覚 , まだまだ足りてないみたい !
 
@@ -9,16 +9,16 @@
 > 升级后，虽然系统会尝试自动迁移部分数据，但为确保知识图谱的检索精度和完整性，强烈建议在升级后使用 `process_knowledge.py` 脚本重新导入原始文本。
 
 > [!NOTE]
-> **v0.4.0 时序检索增强**：
-> 1. 新增统一时序检索入口：`/query time|t`、`knowledge_query(query_type=time)`、`knowledge_search(query_type=time|hybrid)`；
-> 2. 查询时间参数仅接受 `YYYY/MM/DD` 或 `YYYY/MM/DD HH:mm`（日期自动展开到 `00:00/23:59`）；
-> 3. 支持分钟级时间窗口检索，结果统一返回 `metadata.time_meta`（含命中依据与有效时间窗口）。
->
-> **v0.4.0 检索增强**：
-> 1. 新增稀疏检索组件 `SparseBM25Index`（FTS5 + BM25），支持懒加载与卸载；
-> 2. 段落检索新增 `ngram` 倒排回退，并可选启用 LIKE 兜底；
-> 3. DualPath 在 embedding 异常时可自动回退 sparse，并支持 `weighted_rrf` 融合向量路与 BM25 路；
-> 4. `/query stats` 与 `knowledge_query` 统计结果新增 sparse 状态（enabled/loaded/tokenizer/doc_count）。
+> **v0.5.0 人物画像增强（主更新）**：
+> 1. 新增 `PersonProfileService`，基于“别名解析 + 图关系证据 + 向量证据”生成人物画像快照；
+> 2. 新增 `/person_profile on|off|status`，支持按 `stream_id + user_id` 控制画像注入；
+> 3. `knowledge_query` 新增 `query_type=person`，`/query person|p` 支持人物画像查询；
+> 4. 新增画像定时刷新任务与 override/快照存储能力（依赖 metadata 新表）。
+> 
+> **v0.5.0 版本与Schema同步**：
+> 1. 插件版本升级到 `0.5.0`；
+> 2. 配置版本升级到 `4.0.0`；
+> 3. `manifest_version` 保持为 `1`（兼容当前仅支持 v1 的宿主校验器）。
 
 ## 📑 文档索引
 
@@ -33,6 +33,7 @@
 
 - **🧠 双路检索** - 关系图谱 + 向量语义并行检索，结合 Personalized PageRank 智能排序。
 - **⏱️ 时序检索（分钟级）** - 支持 `time/hybrid` 模式，按事件时间区间命中并可回退 `created_at`。
+- **👤 人物画像（v0.5.0）** - 支持人物画像快照、别名解析、手工覆盖、按会话 opt-in 注入控制。
 - **🧩 稀疏检索增强（FTS5 + BM25）** - embedding 不可用或召回偏弱时自动走 sparse，支持 `jieba/mixed/char_2gram` 分词与 `ngram` 倒排回退。
 - **🧬 生物学记忆 (V5)** - 模拟人类记忆的**衰减 (Decay)**、**强化 (Reinforce)** 与 **结构化重组 (Prune)** 机制，实现记忆的动态生命周期管理。
 - **🔄 智能回退** - 当直接检索结果弱时，自动触发多跳路径搜索，增强间接关系召回。
@@ -152,6 +153,7 @@ python plugins/A_memorix/scripts/backfill_temporal_metadata.py --limit 50000
 | `/query`     | `search(s)`, `time(t)`, `entity(e)`, `relation(r)`, `stats` | 查询知识 | `/query t q=项目进展 from=2025/01/01 to=2025/01/31` |
 | `/delete`    | `paragraph`, `entity`, `clear`                   | 删除知识            | `/delete paragraph <hash>`   |
 | `/memory`    | `status`, `protect`, `reinforce`, `restore`      | 记忆系统维护 (V5)   | `/memory status`             |
+| `/person_profile` | `on`, `off`, `status`                         | 人物画像注入开关（按会话+用户） | `/person_profile on` |
 | `/visualize` | -                                                | 启动可视化 Web 面板 | `/visualize`                 |
 
 #### 🧠 记忆系统维护 (`/memory`)
@@ -180,6 +182,7 @@ python plugins/A_memorix/scripts/backfill_temporal_metadata.py --limit 50000
 - **实体查询**：`/query entity <name>` (缩写: `/query e`)
 - **关系查询**：`/query relation <spec>` (缩写: `/query r`) - 支持自然语言或 `S|P|O` 格式。
 - **统计信息**：`/query stats`
+- **人物画像**：`/query person <id|别名>`（简写：`/query p`）
 
 #### 🗑️ 删除与维护
 
@@ -215,12 +218,34 @@ python plugins/A_memorix/scripts/backfill_temporal_metadata.py --limit 50000
 - **`enable_ppr`**: 是否启用 Personalized PageRank 算法优化排序。
 - **`top_k_relations` / `top_k_paragraphs`**: 分别控制单路检索召回数量。
 - **`relation_semantic_fallback`**: 是否允许关系检索回退到语义搜索。
+- **`search.smart_fallback.enabled`**: search 低分时是否启用路径回退（默认 `true`）。
+- **`search.smart_fallback.threshold`**: search 路径回退触发阈值（默认 `0.6`）。
+- **`search.safe_content_dedup.enabled`**: 统一链路安全去重开关（默认 `true`）。
+- **`time.skip_threshold_when_query_empty`**: time 且 query 为空时跳过阈值过滤（默认 `true`）。
 - **`sparse.mode`**: 稀疏检索模式（`auto/fallback_only/hybrid`），默认 `auto`。
 - **`sparse.tokenizer_mode`**: 分词模式（`jieba/mixed/char_2gram`）。
 - **`sparse.enable_ngram_fallback_index`**: FTS miss 时启用 ngram 倒排回退（默认开）。
 - **`sparse.enable_relation_sparse_fallback`**: 关系通道稀疏回退独立开关（默认开）。
 - **`fusion.method`**: 融合方法（默认 `weighted_rrf`，支持向量+BM25 候选融合）。
 - **`fusion.vector_weight + fusion.bm25_weight`**: 若和不为 1，会自动归一化。
+
+#### 🔀 检索路由 `[routing]`
+
+- **`search_owner`**: `search/time` 主责入口（`action|tool|dual`），默认 `action`。
+- **`tool_search_mode`**: Tool 在 `search/time` 的模式（`forward|disabled`），默认 `forward`；`legacy` 为兼容别名并按 `forward` 处理。
+- **`enable_request_dedup`**: 启用短时请求去重，抑制 Action+Tool 同轮重复检索。
+- **`request_dedup_ttl_seconds`**: 去重 TTL，默认 `2` 秒。
+
+#### 👤 人物画像 `[person_profile]`
+
+- **`enabled`**: 人物画像模块总开关。
+- **`opt_in_required`**: 是否要求显式开启注入（默认 `true`）。
+- **`default_injection_enabled`**: 无显式开关记录时的默认注入状态。
+- **`profile_ttl_minutes`**: 画像快照 TTL。
+- **`refresh_interval_minutes`**: 定时刷新周期。
+- **`active_window_hours`**: 仅刷新活跃窗口内人物。
+- **`max_refresh_per_cycle`**: 每轮最大刷新人数。
+- **`top_k_evidence`**: 画像构建证据上限。
 
 #### 🧩 稀疏检索行为说明
 

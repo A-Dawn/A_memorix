@@ -207,7 +207,7 @@ enabled = true
 /query s 你要找的内容
 ```
 
-### 3.2 时间检索（v0.4.0）
+### 3.2 时间检索（v0.5.0）
 
 ```text
 /query time q="项目进展" from=2026/01/01 to="2026/01/31 18:30"
@@ -219,7 +219,25 @@ enabled = true
 - `YYYY/MM/DD`
 - `YYYY/MM/DD HH:mm`
 
-### 3.3 可视化编辑器
+### 3.3 人物画像（v0.5.0 主更新）
+
+查询人物画像：
+
+```text
+/query person <person_id|别名>
+# 简写
+/query p <person_id|别名>
+```
+
+控制画像注入开关（按当前 `stream_id + user_id`）：
+
+```text
+/person_profile status
+/person_profile on
+/person_profile off
+```
+
+### 3.4 可视化编辑器
 
 ```text
 /visualize
@@ -268,6 +286,9 @@ chats = ["group:123456789"]
 /memory status                  # 记忆系统状态
 /memory protect <query> 24      # 保护24小时
 /memory reinforce <query>       # 手动强化
+/person_profile status          # 查看人物画像注入状态
+/person_profile on              # 开启人物画像注入
+/person_profile off             # 关闭人物画像注入
 ```
 
 ---

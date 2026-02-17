@@ -4,11 +4,10 @@
 提供LLM可调用的知识查询工具。
 """
 
-import time
 from typing import Any, List, Tuple, Optional, Dict
-from pathlib import Path
 
 from src.common.logger import get_logger
+from src.plugin_system.apis import person_api
 from src.plugin_system.base.base_tool import BaseTool
 from src.plugin_system.base.component_types import ToolParamType
 from src.chat.message_receive.chat_stream import ChatStream
@@ -18,14 +17,17 @@ from ...core import (
     DualPathRetriever,
     RetrievalStrategy,
     DualPathRetrieverConfig,
-    TemporalQueryOptions,
     DynamicThresholdFilter,
     ThresholdMethod,
     ThresholdConfig,
     SparseBM25Config,
     FusionConfig,
 )
-from ...core.utils.time_parser import parse_query_time_range
+from ...core.utils.person_profile_service import PersonProfileService
+from ...core.utils.search_execution_service import (
+    SearchExecutionRequest,
+    SearchExecutionService,
+)
 
 logger = get_logger("A_Memorix.KnowledgeQueryTool")
 
@@ -34,7 +36,7 @@ class KnowledgeQueryTool(BaseTool):
     """知识查询Tool
 
     功能：
-    - 双路检索查询
+    - search/time 检索（统一 forward 链路，legacy 仅兼容别名）
     - 实体查询
     - 关系查询
     - 统计信息
@@ -50,14 +52,21 @@ class KnowledgeQueryTool(BaseTool):
         (
             "query_type",
             ToolParamType.STRING,
-            "查询类型：search(检索)、time(时序检索)、entity(实体)、relation(关系)、stats(统计)",
+            "查询类型：search(检索)、time(时序检索)、entity(实体)、relation(关系)、person(人物画像)、stats(统计)",
             True,
-            ["search", "time", "entity", "relation", "stats"],
+            ["search", "time", "entity", "relation", "person", "stats"],
         ),
         (
             "query",
             ToolParamType.STRING,
             "查询内容（检索文本/实体名称/关系规格），stats模式不需要",
+            False,
+            None,
+        ),
+        (
+            "person_id",
+            ToolParamType.STRING,
+            "人物ID（person模式可选；为空时会尝试通过query或会话上下文解析）",
             False,
             None,
         ),
@@ -71,7 +80,7 @@ class KnowledgeQueryTool(BaseTool):
         (
             "use_threshold",
             ToolParamType.BOOLEAN,
-            "是否使用动态阈值过滤（仅search模式）",
+            "是否使用动态阈值过滤（search/time模式）",
             False,
             None,
         ),
@@ -243,6 +252,160 @@ class KnowledgeQueryTool(BaseTool):
         except Exception as e:
             logger.error(f"{self.log_prefix} 组件初始化失败: {e}")
 
+    def _get_search_owner(self) -> str:
+        owner = str(self.get_config("routing.search_owner", "action") or "action").strip().lower()
+        if owner not in {"action", "tool", "dual"}:
+            return "action"
+        return owner
+
+    def _get_tool_search_mode(self) -> str:
+        mode = str(self.get_config("routing.tool_search_mode", "forward") or "forward").strip().lower()
+        if mode == "legacy":
+            logger.warning(
+                "%s routing.tool_search_mode=legacy 已废弃，按 forward 处理；metric.legacy_mode_alias_hit_count=1",
+                self.log_prefix,
+            )
+            return "forward"
+        if mode not in {"forward", "disabled"}:
+            return "forward"
+        return mode
+
+    def _resolve_search_context(
+        self,
+        function_args: Dict[str, Any],
+    ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        stream_id = function_args.get("stream_id") or self.chat_id
+        group_id = function_args.get("group_id")
+        user_id = function_args.get("user_id")
+
+        if group_id is None and self.chat_stream and getattr(self.chat_stream, "group_info", None):
+            group_id = getattr(self.chat_stream.group_info, "group_id", None)
+        if user_id is None and self.chat_stream and getattr(self.chat_stream, "user_info", None):
+            user_id = getattr(self.chat_stream.user_info, "user_id", None)
+
+        stream_id_text = str(stream_id).strip() if stream_id is not None else None
+        group_id_text = str(group_id).strip() if group_id is not None else None
+        user_id_text = str(user_id).strip() if user_id is not None else None
+
+        return (
+            stream_id_text or None,
+            group_id_text or None,
+            user_id_text or None,
+        )
+
+    def _build_forward_search_content(self, results: List[Dict[str, Any]]) -> str:
+        if not results:
+            return "未找到相关结果。"
+
+        summary_lines = [f"找到 {len(results)} 条相关信息："]
+        for i, item in enumerate(results[:5], 1):
+            result_type = item.get("type", "")
+            icon = "📄" if result_type == "paragraph" else "🔗"
+            content_text = item.get("content", "N/A")
+            summary_lines.append(f"{i}. {icon} {content_text}")
+        return "\n".join(summary_lines)
+
+    def _build_forward_time_content(self, results: List[Dict[str, Any]]) -> str:
+        if not results:
+            return "未找到符合时间条件的结果。"
+
+        lines = [f"找到 {len(results)} 条时间相关信息："]
+        for i, item in enumerate(results[:5], 1):
+            time_meta = item.get("metadata", {}).get("time_meta", {})
+            s_text = time_meta.get("effective_start_text", "N/A")
+            e_text = time_meta.get("effective_end_text", "N/A")
+            basis = time_meta.get("match_basis", "none")
+            lines.append(f"{i}. {item.get('content', 'N/A')}")
+            lines.append(f"   时间: {s_text} ~ {e_text} ({basis})")
+        return "\n".join(lines)
+
+    async def _execute_forward_search_or_time(
+        self,
+        *,
+        query_type: str,
+        query: str,
+        top_k: int,
+        use_threshold: bool,
+        time_from: Optional[str],
+        time_to: Optional[str],
+        person: Optional[str],
+        source: Optional[str],
+        function_args: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        stream_id, group_id, user_id = self._resolve_search_context(function_args)
+        enable_ppr = bool(self.get_config("retrieval.enable_ppr", True))
+
+        execution = await SearchExecutionService.execute(
+            retriever=self.retriever,
+            threshold_filter=self.threshold_filter,
+            plugin_config=self.plugin_config,
+            request=SearchExecutionRequest(
+                caller="tool",
+                stream_id=stream_id,
+                group_id=group_id,
+                user_id=user_id,
+                query_type=query_type,
+                query=str(query or "").strip(),
+                top_k=top_k,
+                time_from=str(time_from) if time_from is not None else None,
+                time_to=str(time_to) if time_to is not None else None,
+                person=str(person).strip() if person else None,
+                source=str(source).strip() if source else None,
+                use_threshold=bool(use_threshold),
+                enable_ppr=enable_ppr,
+            ),
+            enforce_chat_filter=True,
+            reinforce_access=True,
+        )
+
+        if not execution.success:
+            return {
+                "success": False,
+                "query_type": query_type,
+                "error": execution.error,
+                "content": f"❌ {execution.error}",
+                "results": [],
+            }
+
+        if execution.chat_filtered:
+            return {
+                "success": True,
+                "query_type": query_type,
+                "content": "",
+                "results": [],
+                "count": 0,
+                "elapsed_ms": execution.elapsed_ms,
+                "chat_filtered": True,
+                "dedup_hit": execution.dedup_hit,
+            }
+
+        serialized_results = SearchExecutionService.to_serializable_results(execution.results)
+        content = (
+            self._build_forward_search_content(serialized_results)
+            if query_type == "search"
+            else self._build_forward_time_content(serialized_results)
+        )
+        result = {
+            "success": True,
+            "query_type": query_type,
+            "query": query,
+            "results": serialized_results,
+            "count": len(serialized_results),
+            "elapsed_ms": execution.elapsed_ms,
+            "content": content,
+            "dedup_hit": execution.dedup_hit,
+        }
+        if query_type == "time":
+            result.update(
+                {
+                    "time_from": time_from,
+                    "time_to": time_to,
+                    "person": person,
+                    "source": source,
+                }
+            )
+        return result
+
     async def execute(self, function_args: dict[str, Any]) -> dict[str, Any]:
         """执行工具函数（供LLM调用）
 
@@ -291,6 +454,11 @@ class KnowledgeQueryTool(BaseTool):
         time_to = function_args.get("time_to")
         person = function_args.get("person")
         source = function_args.get("source")
+        person_id = function_args.get("person_id")
+        for_injection = bool(function_args.get("for_injection", False))
+        force_refresh = bool(function_args.get("force_refresh", False))
+        stream_id = function_args.get("stream_id")
+        user_id = function_args.get("user_id")
 
         logger.info(
             f"{self.log_prefix} LLM调用: query_type={query_type}, "
@@ -302,22 +470,46 @@ class KnowledgeQueryTool(BaseTool):
 
         try:
             # 根据查询类型执行
-            if query_type == "search":
-                result = await self._search(query, top_k, use_threshold)
-            elif query_type == "time":
-                result = await self._query_time(
-                    query=query,
-                    top_k=top_k,
-                    time_from=time_from,
-                    time_to=time_to,
-                    person=person,
-                    source=source,
-                    use_threshold=use_threshold,
-                )
+            if query_type in {"search", "time"}:
+                tool_search_mode = self._get_tool_search_mode()
+                search_owner = self._get_search_owner()
+                if tool_search_mode == "disabled":
+                    route_hint = "knowledge_search Action"
+                    if search_owner == "tool":
+                        route_hint = "调整 routing.tool_search_mode 为 forward"
+                    result = {
+                        "success": False,
+                        "query_type": query_type,
+                        "error": "knowledge_query 的 search/time 已被禁用",
+                        "content": f"❌ knowledge_query 的 search/time 已被禁用，请改用 {route_hint}",
+                        "results": [],
+                    }
+                else:
+                    result = await self._execute_forward_search_or_time(
+                        query_type=query_type,
+                        query=str(query or "").strip(),
+                        top_k=top_k,
+                        use_threshold=bool(use_threshold),
+                        time_from=str(time_from) if time_from is not None else None,
+                        time_to=str(time_to) if time_to is not None else None,
+                        person=str(person) if person is not None else None,
+                        source=str(source) if source is not None else None,
+                        function_args=function_args,
+                    )
             elif query_type == "entity":
                 result = await self._query_entity(query)
             elif query_type == "relation":
                 result = await self._query_relation(query)
+            elif query_type == "person":
+                result = await self._query_person(
+                    query=query,
+                    person_id=person_id,
+                    top_k=top_k,
+                    for_injection=for_injection,
+                    force_refresh=force_refresh,
+                    stream_id=stream_id,
+                    user_id=user_id,
+                )
             elif query_type == "stats":
                 result = self._get_stats()
             else:
@@ -350,6 +542,11 @@ class KnowledgeQueryTool(BaseTool):
         time_to: Optional[str] = None,
         person: Optional[str] = None,
         source: Optional[str] = None,
+        person_id: Optional[str] = None,
+        for_injection: bool = False,
+        force_refresh: bool = False,
+        stream_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """直接执行工具函数（供插件调用）
 
@@ -371,296 +568,170 @@ class KnowledgeQueryTool(BaseTool):
             "time_to": time_to,
             "person": person,
             "source": source,
+            "person_id": person_id,
+            "for_injection": for_injection,
+            "force_refresh": force_refresh,
+            "stream_id": stream_id,
+            "user_id": user_id,
         }
 
         return await self.execute(function_args)
 
-    async def _search(
+    def _is_person_profile_injection_enabled(self, stream_id: Optional[str], user_id: Optional[str]) -> bool:
+        if not bool(self.get_config("person_profile.enabled", True)):
+            return False
+
+        opt_in_required = bool(self.get_config("person_profile.opt_in_required", True))
+        default_enabled = bool(self.get_config("person_profile.default_injection_enabled", False))
+
+        if not opt_in_required:
+            return default_enabled
+
+        s_id = str(stream_id or "").strip()
+        u_id = str(user_id or "").strip()
+        if not s_id or not u_id or self.metadata_store is None:
+            return False
+        return bool(self.metadata_store.get_person_profile_switch(s_id, u_id, default=default_enabled))
+
+    async def _query_person(
         self,
         query: str,
+        person_id: Optional[str],
         top_k: int,
-        use_threshold: bool,
+        for_injection: bool = False,
+        force_refresh: bool = False,
+        stream_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """执行检索查询
-
-        Args:
-            query: 查询文本
-            top_k: 返回结果数量
-            use_threshold: 是否使用阈值过滤
-
-        Returns:
-            查询结果字典
-        """
-        if not query:
-            return {
-                "success": False,
-                "error": "查询内容不能为空",
-                "content": "⚠️ 查询内容不能为空",
-                "results": [],
-            }
-
-        start_time = time.time()
-
-        # 执行检索（异步调用）
-        results = await self.retriever.retrieve(query, top_k=top_k)
-
-        # 应用阈值过滤
-        if use_threshold and self.threshold_filter:
-            results = self.threshold_filter.filter(results)
-            if self.debug_enabled:
-                logger.info(f"{self.log_prefix} [DEBUG] 过滤后结果数量 (Tool): {len(results)}")
-
-        elapsed = time.time() - start_time
-
-        # 3. Smart Fallback if results are weak
-        # 如果最高分 < 0.6，尝试提取实体并进行 Path Search
-        max_score = 0.0
-        if results:
-            max_score = results[0].score
-
-        fallback_triggered = False
-        path_results = []
-        
-        # 可配置阈值 (TODO: 移至 Config)
-        SMART_FALLBACK_THRESHOLD = 0.6
-        
-        if max_score < SMART_FALLBACK_THRESHOLD:
-            # 尝试提取实体
-            entities = self._extract_entities_from_query(query)
-            if len(entities) == 2:
-                if self.debug_enabled:
-                    logger.info(f"{self.log_prefix} [Smart Fallback] Triggering Path Search for {entities}")
-                
-                path_data = self._path_search(query)
-                if path_data and path_data.get("results"):
-                    # 转换 path results 为 search result 格式
-                    for p in path_data["results"]:
-                        # 构造一个伪 RetrievalResult 类似的结构
-                        path_results.append({
-                            "type": "relation_path",
-                            "score": 0.95, # 给赋予较高置信度，因为它基于图
-                            "content": f"[Indirect Relation] {p['description']}",
-                            "metadata": {"source": "graph_path", "nodes": p['nodes']}
-                        })
-                    fallback_triggered = True
-
-        # 4. 合并结果 (Path Results 优先)
-        # Convert original results to dict format first
-        formatted_results = []
-        try:
-            for result in results:
-                formatted_results.append({
-                    "type": result.result_type,
-                    "score": float(result.score),
-                    "content": result.content,
-                    "metadata": result.metadata,
-                })
-        except Exception as e:
-            logger.error(f"{self.log_prefix} Error formatting results: {e}")
-
-        # 如果触发了 Fallback，将 Path 结果加到前面
-        if fallback_triggered:
-            formatted_results = path_results + formatted_results
-
-        # 5. Deduplication (Safe Mode)
-        # 去重，但保留至少 1 条 (如果原结果不为空)
-        original_count = len(formatted_results)
-        formatted_results = self._deduplicate_results(formatted_results)
-        
-        if self.debug_enabled:
-            logger.info(f"{self.log_prefix} Deduplication: {original_count} -> {len(formatted_results)}")
-
-        # 6. 生成 content 摘要 (Clean Output)
-        if formatted_results:
-            summary_lines = [f"找到 {len(formatted_results)} 条相关信息："]
-            for i, res in enumerate(formatted_results[:5]): # Top 5 for context
-                type_icon = "📄" if res['type'] == 'paragraph' else "🔗"
-                if res['type'] == 'relation_path': type_icon = "🛤️"
-                
-                content_text = res.get('content', 'N/A')
-                # Remove score from LLM output to avoid bias
-                # But keep it in logs/debug
-                summary_lines.append(f"{i+1}. {type_icon} {content_text}")
-                
-            content = "\n".join(summary_lines)
-            logger.info(f"{self.log_prefix} Returning {len(formatted_results)} results to LLM context")
-        else:
-            content = "未找到相关结果。"
-
-        return {
-            "success": True,
-            "query_type": "search",
-            "query": query,
-            "results": formatted_results, # 包含分数的完整数据返回给程序
-            "count": len(formatted_results),
-            "elapsed_ms": elapsed * 1000,
-            "content": content, # 给 LLM 看的摘要 (无分数)
-        }
-
-    async def _query_time(
-        self,
-        query: str,
-        top_k: int,
-        time_from: Optional[str],
-        time_to: Optional[str],
-        person: Optional[str],
-        source: Optional[str],
-        use_threshold: bool = True,
-    ) -> Dict[str, Any]:
-        """执行时序检索（可选语义query）。"""
-        if not bool(self.get_config("retrieval.temporal.enabled", True)):
-            return {
-                "success": False,
-                "error": "时序检索已禁用（retrieval.temporal.enabled=false）",
-                "content": "❌ 时序检索已禁用（retrieval.temporal.enabled=false）",
-                "results": [],
-            }
-
-        if not time_from and not time_to:
-            return {
-                "success": False,
-                "error": "time模式至少需要time_from或time_to",
-                "content": "❌ time模式至少需要time_from或time_to",
-                "results": [],
-            }
-
-        try:
-            ts_from, ts_to = parse_query_time_range(
-                str(time_from) if time_from is not None else None,
-                str(time_to) if time_to is not None else None,
-            )
-        except ValueError as e:
-            return {
-                "success": False,
-                "error": f"时间参数错误: {e}",
-                "content": f"❌ 时间参数错误: {e}",
-                "results": [],
-            }
-
-        temporal = TemporalQueryOptions(
-            time_from=ts_from,
-            time_to=ts_to,
-            person=str(person).strip() if person else None,
-            source=str(source).strip() if source else None,
-            allow_created_fallback=self.get_config(
-                "retrieval.temporal.allow_created_fallback",
-                True,
-            ),
-            candidate_multiplier=int(
-                self.get_config("retrieval.temporal.candidate_multiplier", 8)
-            ),
-            max_scan=int(self.get_config("retrieval.temporal.max_scan", 1000)),
-        )
-
-        start_time = time.time()
-        results = await self.retriever.retrieve(
-            query=query,
-            top_k=top_k,
-            temporal=temporal,
-        )
-        if query and use_threshold and self.threshold_filter:
-            results = self.threshold_filter.filter(results)
-        elapsed = time.time() - start_time
-
-        formatted_results = []
-        for result in results:
-            metadata = dict(result.metadata or {})
-            if "time_meta" not in metadata:
-                metadata["time_meta"] = {}
-            formatted_results.append(
-                {
-                    "hash": result.hash_value,
-                    "type": result.result_type,
-                    "score": float(result.score),
-                    "content": result.content,
-                    "metadata": metadata,
+        """查询人物画像。"""
+        if not bool(self.get_config("person_profile.enabled", True)):
+            if for_injection:
+                return {
+                    "success": True,
+                    "query_type": "person",
+                    "content": "",
+                    "results": [],
+                    "disabled_reason": "person_profile_module_disabled",
                 }
-            )
+            return {
+                "success": False,
+                "query_type": "person",
+                "error": "人物画像功能未启用（person_profile.enabled=false）",
+                "content": "❌ 人物画像功能未启用（person_profile.enabled=false）",
+                "results": [],
+            }
 
-        if formatted_results:
-            lines = [f"找到 {len(formatted_results)} 条时间相关信息："]
-            for i, item in enumerate(formatted_results[:5], 1):
-                time_meta = item["metadata"].get("time_meta", {})
-                s_text = time_meta.get("effective_start_text", "N/A")
-                e_text = time_meta.get("effective_end_text", "N/A")
-                basis = time_meta.get("match_basis", "none")
-                lines.append(f"{i}. {item['content']}")
-                lines.append(f"   时间: {s_text} ~ {e_text} ({basis})")
-            content = "\n".join(lines)
-        else:
-            content = "未找到符合时间条件的结果。"
+        resolved_stream_id = str(stream_id or self.chat_id or "").strip()
+        resolved_user_id = str(user_id or "").strip()
+        if not resolved_user_id and self.chat_stream and getattr(self.chat_stream, "user_info", None):
+            resolved_user_id = str(getattr(self.chat_stream.user_info, "user_id", "") or "").strip()
+
+        if for_injection and not self._is_person_profile_injection_enabled(resolved_stream_id, resolved_user_id):
+            return {
+                "success": True,
+                "query_type": "person",
+                "content": "",
+                "results": [],
+                "disabled_reason": "person_profile_not_opted_in",
+            }
+
+        service = PersonProfileService(
+            metadata_store=self.metadata_store,
+            graph_store=self.graph_store,
+            vector_store=self.vector_store,
+            embedding_manager=self.embedding_manager,
+            sparse_index=self.sparse_index,
+            plugin_config=self.plugin_config,
+            retriever=self.retriever,
+        )
+
+        pid = str(person_id or "").strip()
+        if not pid and resolved_user_id and self.platform:
+            try:
+                pid = person_api.get_person_id(self.platform, resolved_user_id)
+            except Exception:
+                pid = ""
+        if not pid and query:
+            pid = service.resolve_person_id(str(query))
+
+        if not pid:
+            if for_injection:
+                return {
+                    "success": True,
+                    "query_type": "person",
+                    "content": "",
+                    "results": [],
+                    "disabled_reason": "person_id_unresolved",
+                }
+            return {
+                "success": False,
+                "query_type": "person",
+                "error": "未能解析 person_id，请提供 person_id 或有效的人名/别名",
+                "content": "❌ 未能解析 person_id，请提供 person_id 或有效的人名/别名",
+                "results": [],
+            }
+
+        ttl_minutes = float(self.get_config("person_profile.profile_ttl_minutes", 360))
+        ttl_seconds = max(60.0, ttl_minutes * 60.0)
+
+        profile = await service.query_person_profile(
+            person_id=pid,
+            person_keyword=str(query or "").strip(),
+            top_k=max(4, top_k),
+            ttl_seconds=ttl_seconds,
+            force_refresh=bool(force_refresh),
+            source_note="knowledge_query:person",
+        )
+
+        if not profile.get("success", False):
+            if for_injection:
+                return {
+                    "success": True,
+                    "query_type": "person",
+                    "content": "",
+                    "results": [],
+                    "error": profile.get("error", "unknown"),
+                }
+            return {
+                "success": False,
+                "query_type": "person",
+                "error": profile.get("error", "unknown"),
+                "content": "❌ 人物画像查询失败",
+                "results": [],
+            }
+
+        if resolved_stream_id and resolved_user_id and self.metadata_store is not None:
+            try:
+                self.metadata_store.mark_person_profile_active(resolved_stream_id, resolved_user_id, pid)
+            except Exception as e:
+                logger.warning(f"{self.log_prefix} 记录活跃人物失败: {e}")
+
+        persona_block = PersonProfileService.format_persona_profile_block(profile)
+        if not persona_block and not for_injection:
+            persona_block = "暂无足够证据形成该人物画像。"
 
         return {
             "success": True,
-            "query_type": "time",
-            "query": query,
-            "time_from": time_from,
-            "time_to": time_to,
-            "person": person,
-            "source": source,
-            "results": formatted_results,
-            "count": len(formatted_results),
-            "elapsed_ms": elapsed * 1000,
-            "content": content,
+            "query_type": "person",
+            "person_id": pid,
+            "person_name": profile.get("person_name", ""),
+            "profile_version": profile.get("profile_version"),
+            "updated_at": profile.get("updated_at"),
+            "expires_at": profile.get("expires_at"),
+            "evidence_ids": profile.get("evidence_ids", []),
+            "aliases": profile.get("aliases", []),
+            "relation_edges": profile.get("relation_edges", []),
+            "vector_evidence": profile.get("vector_evidence", []),
+            "profile_source": profile.get("profile_source", "auto_snapshot"),
+            "has_manual_override": bool(profile.get("has_manual_override", False)),
+            "manual_override_text": profile.get("manual_override_text", ""),
+            "auto_profile_text": profile.get("auto_profile_text", profile.get("profile_text", "")),
+            "override_updated_at": profile.get("override_updated_at"),
+            "override_updated_by": profile.get("override_updated_by", ""),
+            "profile_text": profile.get("profile_text", ""),
+            "content": persona_block,
+            "results": [],
         }
-
-    def _deduplicate_results(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        对结果进行去重
-        - 基于内容哈希/相似度
-        - 保留分数最高的
-        - 安全修正: 保证不因为去重导致结果为空
-        """
-        if not results:
-            return []
-            
-        unique_results = []
-        seen_hashes = set()
-        seen_contents = set() # 为了处理不同 Hash 但内容极相似的情况 (简单前缀/包含检查)
-        
-        # 1. Path Results 总是保留 (只要不完全重复)
-        # 2. Others based on content
-        
-        for res in results:
-            # Simple content normalization
-            content = res.get("content", "").strip()
-            if not content:
-                continue
-                
-            # Check exact hash (if available) or content hash
-            res_md = res.get("metadata", {})
-            h = res_md.get("hash") or str(hash(content))
-            
-            if h in seen_hashes:
-                continue
-                
-            # Soft dedup: check if content is substring of already seen (or vice versa)
-            # This is O(N^2) but N is small (TopK=10-20)
-            is_dup = False
-            for seen in seen_contents:
-                # 如果极其相似 (比如只是前缀不同)，视为重复
-                # 这里简单从严：如果 A 包含 B，保留 A (通常 A 信息量大) ?
-                # 或者保留分数高的。
-                # 简单策略: 如果 content 几乎一样 (Levenshtein costly)，这里用包含关系
-                if content in seen or seen in content:
-                    # 如果当前分数显著更高 (>0.1 diff)，则保留当前(这很难，因为我们是在 append)
-                    # 假设 results 已经按 score 排序
-                    is_dup = True
-                    break
-            
-            if is_dup:
-                continue
-                
-            seen_hashes.add(h)
-            seen_contents.add(content)
-            unique_results.append(res)
-            
-        # 安全修正: 如果去重后空了 (极不可能，因为第一条肯定进)，或者去得太狠
-        # 这里只要 original results 有东西，unique_results 至少会有 1 条
-        if not unique_results and results:
-             unique_results.append(results[0])
-             
-        return unique_results
 
     async def _query_entity(self, entity_name: str) -> Dict[str, Any]:
         """查询实体信息
@@ -763,14 +834,18 @@ class KnowledgeQueryTool(BaseTool):
                 predicate = parts[1].strip()
                 obj = parts[2].strip() if len(parts) > 2 else None
         elif "->" in relation_spec:
-             parts = relation_spec.split("->")
-             if len(parts) >= 2:
-                subject = parts[0].strip()
-                predicate = parts[1].strip() # 简化处理，假设 -> 就是谓语的一部分或者分隔
-                obj = parts[1].strip() # 这里 split 只有两部分，中间作为谓语处理有点模糊，暂且维持原逻辑或作为 binary
-                # 实际上原逻辑没处理 ->, 这里仅做简单兼容，或者退回到 split()
-                # 考虑到兼容性，这里仅以此作为"结构化"标志，解析还是尝试空格
-                pass
+            # 支持两种箭头格式：
+            # 1) S->P->O：完整三元组
+            # 2) S->O：仅指定主语与宾语（谓语不限定）
+            parts = [p.strip() for p in relation_spec.split("->") if p.strip()]
+            if len(parts) >= 3:
+                subject = parts[0]
+                predicate = parts[1]
+                obj = parts[2]
+            elif len(parts) == 2:
+                subject = parts[0]
+                predicate = None
+                obj = parts[1]
 
         if not subject: # 尝试空格解析 (Legacy)
             parts = relation_spec.split(maxsplit=1)

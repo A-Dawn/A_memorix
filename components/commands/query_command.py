@@ -10,6 +10,7 @@ from typing import Tuple, Optional, List, Dict, Any
 from pathlib import Path
 
 from src.common.logger import get_logger
+from src.plugin_system.apis import person_api
 from src.plugin_system.base.base_command import BaseCommand
 from src.chat.message_receive.message import MessageRecv
 
@@ -26,6 +27,7 @@ from ...core import (
     FusionConfig,
 )
 from ...core.utils.time_parser import parse_query_time_range
+from ...core.utils.person_profile_service import PersonProfileService
 
 logger = get_logger("A_Memorix.QueryCommand")
 
@@ -222,6 +224,8 @@ class QueryCommand(BaseCommand):
                 success, result = await self._query_entity(content)
             elif mode == "relation" or mode == "r":
                 success, result = await self._query_relation(content)
+            elif mode == "person" or mode == "p":
+                success, result = await self._query_person(content)
             elif mode == "stats":
                 success, result = self._query_stats()
             elif mode == "help":
@@ -521,6 +525,69 @@ class QueryCommand(BaseCommand):
 
         return True, "\n".join(lines)
 
+    async def _query_person(self, content: str) -> Tuple[bool, str]:
+        """查询人物画像。
+
+        支持：
+        - /query person id=<person_id>
+        - /query person person_id=<person_id>
+        - /query person <人名或别名>
+        """
+        if not bool(self.get_config("person_profile.enabled", True)):
+            return False, "❌ 人物画像功能未启用（person_profile.enabled=false）"
+
+        args = self._parse_kv_args(content)
+        query = content.strip()
+        person_id = (args.get("id") or args.get("person_id") or "").strip()
+        if person_id:
+            query = args.get("q", "").strip() or args.get("query", "").strip() or query
+        else:
+            # 若未显式指定 id，优先用去掉 k=v 参数后的 query
+            query = args.get("q", "").strip() or args.get("query", "").strip() or query
+
+        service = PersonProfileService(
+            metadata_store=self.metadata_store,
+            graph_store=self.graph_store,
+            vector_store=self.vector_store,
+            embedding_manager=self.embedding_manager,
+            sparse_index=self.sparse_index,
+            plugin_config=self.plugin_config,
+            retriever=self.retriever,
+        )
+
+        if not person_id:
+            if query:
+                person_id = service.resolve_person_id(query)
+            if not person_id and self.message and self.message.chat_stream:
+                try:
+                    platform = str(getattr(self.message.chat_stream, "platform", "") or "").strip()
+                    uid = str(getattr(self.message.message_info.user_info, "user_id", "") or "").strip()
+                    if platform and uid:
+                        person_id = person_api.get_person_id(platform, uid)
+                except Exception:
+                    person_id = ""
+
+        if not person_id:
+            return False, "❌ 未能解析人物ID，请使用 /query person id=<person_id> 或提供可识别的人名/别名"
+
+        ttl_minutes = float(self.get_config("person_profile.profile_ttl_minutes", 360))
+        profile = await service.query_person_profile(
+            person_id=person_id,
+            person_keyword=query,
+            top_k=12,
+            ttl_seconds=max(60.0, ttl_minutes * 60.0),
+            force_refresh=False,
+            source_note="query_command:person",
+        )
+
+        if not profile.get("success"):
+            return False, f"❌ 人物画像查询失败: {profile.get('error', 'unknown')}"
+
+        block = PersonProfileService.format_persona_profile_block(profile)
+        if not block:
+            block = "暂无足够证据形成该人物画像。"
+        return True, block
+
     def _query_stats(self) -> Tuple[bool, str]:
         """查询统计信息
 
@@ -611,6 +678,7 @@ class QueryCommand(BaseCommand):
   /query time <k=v参数>         - 时间检索（支持语义+时间）
   /query entity <实体名称>      - 查询实体信息
   /query relation <关系规格>    - 查询关系信息
+  /query person <id|别名>      - 查询人物画像
   /query stats                  - 显示统计信息
   /query help                   - 显示此帮助
 
@@ -619,18 +687,22 @@ class QueryCommand(BaseCommand):
   /query t <k=v参数>            - 时间检索（time的简写）
   /query e <实体名称>           - 实体查询（entity的简写）
   /query r <关系规格>           - 关系查询（relation的简写）
+  /query p <id|别名>            - 人物画像（person的简写）
 
 示例:
   /query search 人工智能的应用
   /query time q="项目进展" from=2025/01/01 to="2025/01/31 18:30"
   /query entity Apple
   /query relation Apple|founded|Steve Jobs
+  /query person id=7fa7f...
+  /query person 晨曦
   /query relation founded by
   /query stats
 
 说明:
   - 检索模式会同时搜索段落和关系
   - time 模式参数: q/query, from/start, to/end, person, source, top_k
+  - person 模式支持 id/person_id 参数或直接输入别名
   - time 格式仅支持 YYYY/MM/DD 或 YYYY/MM/DD HH:mm
   - 实体查询显示关联实体和相关段落
   - 关系格式支持 "|" 或空格分隔

@@ -1,8 +1,9 @@
 
 import asyncio
 import threading
+import json
 import uvicorn
-from fastapi import FastAPI, HTTPException, Body
+from fastapi import FastAPI, HTTPException, Body, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -11,6 +12,7 @@ from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
 
 from src.common.logger import get_logger
+from src.common.database.database_model import PersonInfo
 
 logger = get_logger("A_Memorix.Server")
 
@@ -54,6 +56,20 @@ class SourceDeleteRequest(BaseModel):
 class BatchSourceDeleteRequest(BaseModel):
     source: str
 
+class PersonProfileQueryRequest(BaseModel):
+    person_id: Optional[str] = None
+    person_keyword: Optional[str] = None
+    top_k: int = 12
+    force_refresh: bool = False
+
+class PersonProfileOverrideUpsertRequest(BaseModel):
+    person_id: str
+    override_text: str
+    updated_by: Optional[str] = None
+
+class PersonProfileOverrideDeleteRequest(BaseModel):
+    person_id: str
+
 class MemorixServer:
     def __init__(self, plugin_instance, host="0.0.0.0", port=8082):
         self.plugin = plugin_instance
@@ -81,6 +97,48 @@ class MemorixServer:
         self._setup_routes()
 
     def _setup_routes(self):
+        def _build_person_profile_service():
+            from .core.utils.person_profile_service import PersonProfileService
+
+            return PersonProfileService(
+                metadata_store=self.plugin.metadata_store,
+                graph_store=self.plugin.graph_store,
+                vector_store=self.plugin.vector_store,
+                embedding_manager=self.plugin.embedding_manager,
+                sparse_index=getattr(self.plugin, "sparse_index", None),
+                plugin_config=getattr(self.plugin, "config", {}) or {},
+            )
+
+        def _resolve_person_id_for_web(service, raw_value: str) -> str:
+            value = str(raw_value or "").strip()
+            if not value:
+                return ""
+            if len(value) == 32 and all(ch in "0123456789abcdefABCDEF" for ch in value):
+                return value.lower()
+            resolved = service.resolve_person_id(value)
+            return resolved or ""
+
+        def _parse_group_nicks(raw_value: Any) -> List[str]:
+            if not raw_value:
+                return []
+            try:
+                data = json.loads(raw_value) if isinstance(raw_value, str) else raw_value
+            except Exception:
+                return []
+            if not isinstance(data, list):
+                return []
+            out: List[str] = []
+            for item in data:
+                if isinstance(item, dict):
+                    nick = str(item.get("group_nick_name", "")).strip()
+                    if nick:
+                        out.append(nick)
+                elif isinstance(item, str):
+                    nick = item.strip()
+                    if nick:
+                        out.append(nick)
+            return out
+
         
         @self.app.get("/api/graph")
         async def get_graph(exclude_leaf: bool = False, source: Optional[str] = None, density: float = 1.0):
@@ -978,6 +1036,176 @@ class MemorixServer:
             except Exception as e:
                  logger.error(f"Protect failed: {e}")
                  raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.post("/api/person_profile/query")
+        async def query_person_profile(data: PersonProfileQueryRequest):
+            """查询人物画像（自动画像 + 手工覆盖结果）。"""
+            if not bool(self.plugin.get_config("person_profile.enabled", True)):
+                raise HTTPException(status_code=400, detail="人物画像功能未启用")
+            if self.plugin.metadata_store is None:
+                raise HTTPException(status_code=503, detail="Metadata store not initialized")
+            try:
+                service = _build_person_profile_service()
+                ttl_minutes = float(self.plugin.get_config("person_profile.profile_ttl_minutes", 360))
+                ttl_seconds = max(60.0, ttl_minutes * 60.0)
+                result = await service.query_person_profile(
+                    person_id=str(data.person_id or "").strip(),
+                    person_keyword=str(data.person_keyword or "").strip(),
+                    top_k=max(4, int(data.top_k or 12)),
+                    ttl_seconds=ttl_seconds,
+                    force_refresh=bool(data.force_refresh),
+                    source_note="webui:person_profile_query",
+                )
+                if not result.get("success", False):
+                    raise HTTPException(status_code=400, detail=result.get("error", "人物画像查询失败"))
+                return result
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Person profile query failed: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.get("/api/person_profile/list")
+        async def list_person_profile_candidates(
+            keyword: str = Query("", description="关键词（匹配 person_name/nickname/user_id/person_id/group_nick_name）"),
+            page: int = Query(1, ge=1, description="页码，从1开始"),
+            page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+        ):
+            """获取人物列表（支持关键词与分页）。"""
+            try:
+                query = PersonInfo.select(
+                    PersonInfo.person_id,
+                    PersonInfo.person_name,
+                    PersonInfo.nickname,
+                    PersonInfo.user_id,
+                    PersonInfo.platform,
+                    PersonInfo.group_nick_name,
+                    PersonInfo.last_know,
+                )
+
+                kw = str(keyword or "").strip()
+                if kw:
+                    query = query.where(
+                        (PersonInfo.person_name.contains(kw))
+                        | (PersonInfo.nickname.contains(kw))
+                        | (PersonInfo.user_id.contains(kw))
+                        | (PersonInfo.person_id.contains(kw))
+                        | (PersonInfo.group_nick_name.contains(kw))
+                    )
+
+                query = query.order_by(PersonInfo.last_know.desc(), PersonInfo.id.desc())
+                total = query.count()
+                offset = (int(page) - 1) * int(page_size)
+                rows = list(query.offset(offset).limit(int(page_size)))
+
+                items: List[Dict[str, Any]] = []
+                for row in rows:
+                    pid = str(getattr(row, "person_id", "") or "").strip()
+                    person_name = str(getattr(row, "person_name", "") or "").strip()
+                    nickname = str(getattr(row, "nickname", "") or "").strip()
+                    user_id = str(getattr(row, "user_id", "") or "").strip()
+                    aliases = _parse_group_nicks(getattr(row, "group_nick_name", None))
+
+                    has_snapshot = False
+                    has_override = False
+                    latest_profile_updated_at = None
+                    if self.plugin.metadata_store is not None and pid:
+                        snapshot = self.plugin.metadata_store.get_latest_person_profile_snapshot(pid)
+                        override = self.plugin.metadata_store.get_person_profile_override(pid)
+                        has_snapshot = snapshot is not None
+                        has_override = override is not None and bool(str(override.get("override_text", "")).strip())
+                        if has_override:
+                            latest_profile_updated_at = override.get("updated_at")
+                        elif has_snapshot:
+                            latest_profile_updated_at = snapshot.get("updated_at")
+
+                    display_name = person_name or nickname or user_id or pid
+                    items.append(
+                        {
+                            "person_id": pid,
+                            "display_name": display_name,
+                            "person_name": person_name,
+                            "nickname": nickname,
+                            "user_id": user_id,
+                            "platform": str(getattr(row, "platform", "") or ""),
+                            "aliases": aliases,
+                            "last_know": getattr(row, "last_know", None),
+                            "has_snapshot": has_snapshot,
+                            "has_override": has_override,
+                            "latest_profile_updated_at": latest_profile_updated_at,
+                        }
+                    )
+
+                return {
+                    "success": True,
+                    "keyword": kw,
+                    "page": int(page),
+                    "page_size": int(page_size),
+                    "total": int(total),
+                    "items": items,
+                }
+            except Exception as e:
+                logger.error(f"List person profile candidates failed: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.post("/api/person_profile/override")
+        async def save_person_profile_override(data: PersonProfileOverrideUpsertRequest):
+            """保存/更新人物画像手工覆盖。"""
+            if not bool(self.plugin.get_config("person_profile.enabled", True)):
+                raise HTTPException(status_code=400, detail="人物画像功能未启用")
+            if self.plugin.metadata_store is None:
+                raise HTTPException(status_code=503, detail="Metadata store not initialized")
+            try:
+                service = _build_person_profile_service()
+                resolved_pid = _resolve_person_id_for_web(service, data.person_id)
+                if not resolved_pid:
+                    raise HTTPException(status_code=400, detail="person_id 不能为空")
+
+                override = self.plugin.metadata_store.set_person_profile_override(
+                    person_id=resolved_pid,
+                    override_text=str(data.override_text or ""),
+                    updated_by=str(data.updated_by or "webui"),
+                    source="webui",
+                )
+                ttl_minutes = float(self.plugin.get_config("person_profile.profile_ttl_minutes", 360))
+                ttl_seconds = max(60.0, ttl_minutes * 60.0)
+                merged = await service.query_person_profile(
+                    person_id=resolved_pid,
+                    top_k=12,
+                    ttl_seconds=ttl_seconds,
+                    force_refresh=False,
+                    source_note="webui:person_profile_override",
+                )
+                return {
+                    "success": True,
+                    "person_id": resolved_pid,
+                    "override": override,
+                    "profile": merged,
+                }
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Save person profile override failed: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.delete("/api/person_profile/override")
+        async def delete_person_profile_override(data: PersonProfileOverrideDeleteRequest):
+            """清除人物画像手工覆盖。"""
+            if self.plugin.metadata_store is None:
+                raise HTTPException(status_code=503, detail="Metadata store not initialized")
+            try:
+                service = _build_person_profile_service()
+                resolved_pid = _resolve_person_id_for_web(service, data.person_id)
+                if not resolved_pid:
+                    raise HTTPException(status_code=400, detail="person_id 不能为空")
+
+                deleted = self.plugin.metadata_store.delete_person_profile_override(resolved_pid)
+                return {"success": True, "person_id": resolved_pid, "deleted": bool(deleted)}
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Delete person profile override failed: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
 
 
         @self.app.post("/api/save")

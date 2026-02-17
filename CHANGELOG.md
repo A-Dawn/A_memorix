@@ -1,5 +1,49 @@
 # 更新日志 (Changelog)
 
+## [0.5.0] - 2026-02-15
+
+本次 `0.5.0` 以提交 `66ddc1b98547df3c866b19a3f5dc96e1c8eb7731` 为核心，主线是“人物画像能力上线 + 工具/命令接入 + 版本与文档同步”。
+
+### 🔖 版本信息
+
+- 插件版本：`0.4.0` → `0.5.0`
+- 配置版本：`3.1.0` → `4.0.0`
+
+### 🚀 人物画像主特性（核心）
+
+- 新增人物画像服务：`core/utils/person_profile_service.py`
+  - 支持 `person_id/姓名/别名` 解析。
+  - 聚合图关系证据 + 向量证据，生成画像文本并版本化快照。
+  - 支持手工覆盖（override）与 TTL 快照复用。
+- 存储层新增人物画像相关表与 API：`core/storage/metadata_store.py`
+  - `person_profile_switches`
+  - `person_profile_snapshots`
+  - `person_profile_active_persons`
+  - `person_profile_overrides`
+- 新增命令：`/person_profile on|off|status`
+  - 文件：`components/commands/person_profile_command.py`
+  - 作用：按 `stream_id + user_id` 控制自动注入开关（opt-in 模式）。
+- 查询链路接入人物画像：
+  - `knowledge_query_tool` 新增 `query_type=person`，支持 `person_id` 或别名查询。
+  - `/query person` 与 `/query p` 接入画像查询输出。
+- 插件生命周期接入画像刷新任务：
+  - 启动/停止统一管理 `person_profile_refresh` 后台任务。
+  - 按活跃窗口自动刷新画像快照。
+
+### 🛠️ 版本与 schema 同步
+
+- `plugin.py`：`plugin_version` 更新为 `0.5.0`。
+- `plugin.py`：`plugin.config_version` 默认值更新为 `4.0.0`。
+- `config.toml`：`config_version` 基线同步为 `4.0.0`（本地配置文件）。
+- `__init__.py`：`__version__` 更新为 `0.5.0`。
+- `_manifest.json`：`version` 更新为 `0.5.0`，`manifest_version` 保持 `1` 。
+- `manifest_utils.py`：仓库内已兼容更高 manifest 版本；但插件发布默认保持 `manifest_version=1` 。
+
+### 📚 文档同步
+
+- 更新 `README.md`、`CONFIG_REFERENCE.md`、`QUICK_START.md`、`USAGE_ARCHITECTURE.md`。
+- 0.5.0 文档主线改为“人物画像能力 + 版本升级 + 检索链路补充说明”。
+
 ## [0.4.0] - 2026-02-13
 
 本次 `0.4.0` 版本整合了时序检索增强与后续检索链路增强、稳定性修复和文档同步。

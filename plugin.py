@@ -6,7 +6,7 @@ A_Memorix 插件主入口
 
 import sys
 from pathlib import Path
-from typing import List, Tuple, Type, Optional, Dict, Union, Any
+from typing import List, Tuple, Type, Optional, Dict, Union, Any, Set, Callable, Awaitable
 from src.plugin_system import (
     BasePlugin,
     BaseAction,
@@ -67,8 +67,8 @@ class A_MemorixPlugin(BasePlugin):
 
     # 插件基本信息（PluginBase要求的抽象属性）
     plugin_name = "A_Memorix"
-    plugin_version = "0.4.0"
-    plugin_description = "轻量级知识库插件 - 完全独立的记忆增强系统"
+    plugin_version = "0.5.0"
+    plugin_description = "轻量级知识库插件 - 含人物画像能力的独立记忆增强系统"
     plugin_author = "A_Dawn"
     enable_plugin = False  # 默认禁用，需要在config.toml中启用
     dependencies: list[str] = []
@@ -88,6 +88,8 @@ class A_MemorixPlugin(BasePlugin):
         "summarization": "总结与导入配置",
         "schedule": "定时任务配置",
         "filter": "消息过滤配置",
+        "routing": "检索路由与兼容开关",
+        "person_profile": "人物画像配置",
         "memory": "记忆衰减与强化配置",
     }
 
@@ -96,7 +98,7 @@ class A_MemorixPlugin(BasePlugin):
         "plugin": {
             "config_version": ConfigField(
                 type=str,
-                default="3.1.0",
+                default="4.0.0",
                 description="配置文件版本"
             ),
             "enabled": ConfigField(
@@ -204,6 +206,26 @@ class A_MemorixPlugin(BasePlugin):
                     "max_scan": 1000,
                 },
                 description="时序检索配置"
+            ),
+            "search": ConfigField(
+                type=dict,
+                default={
+                    "smart_fallback": {
+                        "enabled": True,
+                        "threshold": 0.6,
+                    },
+                    "safe_content_dedup": {
+                        "enabled": True,
+                    },
+                },
+                description="统一检索后处理配置（smart fallback / safe dedup）"
+            ),
+            "time": ConfigField(
+                type=dict,
+                default={
+                    "skip_threshold_when_query_empty": True,
+                },
+                description="time 模式行为兼容配置"
             ),
             "sparse": ConfigField(
                 type=dict,
@@ -374,6 +396,70 @@ class A_MemorixPlugin(BasePlugin):
                 description="聊天流 ID 列表。支持填写: 1. 群号 (group_id, 如: 123456); 2. 私聊用户ID (user_id, 如: 10001); 3. 聊天流唯一标识 (stream_id, MD5格式)。"
             ),
         },
+        "routing": {
+            "search_owner": ConfigField(
+                type=str,
+                default="action",
+                description="search/time 主责入口：action|tool|dual"
+            ),
+            "tool_search_mode": ConfigField(
+                type=str,
+                default="forward",
+                description="knowledge_query 的 search/time 模式：forward|disabled（legacy 兼容别名）"
+            ),
+            "enable_request_dedup": ConfigField(
+                type=bool,
+                default=True,
+                description="是否启用短时请求去重（抑制 Action+Tool 同轮重复检索）"
+            ),
+            "request_dedup_ttl_seconds": ConfigField(
+                type=int,
+                default=2,
+                description="请求去重 TTL（秒）"
+            ),
+        },
+        "person_profile": {
+            "enabled": ConfigField(
+                type=bool,
+                default=True,
+                description="人物画像模块总开关"
+            ),
+            "opt_in_required": ConfigField(
+                type=bool,
+                default=True,
+                description="是否要求用户显式开启（默认开启显式开关模式）"
+            ),
+            "default_injection_enabled": ConfigField(
+                type=bool,
+                default=False,
+                description="当不存在用户开关记录时的默认注入状态"
+            ),
+            "profile_ttl_minutes": ConfigField(
+                type=float,
+                default=360.0,
+                description="人物画像快照 TTL（分钟）"
+            ),
+            "refresh_interval_minutes": ConfigField(
+                type=int,
+                default=30,
+                description="定时刷新周期（分钟）"
+            ),
+            "active_window_hours": ConfigField(
+                type=float,
+                default=72.0,
+                description="活跃人物窗口（小时），仅刷新窗口内人物"
+            ),
+            "max_refresh_per_cycle": ConfigField(
+                type=int,
+                default=50,
+                description="每轮最多刷新的人物数"
+            ),
+            "top_k_evidence": ConfigField(
+                type=int,
+                default=12,
+                description="人物画像构建时的向量证据数量上限"
+            ),
+        },
         "memory": {
              "half_life_hours": ConfigField(type=float, default=24.0, description="记忆强度半衰期 (小时)"),
              "base_decay_interval_hours": ConfigField(type=float, default=1.0, description="衰减任务执行间隔 (小时)"),
@@ -422,7 +508,13 @@ class A_MemorixPlugin(BasePlugin):
         self._memory_lock = asyncio.Lock()
         self._scheduled_import_task: Optional[asyncio.Task] = None
         self._auto_save_task: Optional[asyncio.Task] = None
+        self._person_profile_refresh_task: Optional[asyncio.Task] = None
         self._memory_maintenance_task: Optional[asyncio.Task] = None
+
+        # 检索请求去重（短 TTL + in-flight 合并）
+        self._request_dedup_cache: Dict[str, Dict[str, Any]] = {}
+        self._request_dedup_inflight: Dict[str, asyncio.Future] = {}
+        self._request_dedup_lock = asyncio.Lock()
 
     @property
     def debug_enabled(self) -> bool:
@@ -453,6 +545,7 @@ class A_MemorixPlugin(BasePlugin):
             QueryCommand,
             DeleteCommand,
             VisualizeCommand,
+            PersonProfileCommand,
             KnowledgeQueryTool,
             MemoryModifierTool,
             SummaryImportAction,
@@ -466,7 +559,7 @@ class A_MemorixPlugin(BasePlugin):
                 ActionInfo(
                     name="knowledge_search",
                     component_type="action",
-                    description="在知识库中搜索相关内容，支持段落和关系的双路检索，可用于记忆查询和知识问答",
+                    description="主责 search/time 检索链路：在知识库中搜索相关内容，支持段落和关系的双路检索",
                     activation_type=ActionActivationType.ALWAYS,
                     activation_keywords=[],
                     keyword_case_sensitive=False,
@@ -584,6 +677,19 @@ class A_MemorixPlugin(BasePlugin):
             )
         )
 
+        # PersonProfileCommand
+        components.append(
+            (
+                CommandInfo(
+                    name="person_profile",
+                    component_type="command",
+                    description="控制人物画像自动注入开关（on/off/status）",
+                    command_pattern=r"^\/person_profile(?:\s+(?P<action>\w+))?$",
+                ),
+                PersonProfileCommand,
+            )
+        )
+
         # DeleteCommand
         components.append(
             (
@@ -616,20 +722,27 @@ class A_MemorixPlugin(BasePlugin):
                 ToolInfo(
                     name="knowledge_query",
                     component_type="tool",
-                    tool_description="查询A_Memorix知识库，支持检索、实体查询、关系查询和统计信息",
+                    tool_description="查询A_Memorix知识库（entity/relation/person/stats 主责；search/time 可按 routing 转发或兼容）",
                     enabled=True,
                     tool_parameters=[
                         (
                             "query_type",
                             "string",
-                            "查询类型：search(检索)、time(时序检索)、entity(实体)、relation(关系)、stats(统计)",
+                            "查询类型：search(检索)、time(时序检索)、entity(实体)、relation(关系)、person(人物画像)、stats(统计)",
                             True,
-                            ["search", "time", "entity", "relation", "stats"],
+                            ["search", "time", "entity", "relation", "person", "stats"],
                         ),
                         (
                             "query",
                             "string",
                             "查询内容（检索文本/实体名称/关系规格），stats模式不需要",
+                            False,
+                            None,
+                        ),
+                        (
+                            "person_id",
+                            "string",
+                            "人物ID（person模式可选；为空时自动解析）",
                             False,
                             None,
                         ),
@@ -643,7 +756,7 @@ class A_MemorixPlugin(BasePlugin):
                         (
                             "use_threshold",
                             "boolean",
-                            "是否使用动态阈值过滤（仅search模式）",
+                            "是否使用动态阈值过滤（search/time模式）",
                             False,
                             None,
                         ),
@@ -869,6 +982,12 @@ class A_MemorixPlugin(BasePlugin):
         ):
             self._auto_save_task = asyncio.create_task(self._auto_save_loop())
 
+        if (
+            self.get_config("person_profile.enabled", True)
+            and (self._person_profile_refresh_task is None or self._person_profile_refresh_task.done())
+        ):
+            self._person_profile_refresh_task = asyncio.create_task(self._person_profile_refresh_loop())
+
         if self._memory_maintenance_task is None or self._memory_maintenance_task.done():
             self._memory_maintenance_task = asyncio.create_task(self._memory_maintenance_loop())
 
@@ -877,6 +996,7 @@ class A_MemorixPlugin(BasePlugin):
         tasks = [
             ("scheduled_import", self._scheduled_import_task),
             ("auto_save", self._auto_save_task),
+            ("person_profile_refresh", self._person_profile_refresh_task),
             ("memory_maintenance", self._memory_maintenance_task),
         ]
         for _, task in tasks:
@@ -895,6 +1015,7 @@ class A_MemorixPlugin(BasePlugin):
 
         self._scheduled_import_task = None
         self._auto_save_task = None
+        self._person_profile_refresh_task = None
         self._memory_maintenance_task = None
 
     async def on_unload(self):
@@ -909,6 +1030,7 @@ class A_MemorixPlugin(BasePlugin):
             "metadata_store": self.metadata_store,
             "embedding_manager": self.embedding_manager,
             "sparse_index": self.sparse_index,
+            "plugin_instance": self,
         }
         
         # 同时更新私有配置和主配置，确保命令可以通过其获取实例
@@ -1218,6 +1340,196 @@ class A_MemorixPlugin(BasePlugin):
         else:
             # 黑名单模式：匹配到的被禁用
             return not is_matched
+
+    def _get_routing_mode_value(self, key: str, default: str) -> str:
+        value = str(self.get_config(f"routing.{key}", default) or default).strip().lower()
+        return value or default
+
+    def get_search_owner(self) -> str:
+        owner = self._get_routing_mode_value("search_owner", "action")
+        if owner not in {"action", "tool", "dual"}:
+            return "action"
+        return owner
+
+    def get_tool_search_mode(self) -> str:
+        mode = self._get_routing_mode_value("tool_search_mode", "forward")
+        if mode == "legacy":
+            logger.warning("routing.tool_search_mode=legacy 已废弃，按 forward 处理")
+            return "forward"
+        if mode not in {"forward", "disabled"}:
+            return "forward"
+        return mode
+
+    def _is_request_dedup_enabled(self) -> bool:
+        return bool(self.get_config("routing.enable_request_dedup", True))
+
+    def _get_request_dedup_ttl_seconds(self) -> float:
+        try:
+            ttl = float(self.get_config("routing.request_dedup_ttl_seconds", 2))
+        except (TypeError, ValueError):
+            ttl = 2.0
+        return max(0.1, ttl)
+
+    def _cleanup_request_dedup_cache_locked(self, now_ts: Optional[float] = None) -> None:
+        now_ts = now_ts if now_ts is not None else time.time()
+        stale_keys = [
+            key
+            for key, entry in self._request_dedup_cache.items()
+            if float(entry.get("expires_at", 0.0)) <= now_ts
+        ]
+        for key in stale_keys:
+            self._request_dedup_cache.pop(key, None)
+
+    async def execute_request_with_dedup(
+        self,
+        request_key: str,
+        executor: Callable[[], Awaitable[Any]],
+    ) -> Tuple[bool, Any]:
+        """
+        执行短时请求去重。
+
+        Returns:
+            Tuple[bool, Any]: (是否命中去重缓存/并发复用, 执行结果)
+        """
+        if not self._is_request_dedup_enabled():
+            result = await executor()
+            return False, result
+
+        wait_future: Optional[asyncio.Future] = None
+        is_owner = False
+        now_ts = time.time()
+
+        async with self._request_dedup_lock:
+            self._cleanup_request_dedup_cache_locked(now_ts)
+
+            cached = self._request_dedup_cache.get(request_key)
+            if cached and float(cached.get("expires_at", 0.0)) > now_ts:
+                return True, cached.get("result")
+
+            inflight = self._request_dedup_inflight.get(request_key)
+            if inflight is not None:
+                wait_future = inflight
+            else:
+                loop = asyncio.get_running_loop()
+                new_future: asyncio.Future = loop.create_future()
+                self._request_dedup_inflight[request_key] = new_future
+                wait_future = new_future
+                is_owner = True
+
+        if not is_owner and wait_future is not None:
+            result = await wait_future
+            return True, result
+
+        assert wait_future is not None
+        try:
+            result = await executor()
+            ttl = self._get_request_dedup_ttl_seconds()
+            expires_at = time.time() + ttl
+            async with self._request_dedup_lock:
+                self._request_dedup_cache[request_key] = {
+                    "result": result,
+                    "expires_at": expires_at,
+                }
+                future = self._request_dedup_inflight.pop(request_key, None)
+                if future is not None and not future.done():
+                    future.set_result(result)
+            return False, result
+        except Exception as e:
+            async with self._request_dedup_lock:
+                future = self._request_dedup_inflight.pop(request_key, None)
+                if future is not None and not future.done():
+                    future.set_exception(e)
+            raise
+
+    def is_person_profile_injection_enabled(self, stream_id: str, user_id: str) -> bool:
+        """检查人物画像自动注入是否开启（按 stream_id + user_id）。"""
+        if not bool(self.get_config("person_profile.enabled", True)):
+            return False
+
+        opt_in_required = bool(self.get_config("person_profile.opt_in_required", True))
+        default_enabled = bool(self.get_config("person_profile.default_injection_enabled", False))
+
+        if not opt_in_required:
+            return default_enabled
+
+        if not stream_id or not user_id or self.metadata_store is None:
+            return False
+
+        try:
+            return bool(self.metadata_store.get_person_profile_switch(stream_id, user_id, default=default_enabled))
+        except Exception as e:
+            logger.warning(f"读取人物画像开关失败: {e}")
+            return False
+
+    async def _person_profile_refresh_loop(self):
+        """按需刷新人物画像快照（仅针对已开启范围内活跃人物）。"""
+        logger.info("A_Memorix 人物画像定时刷新任务已启动")
+        try:
+            while True:
+                interval_minutes = int(self.get_config("person_profile.refresh_interval_minutes", 30))
+                await asyncio.sleep(max(60, interval_minutes * 60))
+
+                if not bool(self.get_config("person_profile.enabled", True)):
+                    continue
+
+                await self._refresh_person_profiles_for_enabled_switches()
+        except asyncio.CancelledError:
+            logger.info("人物画像定时刷新任务已取消")
+        except Exception as e:
+            logger.error(f"人物画像定时刷新循环异常: {e}")
+
+    async def _refresh_person_profiles_for_enabled_switches(self):
+        """刷新已开启范围内活跃人物画像。"""
+        if self.metadata_store is None:
+            return
+
+        active_window_hours = float(self.get_config("person_profile.active_window_hours", 72.0))
+        active_after = time.time() - max(0.0, active_window_hours) * 3600.0
+        max_refresh = int(self.get_config("person_profile.max_refresh_per_cycle", 50))
+        top_k_evidence = int(self.get_config("person_profile.top_k_evidence", 12))
+        ttl_minutes = float(self.get_config("person_profile.profile_ttl_minutes", 360.0))
+        ttl_seconds = max(60.0, ttl_minutes * 60.0)
+
+        try:
+            person_ids = self.metadata_store.get_active_person_ids_for_enabled_switches(
+                active_after=active_after,
+                limit=max_refresh,
+            )
+        except Exception as e:
+            logger.warning(f"获取待刷新人物集合失败: {e}")
+            return
+
+        if not person_ids:
+            logger.debug("人物画像刷新跳过：暂无已开启范围内活跃人物")
+            return
+
+        from .core.utils.person_profile_service import PersonProfileService
+
+        service = PersonProfileService(
+            metadata_store=self.metadata_store,
+            graph_store=self.graph_store,
+            vector_store=self.vector_store,
+            embedding_manager=self.embedding_manager,
+            sparse_index=self.sparse_index,
+            plugin_config=self.config,
+        )
+
+        refreshed = 0
+        for person_id in person_ids:
+            try:
+                result = await service.query_person_profile(
+                    person_id=person_id,
+                    top_k=top_k_evidence,
+                    ttl_seconds=ttl_seconds,
+                    force_refresh=True,
+                    source_note="schedule_refresh",
+                )
+                if result.get("success"):
+                    refreshed += 1
+            except Exception as e:
+                logger.warning(f"刷新人物画像失败: person_id={person_id}, err={e}")
+
+        logger.info(f"人物画像按需刷新完成: refreshed={refreshed}, candidates={len(person_ids)}")
 
     async def _perform_bulk_summary_import(self):
         """为所有活跃聊天执行总结导入"""
