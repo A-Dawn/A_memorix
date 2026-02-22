@@ -233,3 +233,9 @@ scripts/test-sample.json
 USAGE_ARCHITECTURE.md
 scripts/test_conversion.py
 scripts/debug_graph_vis.py
+/.tmp_feature_e2e_real
+/.tmp_sparse_tests
+/.tmp_test_probe
+/.tmp_test_sqlite
+/.tmp_testdata
+/scripts/tmp
