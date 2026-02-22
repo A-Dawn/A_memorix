@@ -17,6 +17,7 @@ from src.chat.message_receive.message import MessageRecv
 # 导入核心模块
 from src.plugin_system.apis import llm_api
 from src.config.config import model_config as host_model_config
+from src.config.api_ada_configs import TaskConfig
 from ...core import (
     VectorStore,
     GraphStore,
@@ -666,35 +667,80 @@ class ImportCommand(BaseCommand):
         return entities_count, relations_count
 
     async def _select_model(self) -> Any:
-        """精确选择最适合知识抽取的模型 (仅限明确配置和任务匹配)"""
+        """选择知识抽取模型（支持任务名/模型名/auto）。"""
         models = llm_api.get_available_models()
         if not models:
             raise ValueError("没有可用的 LLM 模型配置")
 
-        # 1. 优先级最高：插件配置强制指定
-        config_model = self.plugin_config.get("advanced", {}).get("extraction_model", "auto")
-        if config_model != "auto" and config_model in models:
-            logger.info(f"{self.log_prefix} 使用插件配置指定的模型: {config_model}")
+        def _is_task_config(task_cfg: Any) -> bool:
+            return hasattr(task_cfg, "model_list") and bool(getattr(task_cfg, "model_list", []))
+
+        def _build_single_model_task(model_name: str, template: TaskConfig) -> TaskConfig:
+            return TaskConfig(
+                model_list=[model_name],
+                max_tokens=template.max_tokens,
+                temperature=template.temperature,
+                slow_threshold=template.slow_threshold,
+                selection_strategy=template.selection_strategy,
+            )
+
+        preferred_tasks = (
+            "lpmm_entity_extract",
+            "lpmm_rdf_build",
+            "replyer",
+            "utils",
+            "planner",
+            "tool_use",
+        )
+
+        config_model = str(
+            self.plugin_config.get("advanced", {}).get("extraction_model", "auto") or "auto"
+        ).strip()
+        model_dict = getattr(host_model_config, "models_dict", {}) or {}
+
+        # 1) 显式任务名
+        if config_model.lower() != "auto" and config_model in models and _is_task_config(models[config_model]):
+            logger.info(f"{self.log_prefix} 使用插件配置指定任务: {config_model}")
             return models[config_model]
 
-        # 2. 优先级第二：主程序任务配置匹配 (lpmm_entity_extract)
-        try:
-            task_configs = getattr(host_model_config, "model_task_config", {})
-            
-            # 按优先级尝试两种相关的任务配置
-            for task_key in ["lpmm_entity_extract", "lpmm_rdf_build"]:
-                if task_key in task_configs:
-                    task_models = task_configs[task_key].get("model_list", [])
-                    for m in task_models:
-                        if m in models:
-                            logger.info(f"{self.log_prefix} 通过主程序任务配置 [{task_key}] 匹配到模型: {m}")
-                            return models[m]
-        except Exception as e:
-            logger.debug(f"{self.log_prefix} 读取主程序任务配置失败: {e}")
+        # 2) 显式模型名（对应 model_config.toml 的模型键）
+        if config_model.lower() != "auto" and config_model in model_dict:
+            template = next(
+                (
+                    models.get(task_name)
+                    for task_name in preferred_tasks
+                    if _is_task_config(models.get(task_name))
+                ),
+                None,
+            )
+            if template is None:
+                template = next((task for task in models.values() if _is_task_config(task)), None)
+            if template is not None:
+                logger.info(f"{self.log_prefix} 使用插件配置指定模型: {config_model}")
+                return _build_single_model_task(config_model, template)
 
-        # 3. 兜底策略：如果以上均未匹配，返回首个可用模型
-        first_model = list(models.keys())[0]
-        return models[first_model]
+        if config_model.lower() != "auto":
+            logger.warning(
+                f"{self.log_prefix} extraction_model='{config_model}' 无法识别，回退自动选择"
+            )
+
+        # 3) auto：优先抽取相关任务，避免误落到 embedding
+        for task_name in preferred_tasks:
+            task_cfg = models.get(task_name)
+            if _is_task_config(task_cfg):
+                logger.info(f"{self.log_prefix} auto 选择任务: {task_name}")
+                return task_cfg
+
+        # 4) fallback：任意非 embedding 任务
+        for task_name, task_cfg in models.items():
+            if task_name != "embedding" and _is_task_config(task_cfg):
+                logger.info(f"{self.log_prefix} auto 回退任务: {task_name}")
+                return task_cfg
+
+        # 5) 最终兜底
+        first_task_name = next(iter(models))
+        logger.warning(f"{self.log_prefix} 仅检测到 embedding 或异常任务，回退: {first_task_name}")
+        return models[first_task_name]
 
     async def _llm_extract(self, chunk: str, model_config: Any) -> Dict:
         """调用 LLM 提取知识"""

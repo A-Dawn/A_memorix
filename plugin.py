@@ -12,10 +12,15 @@ from src.plugin_system import (
     BaseAction,
     BaseCommand,
     BaseTool,
+    BaseEventHandler,
     ActionInfo,
     CommandInfo,
     ToolInfo,
+    EventHandlerInfo,
     ActionActivationType,
+    EventType,
+    MaiMessages,
+    CustomEventHandlerResult,
     ConfigField,
     register_plugin,
 )
@@ -51,6 +56,57 @@ def _set_global_instance(instance):
 def _get_global_instance():
     return sys.modules.get("A_MEMORIX_GLOBAL_INSTANCE")
 
+
+class A_MemorixStartHandler(BaseEventHandler):
+    """在系统启动时调用插件 on_enable，拉起后台任务。"""
+
+    event_type = EventType.ON_START
+    handler_name = "a_memorix_start_handler"
+    handler_description = "A_Memorix 启动生命周期处理器"
+
+    async def execute(
+        self, message: MaiMessages | None
+    ) -> Tuple[bool, bool, Optional[str], Optional[CustomEventHandlerResult], Optional[MaiMessages]]:
+        from src.plugin_system.core.plugin_manager import plugin_manager
+
+        plugin = plugin_manager.get_plugin_instance(self.plugin_name) or _get_global_instance()
+        if plugin is None:
+            logger.warning("A_Memorix ON_START: 未找到插件实例，跳过 on_enable")
+            return True, True, "A_Memorix 实例缺失", None, None
+
+        try:
+            await plugin.on_enable()
+            return True, True, "A_Memorix on_enable 已执行", None, None
+        except Exception as e:
+            logger.error(f"A_Memorix ON_START 执行失败: {e}", exc_info=True)
+            return False, True, f"A_Memorix ON_START 失败: {e}", None, None
+
+
+class A_MemorixStopHandler(BaseEventHandler):
+    """在系统停止时调用插件 on_disable，收敛后台任务。"""
+
+    event_type = EventType.ON_STOP
+    handler_name = "a_memorix_stop_handler"
+    handler_description = "A_Memorix 停止生命周期处理器"
+
+    async def execute(
+        self, message: MaiMessages | None
+    ) -> Tuple[bool, bool, Optional[str], Optional[CustomEventHandlerResult], Optional[MaiMessages]]:
+        from src.plugin_system.core.plugin_manager import plugin_manager
+
+        plugin = plugin_manager.get_plugin_instance(self.plugin_name) or _get_global_instance()
+        if plugin is None:
+            logger.warning("A_Memorix ON_STOP: 未找到插件实例，跳过 on_disable")
+            return True, True, "A_Memorix 实例缺失", None, None
+
+        try:
+            await plugin.on_disable()
+            return True, True, "A_Memorix on_disable 已执行", None, None
+        except Exception as e:
+            logger.error(f"A_Memorix ON_STOP 执行失败: {e}", exc_info=True)
+            return False, True, f"A_Memorix ON_STOP 失败: {e}", None, None
+
+
 @register_plugin
 class A_MemorixPlugin(BasePlugin):
     """
@@ -67,7 +123,7 @@ class A_MemorixPlugin(BasePlugin):
 
     # 插件基本信息（PluginBase要求的抽象属性）
     plugin_name = "A_Memorix"
-    plugin_version = "0.5.0"
+    plugin_version = "0.5.1"
     plugin_description = "轻量级知识库插件 - 含人物画像能力的独立记忆增强系统"
     plugin_author = "A_Dawn"
     enable_plugin = False  # 默认禁用，需要在config.toml中启用
@@ -98,7 +154,7 @@ class A_MemorixPlugin(BasePlugin):
         "plugin": {
             "config_version": ConfigField(
                 type=str,
-                default="4.0.0",
+                default="4.0.1",
                 description="配置文件版本"
             ),
             "enabled": ConfigField(
@@ -529,8 +585,8 @@ class A_MemorixPlugin(BasePlugin):
         self,
     ) -> List[
         Tuple[
-            ActionInfo | CommandInfo | ToolInfo,
-            Type[BaseAction | BaseCommand | BaseTool],
+            ActionInfo | CommandInfo | ToolInfo | EventHandlerInfo,
+            Type[BaseAction | BaseCommand | BaseTool | BaseEventHandler],
         ]
     ]:
         """获取插件包含的组件列表
@@ -864,6 +920,10 @@ class A_MemorixPlugin(BasePlugin):
                 DebugServerCommand,
             )
         )
+
+        # Lifecycle EventHandlers
+        components.append((A_MemorixStartHandler.get_handler_info(), A_MemorixStartHandler))
+        components.append((A_MemorixStopHandler.get_handler_info(), A_MemorixStopHandler))
 
         return components
 
@@ -1304,8 +1364,8 @@ class A_MemorixPlugin(BasePlugin):
         chats = filter_config.get("chats", [])
         
         if not chats:
-            # 如果配置为空，白名单模式下兜底放行
-            return mode == "whitelist"
+            # 空列表策略：白名单全拦截，黑名单全放行
+            return mode == "blacklist"
             
         # 统一转为字符串并清理空格
         stream_id = str(stream_id) if stream_id else ""

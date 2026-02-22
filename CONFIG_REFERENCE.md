@@ -1,6 +1,6 @@
 # A_Memorix 配置参数详解（config.toml）
 
-适用版本：`plugins/A_memorix/config.toml`（`config_version = "4.0.0"`，插件代码 `v0.5.0`）。
+适用版本：`plugins/A_memorix/config.toml`（`config_version = "4.0.1"`，插件代码 `v0.5.1`）。
 
 ---
 
@@ -10,7 +10,7 @@
 - `retrieval.sparse` 与 `retrieval.fusion` 是新增检索增强配置：可在 embedding 异常时自动回退 BM25，并通过 weighted RRF 融合候选。
 - `routing.search_owner=action` + `routing.tool_search_mode=forward` 是默认推荐：Action 主责 `search/time`，Tool 在 `search/time` 上走统一转发链路。
 - `memory.reinforce_buffer_max_size`、`memory.min_active_weight_protected` 当前代码里**未实际使用**。
-- `filter.mode = "blacklist"` 且 `filter.chats = []` 时，会导致“全部聊天流被禁用”。
+- `filter.chats = []` 时采用安全兜底：`whitelist`=全部拒绝，`blacklist`=全部放行。
 - `retrieval.sparse.enable_relation_sparse_fallback = false` 会关闭关系 sparse 召回，但当前段落 sparse 查询路径仍会幂等检查 `relations_fts` schema/backfill（有轻微额外开销）。
 
 ---
@@ -335,7 +335,7 @@
 - `filter.chats`
   - 功能：过滤目标列表。
   - 生效：支持 `group:123`、`user:10001`、`private:10001`、`stream:<md5>` 或纯 ID（兼容匹配 stream/group/user）。
-  - 注意：当列表为空时，`whitelist`=全部放行，`blacklist`=全部拒绝。
+  - 注意：当列表为空时，`whitelist`=全部拒绝，`blacklist`=全部放行。
 
 ## `[routing]` 检索路由与兼容
 
