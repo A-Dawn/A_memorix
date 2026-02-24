@@ -7,11 +7,12 @@
 import sqlite3
 import pickle
 import json
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Union, List, Dict, Any, Tuple
 
-from src.common.logger import get_logger
+from amemorix.common.logging import get_logger
 from ..utils.hash import compute_hash, normalize_text
 from ..utils.time_parser import normalize_time_meta
 
@@ -434,6 +435,93 @@ class MetadataStore:
                 logger.info(f"自动修复完成: 已校正 {cursor.rowcount} 条数据")
         except Exception as e:
             logger.error(f"数据自动修复失败: {e}")
+
+        # 独立化迁移：person_registry / transcript / async_tasks
+        try:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS person_registry (
+                    person_id TEXT PRIMARY KEY,
+                    person_name TEXT,
+                    nickname TEXT,
+                    user_id TEXT,
+                    platform TEXT,
+                    group_nick_name TEXT,
+                    memory_points TEXT,
+                    last_know REAL,
+                    metadata TEXT,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                )
+                """
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_person_registry_last_know ON person_registry(last_know DESC)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_person_registry_person_name ON person_registry(person_name)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_person_registry_nickname ON person_registry(nickname)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_person_registry_user_id ON person_registry(user_id)"
+            )
+
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS transcript_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    source TEXT,
+                    metadata TEXT,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                )
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS transcript_messages (
+                    message_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    ts REAL,
+                    metadata TEXT,
+                    created_at REAL NOT NULL,
+                    FOREIGN KEY (session_id) REFERENCES transcript_sessions(session_id) ON DELETE CASCADE
+                )
+                """
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_transcript_messages_session ON transcript_messages(session_id, created_at DESC)"
+            )
+
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS async_tasks (
+                    task_id TEXT PRIMARY KEY,
+                    task_type TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    payload_json TEXT,
+                    result_json TEXT,
+                    error_message TEXT,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    started_at REAL,
+                    finished_at REAL,
+                    cancel_requested INTEGER DEFAULT 0
+                )
+                """
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_async_tasks_status ON async_tasks(status, updated_at DESC)"
+            )
+
+            self._conn.commit()
+        except Exception as e:
+            self._conn.rollback()
+            raise RuntimeError(f"独立化 schema 迁移失败: {e}") from e
 
     def _create_temporal_indexes_if_ready(self) -> None:
         """
@@ -1932,10 +2020,17 @@ class MetadataStore:
         }
 
         cursor = self._conn.cursor()
+        # 兼容外层已开启事务的场景（例如批处理/复合操作）：
+        # 若连接已在事务中，则改用 SAVEPOINT，避免 "cannot start a transaction within a transaction"。
+        use_savepoint = bool(getattr(self._conn, "in_transaction", False))
+        savepoint_name = f"sp_delete_paragraph_{uuid.uuid4().hex[:8]}"
         try:
             # === Phase 1: DB Transaction (可回滚) ===
             # 使用 IMMEDIATE 模式，一旦开启事务立即锁定 DB (防止其他写操作插队导致幻读)
-            cursor.execute("BEGIN IMMEDIATE")
+            if use_savepoint:
+                cursor.execute(f"SAVEPOINT {savepoint_name}")
+            else:
+                cursor.execute("BEGIN IMMEDIATE")
 
             # 1. [快照] 获取候选关系
             cursor.execute("SELECT relation_hash FROM paragraph_relations WHERE paragraph_hash = ?", (paragraph_hash,))
@@ -1985,13 +2080,23 @@ class MetadataStore:
                 placeholders = ','.join(['?'] * len(orphaned_hashes))
                 cursor.execute(f"DELETE FROM relations WHERE hash IN ({placeholders})", orphaned_hashes)
 
-            self._conn.commit()
+            if use_savepoint:
+                cursor.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+            else:
+                self._conn.commit()
             if cleanup_plan["vector_id_to_remove"]:
                 logger.debug(f"原子删除段落成功: {paragraph_hash}, 计划清理 {len(orphaned_hashes)} 个孤儿关系")
             return cleanup_plan
 
         except Exception as e:
-            self._conn.rollback()
+            if use_savepoint:
+                try:
+                    cursor.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+                    cursor.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+                except Exception:
+                    self._conn.rollback()
+            else:
+                self._conn.rollback()
             logger.error(f"DB Transaction failed: {e}")
             raise e
 
@@ -3011,6 +3116,428 @@ class MetadataStore:
         self._conn.commit()
         return cursor.rowcount > 0
 
+    # =========================================================================
+    # Standalone Person Registry / Transcript / Async Task
+    # =========================================================================
+
+    def upsert_person_registry(
+        self,
+        *,
+        person_id: str,
+        person_name: str = "",
+        nickname: str = "",
+        user_id: str = "",
+        platform: str = "",
+        group_nick_name: Any = None,
+        memory_points: Any = None,
+        last_know: Optional[float] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        if not person_id:
+            raise ValueError("person_id 不能为空")
+
+        now = datetime.now().timestamp()
+        gnn = group_nick_name
+        if gnn is not None and not isinstance(gnn, str):
+            gnn = json.dumps(gnn, ensure_ascii=False)
+        mp = memory_points
+        if mp is not None and not isinstance(mp, str):
+            mp = json.dumps(mp, ensure_ascii=False)
+
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO person_registry (
+                person_id, person_name, nickname, user_id, platform, group_nick_name,
+                memory_points, last_know, metadata, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(person_id) DO UPDATE SET
+                person_name = excluded.person_name,
+                nickname = excluded.nickname,
+                user_id = excluded.user_id,
+                platform = excluded.platform,
+                group_nick_name = excluded.group_nick_name,
+                memory_points = excluded.memory_points,
+                last_know = excluded.last_know,
+                metadata = excluded.metadata,
+                updated_at = excluded.updated_at
+            """,
+            (
+                str(person_id).strip(),
+                str(person_name or ""),
+                str(nickname or ""),
+                str(user_id or ""),
+                str(platform or ""),
+                gnn,
+                mp,
+                float(last_know) if last_know is not None else None,
+                json.dumps(metadata or {}, ensure_ascii=False),
+                now,
+                now,
+            ),
+        )
+        self._conn.commit()
+        return self.get_person_registry(str(person_id).strip()) or {"person_id": str(person_id).strip()}
+
+    def get_person_registry(self, person_id: str) -> Optional[Dict[str, Any]]:
+        if not person_id:
+            return None
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            SELECT person_id, person_name, nickname, user_id, platform, group_nick_name,
+                   memory_points, last_know, metadata, created_at, updated_at
+            FROM person_registry
+            WHERE person_id = ?
+            LIMIT 1
+            """,
+            (str(person_id).strip(),),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "person_id": str(row[0] or ""),
+            "person_name": str(row[1] or ""),
+            "nickname": str(row[2] or ""),
+            "user_id": str(row[3] or ""),
+            "platform": str(row[4] or ""),
+            "group_nick_name": row[5],
+            "memory_points": row[6],
+            "last_know": row[7],
+            "metadata": json.loads(row[8]) if row[8] else {},
+            "created_at": row[9],
+            "updated_at": row[10],
+        }
+
+    def resolve_person_registry(self, keyword: str) -> str:
+        kw = str(keyword or "").strip()
+        if not kw:
+            return ""
+
+        cursor = self._conn.cursor()
+        cursor.execute(
+            "SELECT person_id FROM person_registry WHERE person_id = ? LIMIT 1",
+            (kw,),
+        )
+        row = cursor.fetchone()
+        if row and row[0]:
+            return str(row[0])
+
+        cursor.execute(
+            """
+            SELECT person_id
+            FROM person_registry
+            WHERE person_name = ? OR nickname = ? OR user_id = ?
+            LIMIT 1
+            """,
+            (kw, kw, kw),
+        )
+        row = cursor.fetchone()
+        if row and row[0]:
+            return str(row[0])
+
+        like_kw = f"%{kw}%"
+        cursor.execute(
+            """
+            SELECT person_id
+            FROM person_registry
+            WHERE person_name LIKE ? OR nickname LIKE ? OR user_id LIKE ? OR group_nick_name LIKE ?
+            ORDER BY last_know DESC, updated_at DESC
+            LIMIT 1
+            """,
+            (like_kw, like_kw, like_kw, like_kw),
+        )
+        row = cursor.fetchone()
+        return str(row[0]) if row and row[0] else ""
+
+    def list_person_registry(self, keyword: str = "", page: int = 1, page_size: int = 20) -> Dict[str, Any]:
+        kw = str(keyword or "").strip()
+        page = max(1, int(page))
+        page_size = max(1, min(200, int(page_size)))
+        offset = (page - 1) * page_size
+
+        where_sql = ""
+        params: List[Any] = []
+        if kw:
+            like_kw = f"%{kw}%"
+            where_sql = (
+                "WHERE person_name LIKE ? OR nickname LIKE ? OR user_id LIKE ? OR person_id LIKE ? OR group_nick_name LIKE ?"
+            )
+            params.extend([like_kw, like_kw, like_kw, like_kw, like_kw])
+
+        cursor = self._conn.cursor()
+        cursor.execute(f"SELECT COUNT(*) FROM person_registry {where_sql}", tuple(params))
+        total = int(cursor.fetchone()[0] or 0)
+
+        cursor.execute(
+            f"""
+            SELECT person_id, person_name, nickname, user_id, platform, group_nick_name,
+                   memory_points, last_know, metadata, created_at, updated_at
+            FROM person_registry
+            {where_sql}
+            ORDER BY last_know DESC, updated_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            tuple(params + [page_size, offset]),
+        )
+        rows = cursor.fetchall()
+        items = [
+            {
+                "person_id": str(row[0] or ""),
+                "person_name": str(row[1] or ""),
+                "nickname": str(row[2] or ""),
+                "user_id": str(row[3] or ""),
+                "platform": str(row[4] or ""),
+                "group_nick_name": row[5],
+                "memory_points": row[6],
+                "last_know": row[7],
+                "metadata": json.loads(row[8]) if row[8] else {},
+                "created_at": row[9],
+                "updated_at": row[10],
+            }
+            for row in rows
+        ]
+
+        return {
+            "keyword": kw,
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "items": items,
+        }
+
+    def upsert_transcript_session(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        source: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        sid = str(session_id or uuid.uuid4().hex)
+        now = datetime.now().timestamp()
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO transcript_sessions (session_id, source, metadata, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                source = excluded.source,
+                metadata = excluded.metadata,
+                updated_at = excluded.updated_at
+            """,
+            (sid, str(source or ""), json.dumps(metadata or {}, ensure_ascii=False), now, now),
+        )
+        self._conn.commit()
+        return {"session_id": sid, "source": str(source or ""), "updated_at": now}
+
+    def append_transcript_messages(self, *, session_id: str, messages: List[Dict[str, Any]]) -> int:
+        if not session_id or not messages:
+            return 0
+        now = datetime.now().timestamp()
+        cursor = self._conn.cursor()
+        count = 0
+        for item in messages:
+            role = str(item.get("role", "user") or "user").strip() or "user"
+            content = str(item.get("content", "") or "").strip()
+            if not content:
+                continue
+            ts = item.get("timestamp")
+            try:
+                ts_val = float(ts) if ts is not None else None
+            except (TypeError, ValueError):
+                ts_val = None
+            cursor.execute(
+                """
+                INSERT INTO transcript_messages (session_id, role, content, ts, metadata, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(session_id),
+                    role,
+                    content,
+                    ts_val,
+                    json.dumps(item.get("metadata", {}), ensure_ascii=False),
+                    now,
+                ),
+            )
+            count += 1
+        cursor.execute(
+            "UPDATE transcript_sessions SET updated_at = ? WHERE session_id = ?",
+            (now, str(session_id)),
+        )
+        self._conn.commit()
+        return count
+
+    def get_transcript_messages(self, session_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+        if not session_id:
+            return []
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            SELECT role, content, ts, metadata, created_at
+            FROM transcript_messages
+            WHERE session_id = ?
+            ORDER BY message_id DESC
+            LIMIT ?
+            """,
+            (str(session_id), max(1, int(limit))),
+        )
+        rows = cursor.fetchall()
+        rows = list(reversed(rows))
+        items: List[Dict[str, Any]] = []
+        for row in rows:
+            items.append(
+                {
+                    "role": str(row[0] or "user"),
+                    "content": str(row[1] or ""),
+                    "timestamp": row[2],
+                    "metadata": json.loads(row[3]) if row[3] else {},
+                    "created_at": row[4],
+                }
+            )
+        return items
+
+    def create_async_task(self, *, task_id: str, task_type: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        now = datetime.now().timestamp()
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            INSERT OR REPLACE INTO async_tasks (
+                task_id, task_type, status, payload_json, result_json, error_message,
+                created_at, updated_at, started_at, finished_at, cancel_requested
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(task_id),
+                str(task_type),
+                "queued",
+                json.dumps(payload or {}, ensure_ascii=False),
+                None,
+                None,
+                now,
+                now,
+                None,
+                None,
+                0,
+            ),
+        )
+        self._conn.commit()
+        return self.get_async_task(task_id) or {}
+
+    def update_async_task(
+        self,
+        *,
+        task_id: str,
+        status: str,
+        result: Optional[Dict[str, Any]] = None,
+        error_message: str = "",
+        started_at: Optional[float] = None,
+        finished_at: Optional[float] = None,
+        cancel_requested: Optional[bool] = None,
+    ) -> None:
+        updates = ["status = ?", "updated_at = ?"]
+        params: List[Any] = [str(status), datetime.now().timestamp()]
+
+        if result is not None:
+            updates.append("result_json = ?")
+            params.append(json.dumps(result, ensure_ascii=False))
+        if error_message:
+            updates.append("error_message = ?")
+            params.append(str(error_message))
+        if started_at is not None:
+            updates.append("started_at = ?")
+            params.append(float(started_at))
+        if finished_at is not None:
+            updates.append("finished_at = ?")
+            params.append(float(finished_at))
+        if cancel_requested is not None:
+            updates.append("cancel_requested = ?")
+            params.append(1 if cancel_requested else 0)
+
+        params.append(str(task_id))
+        cursor = self._conn.cursor()
+        cursor.execute(
+            f"UPDATE async_tasks SET {', '.join(updates)} WHERE task_id = ?",
+            tuple(params),
+        )
+        self._conn.commit()
+
+    def get_async_task(self, task_id: str) -> Optional[Dict[str, Any]]:
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            SELECT task_id, task_type, status, payload_json, result_json, error_message,
+                   created_at, updated_at, started_at, finished_at, cancel_requested
+            FROM async_tasks
+            WHERE task_id = ?
+            LIMIT 1
+            """,
+            (str(task_id),),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "task_id": str(row[0]),
+            "task_type": str(row[1]),
+            "status": str(row[2]),
+            "payload": json.loads(row[3]) if row[3] else {},
+            "result": json.loads(row[4]) if row[4] else None,
+            "error_message": str(row[5] or ""),
+            "created_at": row[6],
+            "updated_at": row[7],
+            "started_at": row[8],
+            "finished_at": row[9],
+            "cancel_requested": bool(row[10]),
+        }
+
+    def list_async_tasks(self, task_type: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
+        cursor = self._conn.cursor()
+        if task_type:
+            cursor.execute(
+                """
+                SELECT task_id, task_type, status, payload_json, result_json, error_message,
+                       created_at, updated_at, started_at, finished_at, cancel_requested
+                FROM async_tasks
+                WHERE task_type = ?
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (str(task_type), max(1, int(limit))),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT task_id, task_type, status, payload_json, result_json, error_message,
+                       created_at, updated_at, started_at, finished_at, cancel_requested
+                FROM async_tasks
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (max(1, int(limit)),),
+            )
+        rows = cursor.fetchall()
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            out.append(
+                {
+                    "task_id": str(row[0]),
+                    "task_type": str(row[1]),
+                    "status": str(row[2]),
+                    "payload": json.loads(row[3]) if row[3] else {},
+                    "result": json.loads(row[4]) if row[4] else None,
+                    "error_message": str(row[5] or ""),
+                    "created_at": row[6],
+                    "updated_at": row[7],
+                    "started_at": row[8],
+                    "finished_at": row[9],
+                    "cancel_requested": bool(row[10]),
+                }
+            )
+        return out
+
     def has_table(self, table_name: str) -> bool:
         """检查数据库是否存在指定表。"""
         if not self._conn:
@@ -3058,3 +3585,4 @@ class MetadataStore:
         if self.data_dir is None:
             return False
         return (self.data_dir / self.db_name).exists()
+

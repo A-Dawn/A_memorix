@@ -9,7 +9,7 @@ from typing import List, Dict, Any, Optional, Tuple, Union
 from dataclasses import dataclass
 from enum import Enum
 
-from src.common.logger import get_logger
+from amemorix.common.logging import get_logger
 from .dual_path import RetrievalResult
 
 logger = get_logger("A_Memorix.DynamicThresholdFilter")
@@ -448,3 +448,4 @@ class DynamicThresholdFilter:
             f"min_threshold={self.config.min_threshold}, "
             f"filtered={self._total_filtered}/{self._total_processed})"
         )
+

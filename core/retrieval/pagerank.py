@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Tuple, Union, Any
 from dataclasses import dataclass
 import numpy as np
 
-from src.common.logger import get_logger
+from amemorix.common.logging import get_logger
 from ..storage import GraphStore
 from ..utils.matcher import AhoCorasick
 
@@ -480,3 +480,4 @@ def create_ppr_from_graph(
         graph_store=graph_store,
         config=config,
     )
+

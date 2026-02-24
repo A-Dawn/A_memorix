@@ -27,7 +27,7 @@ except ImportError:
     HAS_SCIPY = False
 
 import contextlib
-from src.common.logger import get_logger
+from amemorix.common.logging import get_logger
 from ..utils.hash import compute_hash
 from ..utils.io import atomic_write
 
@@ -1325,4 +1325,5 @@ class GraphStore:
         self._adjacency_dirty = True
         logger.info(f"已从 {count} 条哈希重建边哈希映射，覆盖 {len(self._edge_hash_map)} 条边")
         return count
+
 

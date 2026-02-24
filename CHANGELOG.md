@@ -1,5 +1,40 @@
 # 更新日志 (Changelog)
 
+## [0.6.1] - 2026-02-24
+
+本次 `0.6.1` 为 **API 特化版文档与契约同步版本**，目标是让仓库信息与当前独立服务形态一致，并补齐回收站恢复链路的一致性。
+
+### 🔖 版本信息
+
+- 独立包版本：`0.6.0` → `0.6.1`
+
+### 🧩 API 特化版对齐
+
+- 文档改为 API-first：
+  - `README.md` 重写为独立服务主视角；
+  - `QUICK_START.md` 改为纯 API 启动与调用流程；
+  - `CONFIG_REFERENCE.md` 按 `amemorix/settings.py` 当前生效配置重写；
+  - `IMPORT_GUIDE.md` 路径与命令改为独立项目结构。
+- 清理父项目耦合文件：
+  - 删除 `plugin.py`、`components/*`、`_manifest.json`；
+  - 根 `__init__.py` 移除插件入口导出。
+- 配置说明明确：
+  - 推荐 `[embedding.openapi]`；
+  - 兼容 `[embedding.openai]`；
+  - 环境变量同时支持 `OPENAPI_*` 与 `OPENAI_*`。
+
+### 🛠️ 行为修复
+
+- 修复 `/v1/delete/relation` 的删除语义：
+  - 由硬删除改为“先备份到 `deleted_relations` 再删除”，
+  - 保证 `/v1/memory/restore` 与 `/api/memory/restore` 链路可用。
+
+### ✅ 回归结果
+
+- 使用真实端点与真实启动流程执行全链路回归：
+  - 覆盖 `/healthz`、`/readyz`、`/api/*`、`/v1/*`、鉴权矩阵、导入/查询/删除/记忆/人物画像/总结任务流转；
+  - 结果：`60 passed / 0 failed`。
+
 ## [0.5.1] - 2026-02-23
 
 本次 `0.5.1` 为热修订小版本，重点修复“随主程序启动的后台任务拉起”“空名单过滤语义”以及“知识抽取模型选择”。

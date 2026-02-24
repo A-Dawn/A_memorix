@@ -11,9 +11,9 @@ from enum import Enum
 
 import numpy as np
 
-from src.common.logger import get_logger
+from amemorix.common.logging import get_logger
 from ..storage import VectorStore, GraphStore, MetadataStore
-from ..embedding import EmbeddingManager
+from ..embedding.api_adapter import EmbeddingAPIAdapter as EmbeddingManager
 from ..utils.matcher import AhoCorasick
 from ..utils.time_parser import format_timestamp
 from .pagerank import PersonalizedPageRank, PageRankConfig
@@ -1323,3 +1323,4 @@ class DualPathRetriever:
             f"para_k={self.config.top_k_paragraphs}, "
             f"rel_k={self.config.top_k_relations})"
         )
+

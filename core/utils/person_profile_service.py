@@ -1,33 +1,31 @@
 """
 人物画像服务
 
-主链路：
-person_id -> 用户名/别名 -> 图谱关系 + 向量证据 -> 证据总结画像 -> 快照版本化存储
+person_id -> 别名解析 -> 图谱证据 + 向量证据 -> 画像快照
 """
+
+from __future__ import annotations
 
 import json
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from src.common.logger import get_logger
-from src.common.database.database_model import PersonInfo
+from amemorix.common.logging import get_logger
 
-from ..embedding import EmbeddingAPIAdapter
+from ..embedding.api_adapter import EmbeddingAPIAdapter
 from ..retrieval import (
     DualPathRetriever,
-    RetrievalStrategy,
     DualPathRetrieverConfig,
-    SparseBM25Config,
     FusionConfig,
+    RetrievalStrategy,
+    SparseBM25Config,
 )
-from ..storage import MetadataStore, GraphStore, VectorStore
+from ..storage import GraphStore, MetadataStore, VectorStore
 
 logger = get_logger("A_Memorix.PersonProfileService")
 
 
 class PersonProfileService:
-    """人物画像聚合/刷新服务。"""
-
     def __init__(
         self,
         metadata_store: MetadataStore,
@@ -47,10 +45,7 @@ class PersonProfileService:
         self.retriever = retriever or self._build_retriever()
 
     def _cfg(self, key: str, default: Any = None) -> Any:
-        """读取嵌套配置。"""
-        if not isinstance(self.plugin_config, dict):
-            return default
-        current: Any = self.plugin_config
+        current: Any = self.plugin_config if isinstance(self.plugin_config, dict) else {}
         for part in key.split("."):
             if isinstance(current, dict) and part in current:
                 current = current[part]
@@ -59,7 +54,6 @@ class PersonProfileService:
         return current
 
     def _build_retriever(self) -> Optional[DualPathRetriever]:
-        """按需构建检索器（无依赖时返回 None）。"""
         if not all(
             [
                 self.vector_store is not None,
@@ -69,6 +63,7 @@ class PersonProfileService:
             ]
         ):
             return None
+
         try:
             sparse_cfg_raw = self._cfg("retrieval.sparse", {}) or {}
             fusion_cfg_raw = self._cfg("retrieval.fusion", {}) or {}
@@ -77,8 +72,6 @@ class PersonProfileService:
             if not isinstance(fusion_cfg_raw, dict):
                 fusion_cfg_raw = {}
 
-            sparse_cfg = SparseBM25Config(**sparse_cfg_raw)
-            fusion_cfg = FusionConfig(**fusion_cfg_raw)
             config = DualPathRetrieverConfig(
                 top_k_paragraphs=int(self._cfg("retrieval.top_k_paragraphs", 20)),
                 top_k_relations=int(self._cfg("retrieval.top_k_relations", 10)),
@@ -90,8 +83,8 @@ class PersonProfileService:
                 enable_parallel=bool(self._cfg("retrieval.enable_parallel", True)),
                 retrieval_strategy=RetrievalStrategy.DUAL_PATH,
                 debug=bool(self._cfg("advanced.debug", False)),
-                sparse=sparse_cfg,
-                fusion=fusion_cfg,
+                sparse=SparseBM25Config(**sparse_cfg_raw),
+                fusion=FusionConfig(**fusion_cfg_raw),
             )
             return DualPathRetriever(
                 vector_store=self.vector_store,
@@ -101,45 +94,20 @@ class PersonProfileService:
                 sparse_index=self.sparse_index,
                 config=config,
             )
-        except Exception as e:
-            logger.warning(f"初始化人物画像检索器失败，将只使用关系证据: {e}")
+        except Exception as exc:
+            logger.warning("Build profile retriever failed: %s", exc)
             return None
 
-    @staticmethod
-    def resolve_person_id(identifier: str) -> str:
-        """按 person_id 或姓名/别名解析 person_id。"""
-        if not identifier:
+    def resolve_person_id(self, identifier: str) -> str:
+        value = str(identifier or "").strip()
+        if not value:
             return ""
-        key = str(identifier).strip()
-        if not key:
+        if len(value) == 32 and all(ch in "0123456789abcdefABCDEF" for ch in value):
+            return value.lower()
+        try:
+            return self.metadata_store.resolve_person_registry(value) or ""
+        except Exception:
             return ""
-
-        if len(key) == 32 and all(ch in "0123456789abcdefABCDEF" for ch in key):
-            return key.lower()
-
-        try:
-            record = (
-                PersonInfo.select(PersonInfo.person_id)
-                .where((PersonInfo.person_name == key) | (PersonInfo.nickname == key))
-                .first()
-            )
-            if record and record.person_id:
-                return str(record.person_id)
-        except Exception:
-            pass
-
-        try:
-            record = (
-                PersonInfo.select(PersonInfo.person_id)
-                .where(PersonInfo.group_nick_name.contains(key))
-                .first()
-            )
-            if record and record.person_id:
-                return str(record.person_id)
-        except Exception:
-            pass
-
-        return ""
 
     def _parse_group_nicks(self, raw_value: Any) -> List[str]:
         if not raw_value:
@@ -154,13 +122,13 @@ class PersonProfileService:
         names: List[str] = []
         for item in items:
             if isinstance(item, dict):
-                value = str(item.get("group_nick_name", "")).strip()
-                if value:
-                    names.append(value)
+                val = str(item.get("group_nick_name", "")).strip()
+                if val:
+                    names.append(val)
             elif isinstance(item, str):
-                value = item.strip()
-                if value:
-                    names.append(value)
+                val = item.strip()
+                if val:
+                    names.append(val)
         return names
 
     def _parse_memory_traits(self, raw_value: Any) -> List[str]:
@@ -188,22 +156,28 @@ class PersonProfileService:
         return traits[:10]
 
     def get_person_aliases(self, person_id: str) -> Tuple[List[str], str, List[str]]:
-        """获取人物别名集合、主展示名、记忆特征。"""
         aliases: List[str] = []
         primary_name = ""
         memory_traits: List[str] = []
         if not person_id:
             return aliases, primary_name, memory_traits
+
         try:
-            record = PersonInfo.get_or_none(PersonInfo.person_id == person_id)
+            record = self.metadata_store.get_person_registry(person_id)
             if not record:
                 return aliases, primary_name, memory_traits
-            person_name = str(getattr(record, "person_name", "") or "").strip()
-            nickname = str(getattr(record, "nickname", "") or "").strip()
-            group_nicks = self._parse_group_nicks(getattr(record, "group_nick_name", None))
-            memory_traits = self._parse_memory_traits(getattr(record, "memory_points", None))
 
-            primary_name = person_name or nickname or str(getattr(record, "user_id", "") or "").strip() or person_id
+            person_name = str(record.get("person_name", "") or "").strip()
+            nickname = str(record.get("nickname", "") or "").strip()
+            group_nicks = self._parse_group_nicks(record.get("group_nick_name"))
+            memory_traits = self._parse_memory_traits(record.get("memory_points"))
+
+            primary_name = (
+                person_name
+                or nickname
+                or str(record.get("user_id", "") or "").strip()
+                or person_id
+            )
 
             candidates = [person_name, nickname] + group_nicks
             seen = set()
@@ -213,8 +187,8 @@ class PersonProfileService:
                     continue
                 seen.add(norm)
                 aliases.append(norm)
-        except Exception as e:
-            logger.warning(f"解析人物别名失败: person_id={person_id}, err={e}")
+        except Exception as exc:
+            logger.warning("Parse person aliases failed: %s", exc)
         return aliases, primary_name, memory_traits
 
     def _collect_relation_evidence(self, aliases: List[str], limit: int = 30) -> List[Dict[str, Any]]:
@@ -252,7 +226,6 @@ class PersonProfileService:
             return []
 
         if self.retriever is None:
-            # 回退：无检索器时只做简单内容匹配
             fallback: List[Dict[str, Any]] = []
             seen_hash = set()
             for alias in alias_queries:
@@ -278,8 +251,8 @@ class PersonProfileService:
         for alias in alias_queries:
             try:
                 results = await self.retriever.retrieve(alias, top_k=per_alias_top_k)
-            except Exception as e:
-                logger.warning(f"向量证据召回失败: alias={alias}, err={e}")
+            except Exception as exc:
+                logger.warning("Vector evidence retrieve failed: %s", exc)
                 continue
             for item in results:
                 h = str(getattr(item, "hash_value", "") or "")
@@ -307,7 +280,6 @@ class PersonProfileService:
         vector_evidence: List[Dict[str, Any]],
         memory_traits: List[str],
     ) -> str:
-        """基于证据构建画像文本（供 LLM 上下文注入）。"""
         lines: List[str] = []
         lines.append(f"人物ID: {person_id}")
         if primary_name:
@@ -335,7 +307,6 @@ class PersonProfileService:
 
         if len(lines) <= 2:
             lines.append("暂无足够证据形成稳定画像。")
-
         return "\n".join(lines)
 
     @staticmethod
@@ -353,7 +324,6 @@ class PersonProfileService:
         return (now - updated_at) >= ttl_seconds
 
     def _apply_manual_override(self, person_id: str, profile_payload: Dict[str, Any]) -> Dict[str, Any]:
-        """将手工覆盖并入画像结果（覆盖 profile_text，同时保留 auto_profile_text）。"""
         payload = dict(profile_payload or {})
         auto_text = str(payload.get("profile_text", "") or "")
         payload["auto_profile_text"] = auto_text
@@ -363,18 +333,11 @@ class PersonProfileService:
         payload["override_updated_by"] = ""
         payload["profile_source"] = "auto_snapshot"
 
-        if not person_id or self.metadata_store is None:
+        if not person_id:
             return payload
-
-        try:
-            override = self.metadata_store.get_person_profile_override(person_id)
-        except Exception as e:
-            logger.warning(f"读取人物画像手工覆盖失败: person_id={person_id}, err={e}")
-            return payload
-
+        override = self.metadata_store.get_person_profile_override(person_id)
         if not override:
             return payload
-
         manual_text = str(override.get("override_text", "") or "").strip()
         if not manual_text:
             return payload
@@ -396,16 +359,11 @@ class PersonProfileService:
         force_refresh: bool = False,
         source_note: str = "",
     ) -> Dict[str, Any]:
-        """查询或刷新人物画像。"""
         pid = str(person_id or "").strip()
         if not pid and person_keyword:
             pid = self.resolve_person_id(person_keyword)
-
         if not pid:
-            return {
-                "success": False,
-                "error": "person_id 无效，且未能通过别名解析",
-            }
+            return {"success": False, "error": "person_id 无效，且未能通过别名解析"}
 
         latest = self.metadata_store.get_latest_person_profile_snapshot(pid)
         if not force_refresh and not self._is_snapshot_stale(latest, ttl_seconds):
@@ -419,9 +377,7 @@ class PersonProfileService:
             }
             if aliases and not payload.get("aliases"):
                 payload["aliases"] = aliases
-            return {
-                **self._apply_manual_override(pid, payload),
-            }
+            return self._apply_manual_override(pid, payload)
 
         aliases, primary_name, memory_traits = self.get_person_aliases(pid)
         if not aliases and person_keyword:
@@ -470,13 +426,10 @@ class PersonProfileService:
             "from_cache": False,
             **snapshot,
         }
-        return {
-            **self._apply_manual_override(pid, payload),
-        }
+        return self._apply_manual_override(pid, payload)
 
     @staticmethod
     def format_persona_profile_block(profile: Dict[str, Any]) -> str:
-        """格式化给 replyer 的注入块。"""
         if not profile or not profile.get("success"):
             return ""
         text = str(profile.get("profile_text", "") or "").strip()

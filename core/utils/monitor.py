@@ -15,7 +15,7 @@ try:
 except ImportError:
     HAS_PSUTIL = False
 
-from src.common.logger import get_logger
+from amemorix.common.logging import get_logger
 
 logger = get_logger("A_Memorix.MemoryMonitor")
 
@@ -187,3 +187,4 @@ def get_memory_info() -> dict:
         }
     except Exception as e:
         return {"error": str(e)}
+

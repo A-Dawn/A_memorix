@@ -8,7 +8,7 @@ import numpy as np
 from enum import Enum
 from typing import Tuple, Union
 
-from src.common.logger import get_logger
+from amemorix.common.logging import get_logger
 
 logger = get_logger("A_Memorix.Quantization")
 
@@ -342,3 +342,4 @@ def _product_dequantize(codes: np.ndarray, centroids: np.ndarray) -> np.ndarray:
         vector[i * ds : (i + 1) * ds] = centroids[i, code, :]
 
     return vector
+

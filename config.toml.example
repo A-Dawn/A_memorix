@@ -1,0 +1,43 @@
+[server]
+host = "0.0.0.0"
+port = 8082
+workers = 1
+
+[auth]
+enabled = true
+write_tokens = ["replace-with-your-token"]
+read_tokens = []
+protect_read_endpoints = false
+
+[storage]
+data_dir = "./data"
+
+[embedding]
+dimension = 1024
+batch_size = 32
+max_concurrent = 5
+quantization_type = "int8"
+
+[embedding.openapi]
+# OpenAI-compatible endpoint (OpenAI / Azure OpenAI / DMX / one-api / others)
+base_url = "https://api.openai.com/v1"
+api_key = "sk-..."
+model = "text-embedding-3-large"
+timeout_seconds = 30
+max_retries = 3
+
+# Backward-compatible alias (optional):
+# [embedding.openai]
+# base_url = "https://api.openai.com/v1"
+# api_key = "sk-..."
+# model = "text-embedding-3-large"
+# timeout_seconds = 30
+# max_retries = 3
+
+[tasks]
+import_workers = 1
+summary_workers = 1
+queue_maxsize = 1024
+
+[cors]
+allow_origins = []

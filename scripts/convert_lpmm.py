@@ -22,9 +22,9 @@ import numpy as np
 
 # 设置路径
 current_dir = Path(__file__).resolve().parent
-plugin_root = current_dir.parent
-project_root = plugin_root.parent.parent
-sys.path.insert(0, str(project_root))
+project_root = current_dir.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
 # 设置日志
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -40,11 +40,6 @@ except ImportError as e:
     sys.exit(1)
 
 try:
-    # 优先采取相对导入 (将插件根目录加入路径)
-    # 这样可以避免硬编码插件名称 (plugins.A_memorix)
-    if str(plugin_root) not in sys.path:
-        sys.path.insert(0, str(plugin_root))
-    
     from core.storage.vector_store import VectorStore
     from core.storage.graph_store import GraphStore
     from core.storage.metadata_store import MetadataStore

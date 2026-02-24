@@ -1,334 +1,177 @@
 """
-聊天总结与知识导入工具
-
-该模块负责从聊天记录中提取信息，生成总结，并将总结内容及提取的实体/关系
-导入到 A_memorix 的存储组件中。
+聊天总结与知识导入工具（独立版）。
 """
 
-import time
+from __future__ import annotations
+
 import json
-import re
-from typing import List, Dict, Any, Tuple, Optional
-from pathlib import Path
+import time
+from typing import Any, Dict, List, Optional, Tuple
 
-from src.common.logger import get_logger
-from src.plugin_system.apis import llm_api, message_api
-from src.chat.utils.prompt_builder import global_prompt_manager, Prompt
-from src.config.config import global_config, model_config as host_model_config
-from src.config.api_ada_configs import TaskConfig
+from amemorix.common.logging import get_logger
+from amemorix.llm_client import LLMClient
 
+from ..embedding.api_adapter import EmbeddingAPIAdapter
 from ..storage import (
-    VectorStore,
     GraphStore,
-    MetadataStore,
     KnowledgeType,
-    get_knowledge_type_from_string
+    MetadataStore,
+    VectorStore,
+    get_knowledge_type_from_string,
 )
-from ..embedding import EmbeddingAPIAdapter
 
 logger = get_logger("A_Memorix.SummaryImporter")
 
-# 默认总结提示词模版
 SUMMARY_PROMPT_TEMPLATE = """
-你是 {bot_name}。{personality_context}
-现在你需要对以下一段聊天记录进行总结，并提取其中的重要知识。
+你需要对聊天记录进行结构化总结，并抽取关键实体与关系。
 
-聊天记录内容：
+聊天记录：
 {chat_history}
 
-请完成以下任务：
-1. **生成总结**：以第三人称或机器人的视角，简洁明了地总结这段对话的主要内容、发生的事件或讨论的主题。
-2. **提取实体与关系**：识别并提取对话中提到的重要实体以及它们之间的关系。
-
-请严格以 JSON 格式输出，格式如下：
+请输出严格 JSON：
 {{
-  "summary": "总结文本内容",
-  "entities": ["张三", "李四"],
+  "summary": "对话总结",
+  "entities": ["实体1", "实体2"],
   "relations": [
-    {{"subject": "张三", "predicate": "认识", "object": "李四"}}
+    {{"subject":"实体1","predicate":"关系","object":"实体2"}}
   ]
 }}
 
-注意：总结应具有叙事性，能够作为长程记忆的一部分。直接使用实体的实际名称，不要使用 e1/e2 等代号。
+要求：
+1. 总结简洁、客观、可作为长期记忆。
+2. 实体与关系尽量使用原文措辞。
+3. 如果没有关系，relations 返回空数组。
 """
 
-class SummaryImporter:
-    """总结并导入知识的工具类"""
 
+class SummaryImporter:
     def __init__(
         self,
         vector_store: VectorStore,
         graph_store: GraphStore,
         metadata_store: MetadataStore,
         embedding_manager: EmbeddingAPIAdapter,
-        plugin_config: dict
+        plugin_config: dict,
+        llm_client: Optional[LLMClient] = None,
     ):
         self.vector_store = vector_store
         self.graph_store = graph_store
         self.metadata_store = metadata_store
         self.embedding_manager = embedding_manager
-        self.plugin_config = plugin_config
+        self.plugin_config = plugin_config or {}
+        self.llm_client = llm_client
 
-    def _normalize_summary_model_selectors(self, raw_value: Any) -> List[str]:
-        """标准化 summarization.model_name 配置，兼容字符串和字符串数组。"""
-        if raw_value is None:
-            return ["auto"]
-        if isinstance(raw_value, str):
-            v = raw_value.strip()
-            if not v:
-                return ["auto"]
-            # 兼容写法: "utils:model1","utils:model2",replyer
-            if "," in v:
-                parts = [part.strip().strip("'\"") for part in v.split(",")]
-                selectors = [part for part in parts if part]
-                return selectors or ["auto"]
-            return [v]
-        if isinstance(raw_value, list):
-            selectors = [str(x).strip() for x in raw_value if str(x).strip()]
-            return selectors or ["auto"]
-        v = str(raw_value).strip()
-        return [v] if v else ["auto"]
-
-    def _pick_default_summary_task(self, available_tasks: Dict[str, TaskConfig]) -> Tuple[Optional[str], Optional[TaskConfig]]:
-        """
-        选择总结默认任务，避免错误落到 embedding 任务。
-        优先级：replyer > utils > planner > tool_use > 其他非 embedding。
-        """
-        preferred = ("replyer", "utils", "planner", "tool_use")
-        for name in preferred:
-            cfg = available_tasks.get(name)
-            if cfg and cfg.model_list:
-                return name, cfg
-
-        for name, cfg in available_tasks.items():
-            if name != "embedding" and cfg.model_list:
-                return name, cfg
-
-        for name, cfg in available_tasks.items():
-            if cfg.model_list:
-                return name, cfg
-
-        return None, None
-
-    def _resolve_summary_model_config(self) -> Optional[TaskConfig]:
-        """
-        解析 summarization.model_name 为 TaskConfig。
-        支持：
-        - "auto"
-        - "replyer"（任务名）
-        - "some-model-name"（具体模型名）
-        - ["utils:model1", "utils:model2", "replyer"]（数组混合语法）
-        """
-        available_tasks = llm_api.get_available_models()
-        if not available_tasks:
-            return None
-
-        raw_cfg = self.plugin_config.get("summarization", {}).get("model_name", "auto")
-        selectors = self._normalize_summary_model_selectors(raw_cfg)
-        default_task_name, default_task_cfg = self._pick_default_summary_task(available_tasks)
-
-        selected_models: List[str] = []
-        base_cfg: Optional[TaskConfig] = None
-        model_dict = getattr(host_model_config, "models_dict", {})
-
-        def _append_models(models: List[str]):
-            for model_name in models:
-                if model_name and model_name not in selected_models:
-                    selected_models.append(model_name)
-
-        for raw_selector in selectors:
-            selector = raw_selector.strip()
-            if not selector:
-                continue
-
-            if selector.lower() == "auto":
-                if default_task_cfg:
-                    _append_models(default_task_cfg.model_list)
-                    if base_cfg is None:
-                        base_cfg = default_task_cfg
-                continue
-
-            if ":" in selector:
-                task_name, model_name = selector.split(":", 1)
-                task_name = task_name.strip()
-                model_name = model_name.strip()
-                task_cfg = available_tasks.get(task_name)
-                if not task_cfg:
-                    logger.warning(f"总结模型选择器 '{selector}' 的任务 '{task_name}' 不存在，已跳过")
-                    continue
-
-                if base_cfg is None:
-                    base_cfg = task_cfg
-
-                if not model_name or model_name.lower() == "auto":
-                    _append_models(task_cfg.model_list)
-                    continue
-
-                if model_name in model_dict or model_name in task_cfg.model_list:
-                    _append_models([model_name])
-                else:
-                    logger.warning(f"总结模型选择器 '{selector}' 的模型 '{model_name}' 不存在，已跳过")
-                continue
-
-            task_cfg = available_tasks.get(selector)
-            if task_cfg:
-                _append_models(task_cfg.model_list)
-                if base_cfg is None:
-                    base_cfg = task_cfg
-                continue
-
-            if selector in model_dict:
-                _append_models([selector])
-                continue
-
-            logger.warning(f"总结模型选择器 '{selector}' 无法识别，已跳过")
-
-        if not selected_models:
-            if default_task_cfg:
-                _append_models(default_task_cfg.model_list)
-                if base_cfg is None:
-                    base_cfg = default_task_cfg
+    def _cfg(self, key: str, default: Any = None) -> Any:
+        current: Any = self.plugin_config if isinstance(self.plugin_config, dict) else {}
+        for part in key.split("."):
+            if isinstance(current, dict) and part in current:
+                current = current[part]
             else:
-                first_cfg = next(iter(available_tasks.values()))
-                _append_models(first_cfg.model_list)
-                if base_cfg is None:
-                    base_cfg = first_cfg
+                return default
+        return current
 
-        if not selected_models:
-            return None
+    def _build_chat_text(self, messages: List[Dict[str, Any]]) -> str:
+        lines: List[str] = []
+        for item in messages:
+            role = str(item.get("role", "user") or "user")
+            content = str(item.get("content", "") or "").strip()
+            if not content:
+                continue
+            lines.append(f"{role}: {content}")
+        return "\n".join(lines)
 
-        template_cfg = base_cfg or default_task_cfg or next(iter(available_tasks.values()))
-        return TaskConfig(
-            model_list=selected_models,
-            max_tokens=template_cfg.max_tokens,
-            temperature=template_cfg.temperature,
-            slow_threshold=template_cfg.slow_threshold,
-            selection_strategy=template_cfg.selection_strategy,
-        )
+    def _fallback_summary(self, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+        merged = " ".join(str(m.get("content", "") or "").strip() for m in messages if str(m.get("content", "")).strip())
+        merged = merged[:500]
+        return {"summary": merged or "暂无可总结内容", "entities": [], "relations": []}
+
+    async def _generate_summary_payload(self, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+        if not messages:
+            return self._fallback_summary(messages)
+
+        history = self._build_chat_text(messages)
+        prompt = SUMMARY_PROMPT_TEMPLATE.format(chat_history=history)
+
+        if self.llm_client is None:
+            return self._fallback_summary(messages)
+
+        try:
+            ok, payload, raw = await self.llm_client.complete_json(prompt, temperature=0.2, max_tokens=1200)
+            if ok and isinstance(payload, dict):
+                return payload
+            logger.warning("Summary LLM returned non-JSON, fallback parser used.")
+            if raw:
+                start = raw.find("{")
+                end = raw.rfind("}")
+                if start >= 0 and end > start:
+                    try:
+                        parsed = json.loads(raw[start : end + 1])
+                        if isinstance(parsed, dict):
+                            return parsed
+                    except json.JSONDecodeError:
+                        pass
+        except Exception as exc:
+            logger.warning("Summary LLM call failed: %s", exc)
+
+        return self._fallback_summary(messages)
+
+    async def import_from_transcript(
+        self,
+        *,
+        session_id: str,
+        messages: List[Dict[str, Any]],
+        source: str = "",
+        context_length: Optional[int] = None,
+    ) -> Tuple[bool, str]:
+        try:
+            session = self.metadata_store.upsert_transcript_session(
+                session_id=session_id,
+                source=source or f"transcript:{session_id}",
+                metadata={"imported_at": time.time()},
+            )
+            self.metadata_store.append_transcript_messages(session_id=session["session_id"], messages=messages)
+
+            limit = int(context_length) if context_length is not None else int(self._cfg("summarization.context_length", 50))
+            transcript_messages = self.metadata_store.get_transcript_messages(session["session_id"], limit=max(1, limit))
+            payload = await self._generate_summary_payload(transcript_messages)
+
+            summary = str(payload.get("summary", "") or "").strip()
+            entities = payload.get("entities", [])
+            relations = payload.get("relations", [])
+            if not summary:
+                return False, "总结为空"
+
+            await self._execute_import(
+                summary=summary,
+                entities=entities if isinstance(entities, list) else [],
+                relations=relations if isinstance(relations, list) else [],
+                stream_id=session["session_id"],
+            )
+
+            self.vector_store.save()
+            self.graph_store.save()
+            return True, f"总结导入成功: session={session['session_id']}"
+        except Exception as exc:
+            logger.error("Summary transcript import failed: %s", exc, exc_info=True)
+            return False, str(exc)
 
     async def import_from_stream(
         self,
         stream_id: str,
         context_length: Optional[int] = None,
-        include_personality: Optional[bool] = None
+        include_personality: Optional[bool] = None,
     ) -> Tuple[bool, str]:
-        """
-        从指定的聊天流中提取记录并执行总结导入
-
-        Args:
-            stream_id: 聊天流 ID
-            context_length: 总结的历史消息条数
-            include_personality: 是否包含人设
-
-        Returns:
-            Tuple[bool, str]: (是否成功, 结果消息)
-        """
-        try:
-            # 1. 获取配置
-            if context_length is None:
-                context_length = self.plugin_config.get("summarization", {}).get("context_length", 50)
-            
-            if include_personality is None:
-                include_personality = self.plugin_config.get("summarization", {}).get("include_personality", True)
-
-            # 2. 获取历史消息
-            # 获取当前时间之前的消息
-            now = time.time()
-            messages = message_api.get_messages_before_time_in_chat(
-                chat_id=stream_id,
-                timestamp=now,
-                limit=context_length
-            )
-
-            if not messages:
-                return False, "未找到有效的聊天记录进行总结"
-
-            # 转换为可读文本
-            chat_history_text = message_api.build_readable_messages_to_str(messages)
-            
-            # 3. 准备提示词内容
-            bot_name = global_config.bot.nickname or "机器人"
-            personality_context = ""
-            if include_personality:
-                personality = getattr(global_config.bot, "personality", "")
-                if personality:
-                    personality_context = f"你的性格设定是：{personality}"
-
-            # 4. 调用 LLM
-            prompt = SUMMARY_PROMPT_TEMPLATE.format(
-                bot_name=bot_name,
-                personality_context=personality_context,
-                chat_history=chat_history_text
-            )
-
-            model_config_to_use = self._resolve_summary_model_config()
-            if model_config_to_use is None:
-                return False, "未找到可用的总结模型配置"
-
-            logger.info(f"正在为流 {stream_id} 执行总结，消息条数: {len(messages)}")
-            logger.info(f"总结模型候选列表: {model_config_to_use.model_list}")
-
-            success, response, _, _ = await llm_api.generate_with_model(
-                prompt=prompt,
-                model_config=model_config_to_use,
-                request_type="A_Memorix.ChatSummarization"
-            )
-
-            if not success or not response:
-                return False, "LLM 生成总结失败"
-
-            # 5. 解析结果
-            data = self._parse_llm_response(response)
-            if not data or "summary" not in data:
-                return False, "解析 LLM 响应失败或总结为空"
-
-            summary_text = data["summary"]
-            entities = data.get("entities", [])
-            relations = data.get("relations", [])
-            msg_times = [
-                float(getattr(msg, "time"))
-                for msg in messages
-                if getattr(msg, "time", None) is not None
-            ]
-            time_meta = {}
-            if msg_times:
-                time_meta = {
-                    "event_time_start": min(msg_times),
-                    "event_time_end": max(msg_times),
-                    "time_granularity": "minute",
-                    "time_confidence": 0.95,
-                }
-
-            # 6. 执行导入
-            await self._execute_import(summary_text, entities, relations, stream_id, time_meta=time_meta)
-
-            # 7. 持久化
-            self.vector_store.save()
-            self.graph_store.save()
-
-            result_msg = (
-                f"✅ 总结导入成功\n"
-                f"📝 总结长度: {len(summary_text)}\n"
-                f"📌 提取实体: {len(entities)}\n"
-                f"🔗 提取关系: {len(relations)}"
-            )
-            return True, result_msg
-
-        except Exception as e:
-            logger.error(f"总结导入过程中出错: {e}", exc_info=True)
-            return False, f"错误: {str(e)}"
-
-    def _parse_llm_response(self, response: str) -> Dict[str, Any]:
-        """解析 LLM 返回的 JSON"""
-        try:
-            # 尝试查找 JSON
-            json_match = re.search(r"\{.*\}", response, re.DOTALL)
-            if json_match:
-                return json.loads(json_match.group())
-            return {}
-        except Exception as e:
-            logger.warning(f"解析总结 JSON 失败: {e}")
-            return {}
+        del include_personality
+        limit = int(context_length) if context_length is not None else int(self._cfg("summarization.context_length", 50))
+        messages = self.metadata_store.get_transcript_messages(stream_id, limit=max(1, limit))
+        if not messages:
+            return False, "未找到可总结的聊天记录（请先写入 transcript）"
+        return await self.import_from_transcript(
+            session_id=stream_id,
+            messages=messages,
+            source=f"chat_summary:{stream_id}",
+            context_length=limit,
+        )
 
     async def _execute_import(
         self,
@@ -337,13 +180,10 @@ class SummaryImporter:
         relations: List[Dict[str, str]],
         stream_id: str,
         time_meta: Optional[Dict[str, Any]] = None,
-    ):
-        """将数据写入存储"""
-        # 获取默认知识类型
-        type_str = self.plugin_config.get("summarization", {}).get("default_knowledge_type", "narrative")
+    ) -> None:
+        type_str = self._cfg("summarization.default_knowledge_type", "narrative")
         knowledge_type = get_knowledge_type_from_string(type_str) or KnowledgeType.NARRATIVE
 
-        # 导入总结文本
         hash_value = self.metadata_store.add_paragraph(
             content=summary,
             source=f"chat_summary:{stream_id}",
@@ -352,28 +192,24 @@ class SummaryImporter:
         )
 
         embedding = await self.embedding_manager.encode(summary)
-        self.vector_store.add(
-            vectors=embedding.reshape(1, -1),
-            ids=[hash_value]
-        )
+        self.vector_store.add(vectors=embedding.reshape(1, -1), ids=[hash_value])
 
-        # 导入实体
         if entities:
-            self.graph_store.add_nodes(entities)
+            self.graph_store.add_nodes([str(e) for e in entities if str(e).strip()])
 
-        # 导入关系
         for rel in relations:
-            s, p, o = rel.get("subject"), rel.get("predicate"), rel.get("object")
-            if all([s, p, o]):
-                # 写入元数据
-                rel_hash = self.metadata_store.add_relation(
-                    subject=s,
-                    predicate=p,
-                    obj=o,
-                    confidence=1.0,
-                    source_paragraph=summary
-                )
-                # 写入图数据库（写入 relation_hashes，确保后续可按关系精确修剪）
-                self.graph_store.add_edges([(s, o)], relation_hashes=[rel_hash])
-                
-        logger.info(f"总结导入完成: hash={hash_value[:8]}")
+            s = str(rel.get("subject", "")).strip()
+            p = str(rel.get("predicate", "")).strip()
+            o = str(rel.get("object", "")).strip()
+            if not (s and p and o):
+                continue
+            rel_hash = self.metadata_store.add_relation(
+                subject=s,
+                predicate=p,
+                obj=o,
+                confidence=1.0,
+                source_paragraph=hash_value,
+            )
+            self.graph_store.add_edges([(s, o)], relation_hashes=[rel_hash])
+
+        logger.info("Summary imported: %s", hash_value[:8])

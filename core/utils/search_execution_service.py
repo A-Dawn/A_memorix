@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from src.common.logger import get_logger
+from amemorix.common.logging import get_logger
 
 from ..retrieval import TemporalQueryOptions
 from .search_postprocess import (
@@ -90,13 +90,7 @@ class SearchExecutionService:
             plugin_instance = plugin_config.get("plugin_instance")
             if plugin_instance is not None:
                 return plugin_instance
-
-        try:
-            from ...plugin import A_MemorixPlugin
-
-            return A_MemorixPlugin.get_global_instance()
-        except Exception:
-            return None
+        return None
 
     @staticmethod
     def _normalize_query_type(raw_query_type: str) -> str:
@@ -437,3 +431,4 @@ class SearchExecutionService:
                 }
             )
         return serialized
+

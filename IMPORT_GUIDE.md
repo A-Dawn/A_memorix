@@ -106,7 +106,7 @@ A_Memorix 采用 **策略模式 (Strategy-Aware)** 来处理不同类型的文�
 **命令：**
 
 ```bash
-python plugins/A_memorix/scripts/import_lpmm_json.py <包含json的目录或文件路径>
+python scripts/import_lpmm_json.py <包含json的目录或文件路径> --config ./config.toml
 ```
 
 此脚本会自动计算 Hash 并去重，将数据无缝转换到 A_Memorix 的存储格式中。
@@ -124,15 +124,15 @@ python plugins/A_memorix/scripts/import_lpmm_json.py <包含json的目录或文�
 **命令：**
 
 ```bash
-python plugins/A_memorix/scripts/convert_lpmm.py --input <LPMM数据目录> --output <A_memorix数据目录>
+python scripts/convert_lpmm.py --input <LPMM数据目录> --output <A_memorix数据目录>
 ```
 
 **示例：**
 
-Assume LPMM data is in `data/lpmm_storage` and you want to output to `plugins/A_memorix/data`.
+Assume LPMM data is in `data/lpmm_storage` and you want to output to `data`.
 
 ```bash
-python plugins/A_memorix/scripts/convert_lpmm.py -i data/lpmm_storage -o plugins/A_memorix/data
+python scripts/convert_lpmm.py -i data/lpmm_storage -o data
 ```
 
 此脚本会：
@@ -147,7 +147,7 @@ python plugins/A_memorix/scripts/convert_lpmm.py -i data/lpmm_storage -o plugins
 
 如果希望后续可按时间窗口（含分钟）精确检索，建议在导入时为段落提供时间字段。
 
-#### 1. `/import json` 支持的段落时间字段
+#### 1. `POST /v1/import/tasks`（`mode=json`）支持的段落时间字段
 
 在 `paragraphs[*]` 中可直接传：
 
@@ -182,17 +182,17 @@ python plugins/A_memorix/scripts/convert_lpmm.py -i data/lpmm_storage -o plugins
 
 #### 3. 查询时间参数（与导入不同）
 
-注意：查询入口（Action/Tool/`/query time`）时间格式更严格，仅接受：
+注意：查询入口（`POST /v1/query/time`）时间格式更严格，仅接受：
 
 - `YYYY/MM/DD`
 - `YYYY/MM/DD HH:mm`
 
 ### 自动导入 (推荐)
 
-将 `.txt` 文件放入 `plugins/A_memorix/data/raw/` 后运行：
+将 `.txt` 文件放入 `data/raw/` 后运行：
 
 ```bash
-python plugins/A_memorix/scripts/process_knowledge.py
+python scripts/process_knowledge.py --config ./config.toml
 ```
 
 _主要参数：_
@@ -204,14 +204,16 @@ _主要参数：_
 
 ### 清空知识库
 
-如果需要重置所有数据（注意！此操作不可逆！）：
+如果需要重置所有数据（注意！此操作不可逆！），可调用：
 
 ```bash
-# 在聊天窗口输入
-/delete clear
+curl -X POST http://127.0.0.1:8082/v1/delete/clear \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d "{}"
 ```
 
-或直接删除 `plugins/A_memorix/data/` 下的 `vectors`, `graph`, `metadata` 目录。
+或直接删除 `data/` 下的 `vectors`, `graph`, `metadata` 目录。
 
 ---
 
@@ -219,7 +221,7 @@ _主要参数：_
 
 以下示例可直接复制保存为对应的文件进行测试，或交由LLM进行样例学习
 
-### 1. 叙事文本 (`plugins/A_memorix/data/raw/story_demo.txt`)
+### 1. 叙事文本 (`data/raw/story_demo.txt`)
 
 > 系统会自动识别 `#` 开头的章节，并提取其中的事件脉络。
 
@@ -240,7 +242,7 @@ _主要参数：_
 “我必须来，”艾瑞克握紧了拳头，“为了解开星盘的秘密，也为了你。”
 ```
 
-### 2. 事实文本 (`plugins/A_memorix/data/raw/rules_demo.txt`)
+### 2. 事实文本 (`data/raw/rules_demo.txt`)
 
 > 系统会识别列表和定义，提取高精度的 S-P-O 三元组。
 
@@ -256,7 +258,7 @@ _主要参数：_
 - **黑色障壁**：用于隔离高危 AI 的物理防火墙设施。
 ```
 
-### 3. 引用文本 (`plugins/A_memorix/data/raw/poem_demo.txt`)
+### 3. 引用文本 (`data/raw/poem_demo.txt`)
 
 > 系统会按双换行符切分，保留原文格式主要用于背诵或咏唱。
 

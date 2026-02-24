@@ -14,7 +14,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from src.common.logger import get_logger
+from amemorix.common.logging import get_logger
 from ..storage import MetadataStore
 
 logger = get_logger("A_Memorix.SparseBM25")
@@ -400,3 +400,4 @@ class SparseBM25Index:
             "has_jieba": HAS_JIEBA,
             "doc_count": doc_count,
         }
+

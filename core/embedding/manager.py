@@ -19,7 +19,7 @@ try:
 except ImportError:
     HAS_SENTENCE_TRANSFORMERS = False
 
-from src.common.logger import get_logger
+from amemorix.common.logging import get_logger
 from .presets import (
     EmbeddingModelConfig,
     get_custom_config,
@@ -508,3 +508,4 @@ def create_embedding_manager_from_config(
         enable_cache=enable_cache,
         num_workers=num_workers,
     )
+

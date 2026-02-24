@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
 
-from src.common.logger import get_logger
-from src.common.database.database_model import PersonInfo
+from amemorix.common.logging import get_logger
+from amemorix.settings import mask_sensitive
 
 logger = get_logger("A_Memorix.Server")
 
@@ -85,10 +85,14 @@ class MemorixServer:
         self._relation_cache = None
         self._relation_cache_timestamp = 0
         
-        # 配置 CORS
+        # 配置 CORS（默认不放开跨域，允许通过配置白名单）
+        allowed_origins = self.plugin.get_config("cors.allow_origins", []) if hasattr(self.plugin, "get_config") else []
+        if not isinstance(allowed_origins, list):
+            allowed_origins = []
+
         self.app.add_middleware(
             CORSMiddleware,
-            allow_origins=["*"],
+            allow_origins=[str(x) for x in allowed_origins],
             allow_credentials=True,
             allow_methods=["*"],
             allow_headers=["*"],
@@ -98,7 +102,7 @@ class MemorixServer:
 
     def _setup_routes(self):
         def _build_person_profile_service():
-            from .core.utils.person_profile_service import PersonProfileService
+            from core.utils.person_profile_service import PersonProfileService
 
             return PersonProfileService(
                 metadata_store=self.plugin.metadata_store,
@@ -430,7 +434,7 @@ class MemorixServer:
                        # 或者直接尝试按原样对 ID 进行哈希，假设它就是名称。
                        
                        # 更好的做法：尽可能使用实用程序。
-                       from src.utils.hash_util import compute_hash
+                       from core.utils.hash import compute_hash
                        
                        # GraphStore 节点名称保留了大小写，但为了键值进行了规范化。
                        # MetadataStore 的删除基于规范化哈希。
@@ -1073,38 +1077,48 @@ class MemorixServer:
         ):
             """获取人物列表（支持关键词与分页）。"""
             try:
-                query = PersonInfo.select(
-                    PersonInfo.person_id,
-                    PersonInfo.person_name,
-                    PersonInfo.nickname,
-                    PersonInfo.user_id,
-                    PersonInfo.platform,
-                    PersonInfo.group_nick_name,
-                    PersonInfo.last_know,
-                )
-
                 kw = str(keyword or "").strip()
-                if kw:
-                    query = query.where(
-                        (PersonInfo.person_name.contains(kw))
-                        | (PersonInfo.nickname.contains(kw))
-                        | (PersonInfo.user_id.contains(kw))
-                        | (PersonInfo.person_id.contains(kw))
-                        | (PersonInfo.group_nick_name.contains(kw))
-                    )
+                conn = self.plugin.metadata_store._conn if self.plugin.metadata_store is not None else None
+                if conn is None:
+                    raise HTTPException(status_code=503, detail="Metadata store not initialized")
+                cursor = conn.cursor()
 
-                query = query.order_by(PersonInfo.last_know.desc(), PersonInfo.id.desc())
-                total = query.count()
+                where_sql = ""
+                params: List[Any] = []
+                if kw:
+                    where_sql = (
+                        "WHERE person_name LIKE ? OR nickname LIKE ? OR user_id LIKE ? "
+                        "OR person_id LIKE ? OR group_nick_name LIKE ?"
+                    )
+                    like_kw = f"%{kw}%"
+                    params.extend([like_kw, like_kw, like_kw, like_kw, like_kw])
+
+                cursor.execute(
+                    f"SELECT COUNT(*) FROM person_registry {where_sql}",
+                    tuple(params),
+                )
+                total = int(cursor.fetchone()[0] or 0)
                 offset = (int(page) - 1) * int(page_size)
-                rows = list(query.offset(offset).limit(int(page_size)))
+
+                cursor.execute(
+                    f"""
+                    SELECT person_id, person_name, nickname, user_id, platform, group_nick_name, last_know
+                    FROM person_registry
+                    {where_sql}
+                    ORDER BY last_know DESC, updated_at DESC
+                    LIMIT ? OFFSET ?
+                    """,
+                    tuple(params + [int(page_size), int(offset)]),
+                )
+                rows = cursor.fetchall()
 
                 items: List[Dict[str, Any]] = []
                 for row in rows:
-                    pid = str(getattr(row, "person_id", "") or "").strip()
-                    person_name = str(getattr(row, "person_name", "") or "").strip()
-                    nickname = str(getattr(row, "nickname", "") or "").strip()
-                    user_id = str(getattr(row, "user_id", "") or "").strip()
-                    aliases = _parse_group_nicks(getattr(row, "group_nick_name", None))
+                    pid = str(row[0] or "").strip()
+                    person_name = str(row[1] or "").strip()
+                    nickname = str(row[2] or "").strip()
+                    user_id = str(row[3] or "").strip()
+                    aliases = _parse_group_nicks(row[5])
 
                     has_snapshot = False
                     has_override = False
@@ -1127,9 +1141,9 @@ class MemorixServer:
                             "person_name": person_name,
                             "nickname": nickname,
                             "user_id": user_id,
-                            "platform": str(getattr(row, "platform", "") or ""),
+                            "platform": str(row[4] or ""),
                             "aliases": aliases,
-                            "last_know": getattr(row, "last_know", None),
+                            "last_know": row[6],
                             "has_snapshot": has_snapshot,
                             "has_override": has_override,
                             "latest_profile_updated_at": latest_profile_updated_at,
@@ -1227,11 +1241,15 @@ class MemorixServer:
 
         @self.app.get("/api/config")
         async def get_config():
-            """获取配置"""
-            return {
+            """获取配置（脱敏只读）"""
+            base_payload = {
                 "auto_save_enabled": self.plugin.get_config("advanced.enable_auto_save", True),
-                "auto_save_interval": self.plugin.get_config("advanced.auto_save_interval_minutes", 5)
+                "auto_save_interval": self.plugin.get_config("advanced.auto_save_interval_minutes", 5),
             }
+            plugin_config = getattr(self.plugin, "config", None)
+            if isinstance(plugin_config, dict):
+                base_payload["config"] = mask_sensitive(plugin_config)
+            return base_payload
 
         @self.app.post("/api/config/auto_save")
         async def set_auto_save(data: AutoSaveConfig):

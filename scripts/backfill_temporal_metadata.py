@@ -16,11 +16,11 @@ import sys
 
 
 CURRENT_DIR = Path(__file__).resolve().parent
-PLUGIN_ROOT = CURRENT_DIR.parent
-PROJECT_ROOT = PLUGIN_ROOT.parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+PROJECT_ROOT = CURRENT_DIR.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-from plugins.A_memorix.core.storage import MetadataStore  # noqa: E402
+from core.storage import MetadataStore  # noqa: E402
 
 
 def backfill(
@@ -78,7 +78,7 @@ def backfill(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Backfill temporal metadata for A_Memorix paragraphs")
-    parser.add_argument("--data-dir", default=str(PLUGIN_ROOT / "data"), help="数据目录")
+    parser.add_argument("--data-dir", default=str(PROJECT_ROOT / "data"), help="数据目录")
     parser.add_argument("--dry-run", action="store_true", help="仅统计，不写入")
     parser.add_argument("--limit", type=int, default=100000, help="最大处理条数")
     parser.add_argument(

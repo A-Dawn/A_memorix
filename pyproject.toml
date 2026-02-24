@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "amemorix"
+version = "0.6.1"
+description = "API-specialized standalone A_Memorix knowledge service"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.20.0",
+  "scipy>=1.7.0",
+  "faiss-cpu>=1.7.0",
+  "uvicorn>=0.20.0",
+  "fastapi>=0.100.0",
+  "pydantic>=2.0.0",
+  "jieba>=0.42.1",
+  "openai>=1.40.0",
+]
+
+[project.scripts]
+amemorix = "amemorix.__main__:main"
+
+[tool.setuptools]
+include-package-data = true
+py-modules = ["server"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["amemorix*", "core*"]
