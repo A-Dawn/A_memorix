@@ -2,7 +2,7 @@
 
 ## [0.5.1] - 2026-02-23
 
-本次 `0.5.1` 为热修订小版本，重点修复“随主程序启动的后台任务拉起”与“空名单过滤语义”。
+本次 `0.5.1` 为热修订小版本，重点修复“随主程序启动的后台任务拉起”“空名单过滤语义”以及“知识抽取模型选择”。
 
 ### 🔖 版本信息
 
@@ -18,10 +18,14 @@
 - 聊天过滤空列表策略调整：
   - `whitelist + []`：全部拒绝；
   - `blacklist + []`：全部放行。
+- 知识抽取模型选择逻辑调整（`import_command._select_model`）：
+  - `advanced.extraction_model` 现在支持三种语义：任务名 / 模型名 / `auto`；
+  - `auto` 优先抽取相关任务（`lpmm_entity_extract`、`lpmm_rdf_build` 等），并避免误落到 `embedding`；
+  - 当配置无法识别时输出告警并回退自动选择，提高导入阶段的模型选择可预期性。
 
 ### 📚 文档同步
 
-- 同步更新 `README.md`、`CONFIG_REFERENCE.md`、`USAGE_ARCHITECTURE.md` 的版本标记。
+- 同步更新 `README.md`、`CONFIG_REFERENCE.md` 与 `CHANGELOG.md`。
 - 同步修正文档中的空名单过滤行为描述，保持与当前代码一致。
 
 ## [0.5.0] - 2026-02-15
