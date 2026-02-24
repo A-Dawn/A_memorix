@@ -73,6 +73,34 @@ pip install -r requirements.txt
 
 ---
 
+## 🧯 问题解决（Troubleshooting）
+
+### 一键包环境下 FTS5 排序失效
+
+已知在部分一键包运行时环境中，SQLite 未启用 `FTS5`，会导致稀疏检索（`FTS5 + BM25`）路径不可用，表现为相关排序增强失效。
+
+常见现象：
+
+- 日志出现 `FTS5 schema 创建失败（可能不支持 FTS5）（no moduled named 'FTS5'）`
+
+说明：
+
+- `fts5` 不是可单独安装的 PyPI 包，通常由 Python 运行时内置的 SQLite 编译选项决定是否可用。
+- 当前该一键包环境下暂无通用修复方案。
+
+建议处理（直接修改对应配置）：
+
+在 `config.toml` 中关闭稀疏检索增强，避免反复触发无效 FTS 初始化：
+
+```toml
+[retrieval.sparse]
+enabled = false
+```
+
+关闭后系统仍可使用向量/图检索链路，但不再使用 `FTS5 + BM25` 稀疏排序增强。
+
+---
+
 ## 🚀 快速开始
 
 A_Memorix 提供多种方式管理知识库，建议优先选择 **自动化脚本** 进行初始化，配合 **可视化编辑器** 进行日常维护。
