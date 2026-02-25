@@ -1,0 +1,97 @@
+............                                                             [100%]
+============================== warnings summary ===============================
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyPacked has no __module__ attribute
+
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyObject has no __module__ attribute
+
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+
+C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98
+  C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98: UserWarning: Protobuf gencode version 5.28.3 is exactly one major version older than the runtime version 6.30.2 at tensorflow/core/framework/attr_value.proto. Please update the gencode to avoid compatibility violations in the next runtime release.
+    warnings.warn(
+
+C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98
+  C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98: UserWarning: Protobuf gencode version 5.28.3 is exactly one major version older than the runtime version 6.30.2 at tensorflow/core/framework/tensor.proto. Please update the gencode to avoid compatibility violations in the next runtime release.
+    warnings.warn(
+
+C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98
+  C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98: UserWarning: Protobuf gencode version 5.28.3 is exactly one major version older than the runtime version 6.30.2 at tensorflow/core/framework/resource_handle.proto. Please update the gencode to avoid compatibility violations in the next runtime release.
+    warnings.warn(
+
+C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98
+  C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98: UserWarning: Protobuf gencode version 5.28.3 is exactly one major version older than the runtime version 6.30.2 at tensorflow/core/framework/tensor_shape.proto. Please update the gencode to avoid compatibility violations in the next runtime release.
+    warnings.warn(
+
+C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98
+  C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98: UserWarning: Protobuf gencode version 5.28.3 is exactly one major version older than the runtime version 6.30.2 at tensorflow/core/framework/types.proto. Please update the gencode to avoid compatibility violations in the next runtime release.
+    warnings.warn(
+
+C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98
+  C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98: UserWarning: Protobuf gencode version 5.28.3 is exactly one major version older than the runtime version 6.30.2 at tensorflow/core/framework/full_type.proto. Please update the gencode to avoid compatibility violations in the next runtime release.
+    warnings.warn(
+
+C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98
+  C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98: UserWarning: Protobuf gencode version 5.28.3 is exactly one major version older than the runtime version 6.30.2 at tensorflow/core/framework/function.proto. Please update the gencode to avoid compatibility violations in the next runtime release.
+    warnings.warn(
+
+C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98
+  C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98: UserWarning: Protobuf gencode version 5.28.3 is exactly one major version older than the runtime version 6.30.2 at tensorflow/core/framework/node_def.proto. Please update the gencode to avoid compatibility violations in the next runtime release.
+    warnings.warn(
+
+C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98
+  C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98: UserWarning: Protobuf gencode version 5.28.3 is exactly one major version older than the runtime version 6.30.2 at tensorflow/core/framework/op_def.proto. Please update the gencode to avoid compatibility violations in the next runtime release.
+    warnings.warn(
+
+C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98
+  C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98: UserWarning: Protobuf gencode version 5.28.3 is exactly one major version older than the runtime version 6.30.2 at tensorflow/core/framework/graph.proto. Please update the gencode to avoid compatibility violations in the next runtime release.
+    warnings.warn(
+
+C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98
+  C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98: UserWarning: Protobuf gencode version 5.28.3 is exactly one major version older than the runtime version 6.30.2 at tensorflow/core/framework/graph_debug_info.proto. Please update the gencode to avoid compatibility violations in the next runtime release.
+    warnings.warn(
+
+C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98
+  C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98: UserWarning: Protobuf gencode version 5.28.3 is exactly one major version older than the runtime version 6.30.2 at tensorflow/core/framework/versions.proto. Please update the gencode to avoid compatibility violations in the next runtime release.
+    warnings.warn(
+
+C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98
+  C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98: UserWarning: Protobuf gencode version 5.28.3 is exactly one major version older than the runtime version 6.30.2 at tensorflow/core/protobuf/config.proto. Please update the gencode to avoid compatibility violations in the next runtime release.
+    warnings.warn(
+
+C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98
+  C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98: UserWarning: Protobuf gencode version 5.28.3 is exactly one major version older than the runtime version 6.30.2 at xla/tsl/protobuf/coordination_config.proto. Please update the gencode to avoid compatibility violations in the next runtime release.
+    warnings.warn(
+
+C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98
+  C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98: UserWarning: Protobuf gencode version 5.28.3 is exactly one major version older than the runtime version 6.30.2 at tensorflow/core/framework/cost_graph.proto. Please update the gencode to avoid compatibility violations in the next runtime release.
+    warnings.warn(
+
+C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98
+  C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98: UserWarning: Protobuf gencode version 5.28.3 is exactly one major version older than the runtime version 6.30.2 at tensorflow/core/framework/step_stats.proto. Please update the gencode to avoid compatibility violations in the next runtime release.
+    warnings.warn(
+
+C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98
+  C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98: UserWarning: Protobuf gencode version 5.28.3 is exactly one major version older than the runtime version 6.30.2 at tensorflow/core/framework/allocation_description.proto. Please update the gencode to avoid compatibility violations in the next runtime release.
+    warnings.warn(
+
+C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98
+  C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98: UserWarning: Protobuf gencode version 5.28.3 is exactly one major version older than the runtime version 6.30.2 at tensorflow/core/framework/tensor_description.proto. Please update the gencode to avoid compatibility violations in the next runtime release.
+    warnings.warn(
+
+C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98
+  C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98: UserWarning: Protobuf gencode version 5.28.3 is exactly one major version older than the runtime version 6.30.2 at tensorflow/core/protobuf/cluster.proto. Please update the gencode to avoid compatibility violations in the next runtime release.
+    warnings.warn(
+
+C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98
+  C:\Users\25840\miniconda3\Lib\site-packages\google\protobuf\runtime_version.py:98: UserWarning: Protobuf gencode version 5.28.3 is exactly one major version older than the runtime version 6.30.2 at tensorflow/core/protobuf/debug.proto. Please update the gencode to avoid compatibility violations in the next runtime release.
+    warnings.warn(
+
+C:\Users\25840\miniconda3\Lib\site-packages\jieba\_compat.py:18
+  C:\Users\25840\miniconda3\Lib\site-packages\jieba\_compat.py:18: DeprecationWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html
+    import pkg_resources
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+12 passed, 24 warnings in 23.07s

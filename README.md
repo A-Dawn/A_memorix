@@ -42,6 +42,22 @@ python -m amemorix serve --config ./config.toml
 amemorix serve --config ./config.toml
 ```
 
+## Docker 启动
+
+构建镜像：
+
+```powershell
+docker build -t amemorix:0.6.1 .
+```
+
+运行（映射端口与数据目录）：
+
+```powershell
+docker run --rm -p 8082:8082 -v ${PWD}/data:/app/data amemorix:0.6.1
+```
+
+如需自定义配置，可将 `config.toml` 挂载到容器工作目录 `/app/config.toml`。
+
 ## OpenAPI 兼容端点配置
 
 推荐使用：
@@ -96,12 +112,31 @@ max_retries = 3
 - LPMM OpenIE 导入：`python scripts/import_lpmm_json.py <path> --config ./config.toml`
 - 按来源删除：`python scripts/delete_knowledge.py --list --config ./config.toml`
 
+## 测试
+
+```powershell
+python -m pytest
+```
+
+仓库内置 `tests/`，覆盖时序解析、时序查询、总结导入与检索执行流程的基础回归。
+
+## Benchmark
+
+```powershell
+python benchmarks/benchmark_temporal_query.py --paragraphs 5000 --queries 300
+python benchmarks/benchmark_v1_time_e2e.py --paragraphs 3000 --queries 200
+```
+
+上述脚本分别覆盖存储层 micro-benchmark 与 `/v1/query/time` 端到端 HTTP benchmark，输出吞吐与延迟分位（mean/p50/p95/p99）。
+
 ## 文档
 
 - 快速开始：[QUICK_START.md](QUICK_START.md)
 - 端点与开发者文档：[DEVELOPER_API_GUIDE.md](DEVELOPER_API_GUIDE.md)
 - 配置说明：[CONFIG_REFERENCE.md](CONFIG_REFERENCE.md)
 - 导入指南：[IMPORT_GUIDE.md](IMPORT_GUIDE.md)
+- 基准报告：[benchmark.md](benchmark.md)
+- Benchmark 说明：[benchmarks/README.md](benchmarks/README.md)
 - 更新日志：[CHANGELOG.md](CHANGELOG.md)
 
 ## 许可证

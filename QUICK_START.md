@@ -94,3 +94,19 @@ curl -H "Authorization: Bearer $token" http://127.0.0.1:8082/v1/import/tasks/<ta
 - 推荐 `[embedding.openapi]`（OpenAI-compatible 统一入口）
 - 旧键 `[embedding.openai]` 仍兼容
 - 环境变量支持 `OPENAPI_*` 与 `OPENAI_*`
+
+## 9. Docker 快速运行
+
+```powershell
+docker build -t amemorix:0.6.1 .
+docker run --rm -p 8082:8082 -v ${PWD}/data:/app/data amemorix:0.6.1
+```
+
+如果需要使用本地配置文件：
+
+```powershell
+docker run --rm -p 8082:8082 `
+  -v ${PWD}/data:/app/data `
+  -v ${PWD}/config.toml:/app/config.toml `
+  amemorix:0.6.1
+```

@@ -1,0 +1,168 @@
+\documentclass[11pt]{article}
+\usepackage[final]{acl}
+\usepackage{times}
+\usepackage{latexsym}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{url}
+\usepackage{graphicx}
+
+\title{A\_Memorix: An API-First Hybrid Memory Service for Temporal and Graph-Aware Retrieval (ACL 2026 Demo)}
+
+\author{
+  Chen Xi \\
+  Independent Researcher \\
+  China \\
+  \texttt{https://github.com/A-Dawn}
+}
+
+\begin{document}
+\emergencystretch=2em
+\maketitle
+
+\begin{abstract}
+We present \textbf{A\_Memorix}, an API-first memory service that unifies vector retrieval, graph retrieval, temporal filtering, and online memory maintenance in a standalone runtime. The system targets long-horizon conversational and agentic scenarios where knowledge must be continuously ingested, retrieved under semantic and temporal constraints, and revised over time. A\_Memorix combines dual-path retrieval (paragraph and relation paths), sparse fallback with rank fusion, minute-level temporal querying, and lifecycle-oriented memory operations including protect, reinforce, freeze, prune, and restore. The demo exposes both a new \texttt{/v1/*} API and a backward-compatible \texttt{/api/*} layer, with a web visualization entry point. In local measurements, the metadata temporal path reaches 826.8 QPS at 5k paragraphs (p95 1.515 ms), while HTTP end-to-end \texttt{/v1/query/time} reaches 121.2 QPS at 5k paragraphs (p95 26.166 ms). Artifact links required for the demo track are provided in Section~\ref{sec:artifacts}.
+\end{abstract}
+
+\section{Introduction}
+LLM applications with persistent memory require more than a standalone retriever: they also require memory governance, temporal constraints, and operationally safe update and recovery semantics. In practice, these capabilities are frequently distributed across separate tools, which increases integration complexity. Retrieval-augmented generation systems further highlight the central role of robust external memory interfaces in knowledge-intensive settings \citep{lewis2020retrieval}.
+
+In this demo paper, we present A\_Memorix as a single-process, API-centric memory service with:
+\begin{itemize}
+  \item dual-path retrieval over vectors and graph relations;
+  \item temporal retrieval with structured minute-level query formats;
+  \item memory lifecycle operations (protect/reinforce/freeze/prune/restore);
+  \item asynchronous import and transcript-summary task orchestration.
+\end{itemize}
+Intended users include applied NLP engineers, agent platform developers, and research teams that require self-hosted long-term memory APIs with temporal and governance controls.
+Source code and reproducibility artifacts are available at \url{https://github.com/A-Dawn/A_memorix/tree/basic}.
+
+\section{System Overview}
+\subsection{Runtime Architecture}
+A\_Memorix is implemented as a FastAPI service with a shared runtime context and three persistent stores:
+\begin{itemize}
+  \item \textbf{Vector store} (\texttt{data/vectors}): FAISS-based append-only storage with SQ8 quantization and fallback flat index \citep{johnson2019faiss}.
+  \item \textbf{Graph store} (\texttt{data/graph}): sparse adjacency matrix with relation-hash mapping.
+  \item \textbf{Metadata store} (\texttt{data/metadata}): SQLite metadata for paragraphs, entities, relations, FTS, async tasks, transcript sessions, and recycle-bin records.
+\end{itemize}
+
+\subsection{API Surfaces}
+The service exposes two API layers:
+\begin{itemize}
+  \item \texttt{/v1/*} for new integrations;
+  \item \texttt{/api/*} for backward compatibility with historical contracts.
+\end{itemize}
+This dual interface supports migration without disrupting existing clients.
+
+\subsection{Positioning Versus Existing Tooling}
+A\_Memorix is positioned between generic vector databases and tightly coupled agent frameworks. Relative to vector-only memory layers, it provides graph relations, temporal filters, and explicit lifecycle controls within a single service boundary. Relative to framework-specific memory modules, it offers framework-agnostic HTTP interfaces (\texttt{/v1/*}, \texttt{/api/*}) and reproducible standalone deployment paths that can be reused across heterogeneous application stacks.
+
+\subsection{Core Retrieval and Memory Pipeline}
+Dual-path retrieval combines paragraph search and relation-centric search. Sparse BM25 fallback (FTS5-based) follows probabilistic retrieval principles \citep{robertson1994okapi} and can be merged with dense candidates via weighted RRF fusion \citep{cormack2009rrf}. Optional Personalized PageRank reranking adds entity-aware graph priors \citep{page1999pagerank}.
+
+Temporal filtering uses interval-overlap semantics over \texttt{event\_time}, \texttt{event\_time\_start}, and \texttt{event\_time\_end}, with optional \texttt{created\_at} fallback. Query-time formats are intentionally strict to reduce ambiguity:
+\begin{itemize}
+  \item \texttt{YYYY/MM/DD}
+  \item \texttt{YYYY/MM/DD HH:mm}
+\end{itemize}
+
+Memory maintenance periodically decays edge weights, freezes low-weight unprotected relations, prunes expired inactive relations into a recycle bin, and supports explicit restore operations.
+
+\begin{figure}[t]
+\centering
+\fbox{
+\begin{minipage}{0.93\columnwidth}
+\small\raggedright
+Ingestion (\texttt{/v1/import/tasks}, \texttt{/v1/summary/tasks}) $\rightarrow$ Metadata/Vector/Graph stores
+$\rightarrow$ Dual-path retrieval + temporal filter + thresholding $\rightarrow$
+memory operations (\texttt{/v1/memory/*}) and profile/summary APIs.
+\end{minipage}
+}
+\caption{System pipeline used in the ACL demo.}
+\label{fig:pipeline}
+\end{figure}
+
+\section{Benchmark and Test Status}
+\subsection{Metadata Temporal Micro-Benchmark}
+We benchmarked the metadata temporal query path (\texttt{query\_paragraphs\_temporal}) on synthetic data.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+Case & Paras & QPS & p95 & p99 \\
+\midrule
+s\_seed7 & 1200 & 3046.8 & 0.454 & 0.560 \\
+m\_seed42 & 5000 & 826.8 & 1.515 & 1.670 \\
+m\_noperson & 5000 & 1081.2 & 1.275 & 1.328 \\
+l\_seed42 & 10000 & 425.6 & 2.976 & 3.225 \\
+\bottomrule
+\end{tabular}
+\caption{Metadata-path temporal micro-benchmark (latencies in ms).}
+\label{tab:micro}
+\end{table}
+
+\subsection{\texttt{/v1/query/time} End-to-End Benchmark}
+We additionally ran HTTP E2E measurements by synthesizing temporal data, launching local service instances, and issuing POST requests to \texttt{/v1/query/time}.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+Case & Paras & QPS & p95 & p99 \\
+\midrule
+e2e\_s\_seed7 & 800 & 156.1 & 24.160 & 27.345 \\
+e2e\_m\_seed42 & 3000 & 132.9 & 25.086 & 27.529 \\
+e2e\_m\_noperson & 3000 & 138.9 & 23.149 & 28.898 \\
+e2e\_l\_seed42 & 5000 & 121.2 & 26.166 & 29.620 \\
+\bottomrule
+\end{tabular}
+\caption{HTTP end-to-end benchmark for \texttt{/v1/query/time} (latencies in ms).}
+\label{tab:e2e}
+\end{table}
+
+\subsection{In-Tree Tests}
+The repository includes in-tree tests for time parsing, temporal filtering, summary import, and search execution behavior. Current status:
+\begin{itemize}
+  \item \texttt{python -m pytest -q} $\rightarrow$ 12 passed.
+\end{itemize}
+
+\subsection{Human Evaluation Status}
+We have not yet completed a formal human-subject study for this demo paper. Current evidence is system-oriented, including deterministic in-tree tests, micro-benchmarks, and HTTP end-to-end benchmarks. We plan to add task-level user evaluation in a later release.
+
+\section{Related Work}
+Retrieval-augmented generation systems demonstrate that external memory access is central to knowledge-intensive NLP workflows \citep{lewis2020retrieval}. In this landscape, dense vector retrieval infrastructure \citep{johnson2019faiss}, sparse probabilistic retrieval \citep{robertson1994okapi}, rank-fusion methods \citep{cormack2009rrf}, and graph-centrality signals \citep{page1999pagerank} are often studied separately. A\_Memorix integrates these components into one operational service and emphasizes temporal query semantics and memory lifecycle governance in addition to retrieval quality.
+
+\section{Demo Walkthrough}
+The live demo sequence is:
+\begin{enumerate}
+  \item start service and verify \texttt{/healthz}, \texttt{/readyz};
+  \item create import task (\texttt{/v1/import/tasks}) and poll status;
+  \item issue temporal search (\texttt{/v1/query/time}) with request fields such as \texttt{query}, \texttt{time\_from}, \texttt{time\_to}, and \texttt{top\_k};
+  \item apply memory actions (\texttt{/v1/memory/protect}, \texttt{/v1/memory/reinforce}, \texttt{/v1/memory/restore});
+  \item run profile and summary APIs (\texttt{/v1/person/*}, \texttt{/v1/summary/tasks}).
+\end{enumerate}
+
+\section{Artifacts and Access}
+\label{sec:artifacts}
+To satisfy ACL 2026 Demo artifact expectations, we provide:
+\begin{itemize}
+  \item Source code and installable package: \href{https://github.com/A-Dawn/A_memorix}{GitHub repository} (branch: \texttt{basic})
+  \item Reproducible Docker entry: repository \texttt{Dockerfile} and benchmark scripts
+  \item License: \texttt{AGPL-3.0} (same as repository root license)
+  \item Demo video entry point (temporary placeholder): \href{https://github.com/A-Dawn/A_memorix/tree/basic#demo-video}{demo video URL placeholder}
+\end{itemize}
+
+\section{Limitations and Ethics}
+\textbf{Limitations.} Our benchmark workloads are synthetic and should not be interpreted as full production SLOs. Retrieval quality metrics still depend on configured external OpenAI-compatible providers.
+
+\textbf{Ethics.} The system stores user text and derived relational memory; deployments should enforce access control, retention policies, and user-visible deletion/recovery controls. Person profile aggregation should be opt-in and policy-governed.
+
+\section{Conclusion}
+A\_Memorix provides a practical, API-first memory system that combines retrieval, temporal reasoning, and memory lifecycle management in a deployable standalone service. Our demo and benchmarks show operational viability for ACL system demonstration use cases and provide a reproducible baseline for future extensions.
+
+\bibliography{references}
+
+\end{document}

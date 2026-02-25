@@ -1,0 +1,21 @@
+# LaTeX build artifacts
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+
+# Local compile variants
+main_submit*.pdf
+main_submit*.aux
+main_submit*.bbl
+main_submit*.blg
+main_submit*.log
+main_submit*.out
+
+# Keep final deliverables tracked explicitly
+!A_memorix_ACL.pdf
+!main.pdf

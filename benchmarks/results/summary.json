@@ -1,0 +1,86 @@
+{
+  "large_seed42.txt": {
+    "seed": 42,
+    "paragraphs": 10000,
+    "queries": 500,
+    "query_window_minutes": 120,
+    "query_limit": 50,
+    "person_filter_ratio": 0.25,
+    "ingest": {
+      "total_ms": 5394.819,
+      "paragraphs_per_sec": 1853.63
+    },
+    "query": {
+      "total_sec": 1.174702,
+      "qps": 425.64,
+      "mean_ms": 2.332,
+      "p50_ms": 2.421,
+      "p95_ms": 2.976,
+      "p99_ms": 3.225,
+      "avg_hits": 14.262
+    }
+  },
+  "medium_noperson_seed42.txt": {
+    "seed": 42,
+    "paragraphs": 5000,
+    "queries": 300,
+    "query_window_minutes": 120,
+    "query_limit": 50,
+    "person_filter_ratio": 0.0,
+    "ingest": {
+      "total_ms": 2068.9,
+      "paragraphs_per_sec": 2416.743
+    },
+    "query": {
+      "total_sec": 0.277471,
+      "qps": 1081.195,
+      "mean_ms": 0.917,
+      "p50_ms": 0.84,
+      "p95_ms": 1.275,
+      "p99_ms": 1.328,
+      "avg_hits": 9.313
+    }
+  },
+  "medium_seed42.txt": {
+    "seed": 42,
+    "paragraphs": 5000,
+    "queries": 300,
+    "query_window_minutes": 120,
+    "query_limit": 50,
+    "person_filter_ratio": 0.25,
+    "ingest": {
+      "total_ms": 2473.035,
+      "paragraphs_per_sec": 2021.807
+    },
+    "query": {
+      "total_sec": 0.362844,
+      "qps": 826.801,
+      "mean_ms": 1.196,
+      "p50_ms": 1.242,
+      "p95_ms": 1.515,
+      "p99_ms": 1.67,
+      "avg_hits": 6.627
+    }
+  },
+  "small_seed7.txt": {
+    "seed": 7,
+    "paragraphs": 1200,
+    "queries": 120,
+    "query_window_minutes": 90,
+    "query_limit": 30,
+    "person_filter_ratio": 0.3,
+    "ingest": {
+      "total_ms": 531.741,
+      "paragraphs_per_sec": 2256.737
+    },
+    "query": {
+      "total_sec": 0.039386,
+      "qps": 3046.783,
+      "mean_ms": 0.319,
+      "p50_ms": 0.307,
+      "p95_ms": 0.454,
+      "p99_ms": 0.56,
+      "avg_hits": 1.192
+    }
+  }
+}

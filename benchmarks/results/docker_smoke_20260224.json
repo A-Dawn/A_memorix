@@ -1,0 +1,13 @@
+{
+  "container": "amemorix_test_02c7495a",
+  "mapped_port": 58915,
+  "healthz_status": "ok",
+  "readyz_ready": true,
+  "api_config_auth_write_tokens_len": 1,
+  "unauthorized_write_status": 401,
+  "authorized_upsert_success": true,
+  "authorized_upsert_person_id": "p_demo_001",
+  "registry_list_total": 1,
+  "time_query_type": "time",
+  "time_query_count": 0
+}
