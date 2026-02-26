@@ -19,3 +19,7 @@ main_submit*.out
 # Keep final deliverables tracked explicitly
 !A_memorix_ACL.pdf
 !main.pdf
+
+# Local demo recording assets
+video.mp4
+video_ppt_flow_zh.md

@@ -27,8 +27,8 @@ pdflatex -jobname=main_submit main.tex
 
 ## Before submission
 
-- Confirm single-author metadata: `ChenXI (CN)` (independent submission).
-- Confirm code URL and branch: `https://github.com/A-Dawn/A_memorix` (`basic`).
-- Replace the temporary demo video placeholder URL in `main.tex` with the final hosted video URL.
+- Confirm single-author metadata: `Chen Xi` (Independent Researcher, China).
+- Confirm code URL and branch: `https://github.com/A-Dawn/A_memorix` (`acl2026-demo-final`).
+- Ensure release asset `video.mp4` is uploaded so the URL in `main.tex` resolves.
 - Verify ACL 2026 Demo page limit (4 pages for main paper, references excluded).
 - Recheck tables/figures after final edits.

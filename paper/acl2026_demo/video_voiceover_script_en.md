@@ -1,69 +1,61 @@
-# A_Memorix Demo Voiceover Script (Friendly, 2m30s)
-
-## Recording Goal
-
-Use this script as teleprompter text.  
-Target duration: **2:20 to 2:30**.
-
-## Timeline Script
-
+# A_Memorix Demo Voiceover Script
 ### 00:00 - 00:12 (Title)
 
-Hello everyone, and thanks for watching.  
-I am Chen Xi, an independent researcher from China.  
-In this demo, I will introduce A_Memorix, an API-first memory service for long-horizon NLP applications.
+Hello, I am Chen Xi, an independent researcher from China.  
+This demo presents A_Memorix, an API-first memory service for long-horizon NLP applications.
 
 ### 00:12 - 00:30 (Problem)
 
-Many LLM applications can retrieve text, but they still struggle with three practical needs:  
-time-aware retrieval, memory governance, and safe update-and-recovery operations.  
-A_Memorix brings these capabilities into one standalone service.
+Many LLM applications retrieve text, but still lack practical memory control.  
+We focus on three gaps: time-aware retrieval, lifecycle governance, and safe update-and-recovery.  
+Our goal is a standalone runtime that is reproducible and easy to integrate.
 
 ### 00:30 - 00:50 (Architecture)
 
-The system combines three stores:  
-a FAISS-based vector store, a relation graph store, and a SQLite metadata store.  
-On top of this architecture, we provide dual-path retrieval and strict minute-level temporal filtering.
+The system combines three persistent stores:  
+a FAISS vector store, a relation graph store, and SQLite metadata.  
+It supports dual-path retrieval, minute-level temporal filtering, `/v1` for new integration,  
+and `/api` for backward compatibility.
 
-### 00:50 - 01:12 (Service Health)
+### 00:50 - 01:02 (Demo Reset + Service Health)
 
-Now let us run a short live workflow.  
-First, I start the service and verify health and readiness.
+Now I start the live workflow.  
+First, I optionally clean previous demo records by source.  
+Then I verify `/healthz` and `/readyz`.
 
-### 01:12 - 01:35 (Import Task)
+### 01:02 - 01:20 (Import Task: Paragraph)
 
-Next, I create an asynchronous import task and poll its status.  
-This is how new memory enters the system without blocking user requests.
+Next, I create an asynchronous paragraph import task with `/v1/import/tasks`,  
+and poll task status until it succeeds.  
+This stage shows non-blocking ingestion with stable task management.
 
-### 01:35 - 01:58 (Temporal Query)
+### 01:20 - 01:36 (Import Task: Relation)
 
-Then I run a temporal query through `/v1/query/time`,  
-using fields such as `query`, `time_from`, `time_to`, and `top_k`.  
-This gives semantically relevant results constrained by time.
+Then I create a relation import task and wait for completion.  
+This provides an explicit relation target for later lifecycle operations.
 
-### 01:58 - 02:15 (Memory Operation)
+### 01:36 - 01:52 (Temporal Query Before Action)
 
-After that, I apply memory operations such as protect and reinforce,  
-and then query again to show that memory lifecycle controls are part of the same API surface.
+Then I run `/v1/query/time` using `query`, `time_from`, `time_to`, and `source`.  
+The response returns semantically relevant memories constrained by minute-level time boundaries.
 
-### 02:15 - 02:27 (Evidence)
+### 01:52 - 02:12 (Memory Status + Protect)
 
-For reliability, our in-tree tests currently pass 12 out of 12.  
-In benchmark results, metadata temporal query reaches 826.8 QPS at 5k paragraphs with 1.515 ms p95.  
-HTTP end-to-end temporal query reaches 121.2 QPS with 26.166 ms p95.
+After that, I call `/v1/memory/status`, then apply `/v1/memory/protect`,  
+and check status again.  
+The `ttl_protected_relations` value increases, showing active lifecycle control in the same API surface.
+
+### 02:12 - 02:20 (Temporal Query After Action)
+
+Finally, I run the temporal query again.  
+This closes the loop of import, retrieval, lifecycle control, and retrieval validation.
+
+### 02:20 - 02:27 (Evidence)
+
+For evidence, all 12 in-tree tests pass,  
+and benchmarks report reproducible throughput and latency.
 
 ### 02:27 - 02:30 (Closing)
 
-Thank you for watching.  
-A_Memorix is available as a reproducible release package and demo artifact.
-
-## On-Screen Checklist
-
-1. Title card with project name and author.
-2. One architecture figure.
-3. Terminal: service startup + `/healthz` + `/readyz`.
-4. Terminal: `/v1/import/tasks` create + status polling.
-5. Terminal: `/v1/query/time` request and response.
-6. Terminal: one `/v1/memory/*` operation.
-7. Benchmark and test result snapshot.
-8. Final slide with release link and video link.
+Thank you.  
+Artifacts are available in the project release package.

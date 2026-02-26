@@ -35,7 +35,7 @@ In this demo paper, we present A\_Memorix as a single-process, API-centric memor
   \item asynchronous import and transcript-summary task orchestration.
 \end{itemize}
 Intended users include applied NLP engineers, agent platform developers, and research teams that require self-hosted long-term memory APIs with temporal and governance controls.
-Source code and reproducibility artifacts are available at \url{https://github.com/A-Dawn/A_memorix/releases/tag/acl2026-demo-v1.0.0}.
+Source code and reproducibility artifacts are available at \url{https://github.com/A-Dawn/A_memorix/releases/tag/acl2026-demo-v1.1.0}.
 
 \section{System Overview}
 \subsection{Runtime Architecture}
@@ -68,19 +68,12 @@ Temporal filtering uses interval-overlap semantics over \texttt{event\_time}, \t
 
 Memory maintenance periodically decays edge weights, freezes low-weight unprotected relations, prunes expired inactive relations into a recycle bin, and supports explicit restore operations.
 
-\begin{figure}[t]
+\begin{figure*}[t]
 \centering
-\fbox{
-\begin{minipage}{0.93\columnwidth}
-\small\raggedright
-Ingestion (\texttt{/v1/import/tasks}, \texttt{/v1/summary/tasks}) $\rightarrow$ Metadata/Vector/Graph stores
-$\rightarrow$ Dual-path retrieval + temporal filter + thresholding $\rightarrow$
-memory operations (\texttt{/v1/memory/*}) and profile/summary APIs.
-\end{minipage}
-}
-\caption{System pipeline used in the ACL demo.}
+\includegraphics[width=0.98\textwidth]{system_flowchart.pdf}
+\caption{System flow used in the ACL demo. Import tasks, temporal query, and memory APIs are modeled as separate request paths over shared stores; freeze/prune are background maintenance operations rather than direct \texttt{/v1/memory/*} endpoints.}
 \label{fig:pipeline}
-\end{figure}
+\end{figure*}
 
 \section{Benchmark and Test Status}
 \subsection{Metadata Temporal Micro-Benchmark}
@@ -149,10 +142,10 @@ The live demo sequence is:
 \label{sec:artifacts}
 To satisfy ACL 2026 Demo artifact expectations, we provide:
 \begin{itemize}
-  \item Source code and installable package: \href{https://github.com/A-Dawn/A_memorix/releases/tag/acl2026-demo-v1.0.0}{GitHub release (acl2026-demo-v1.0.0)}; package asset: \href{https://github.com/A-Dawn/A_memorix/releases/download/acl2026-demo-v1.0.0/acl2026-demo-v1.0.0.zip}{acl2026-demo-v1.0.0.zip}
+  \item Source code and installable package: \href{https://github.com/A-Dawn/A_memorix/releases/tag/acl2026-demo-v1.1.0}{GitHub release (acl2026-demo-v1.1.0)}; package asset: \href{https://github.com/A-Dawn/A_memorix/releases/download/acl2026-demo-v1.1.0/acl2026-demo-v1.1.0.zip}{acl2026-demo-v1.1.0.zip}
   \item Reproducible Docker entry: repository \texttt{Dockerfile} and benchmark scripts
   \item License: \texttt{AGPL-3.0} (same as repository root license)
-  \item Demo video entry point (temporary placeholder): \href{https://github.com/A-Dawn/A_memorix/releases/tag/acl2026-demo-v1.0.0}{release page (to be replaced by final video URL)}
+  \item Demo video (\(\leq\)2.5 min): \href{https://github.com/A-Dawn/A_memorix/releases/download/acl2026-demo-v1.1.0/video.mp4}{video.mp4 (release asset)}
 \end{itemize}
 
 \section{Limitations and Ethics}

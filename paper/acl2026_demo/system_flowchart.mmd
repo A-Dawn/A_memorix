@@ -1,0 +1,28 @@
+flowchart LR
+    A[Client Request] --> B{API Layer}
+
+    B -->|POST v1 import tasks| TQ[Task Manager Async Queue]
+    B -->|GET v1 import tasks task_id| TS[Task Status Metadata SQLite]
+    TQ --> IS[Import Service]
+    IS --> C[Metadata Store SQLite]
+    IS --> C2[Vector Store FAISS SQ8 Flat]
+    IS --> C3[Graph Store Sparse Relations]
+
+    B -->|POST v1 query time| QS[Query Service]
+    QS --> D{Dual Path Retrieval}
+    C --> D
+    C2 --> D
+    C3 --> D
+    D --> E[Paragraph Search Dense Sparse Fusion]
+    D --> F[Relation Centric Search]
+    E --> G{Temporal Filter Minute Level}
+    F --> G
+    G --> I[Response v1 query time]
+
+    B -->|POST v1 memory status protect reinforce restore| H[Memory Service]
+    H --> C
+    H --> C3
+    H --> I2[Response v1 memory]
+
+    MNT[Background Maintenance Decay Freeze Prune] --> C
+    MNT --> C3
