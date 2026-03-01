@@ -9,6 +9,15 @@ numpy>=1.20.0
 # 稀疏矩阵 - 用于图存储的邻接矩阵
 scipy>=1.7.0
 
+# 图结构处理（LPMM 转换）
+networkx>=3.0.0
+
+# Parquet 读取（LPMM 转换）
+pyarrow>=10.0.0
+
+# DataFrame 处理（LPMM 转换）
+pandas>=1.5.0
+
 # 异步事件循环嵌套 - 用于插件初始化时的异步操作
 nest-asyncio>=1.5.0
 
@@ -26,6 +35,7 @@ fastapi>=0.100.0
 
 # 数据验证
 pydantic>=2.0.0
+python-multipart>=0.0.9
 
 # 注意事项
 # ==================

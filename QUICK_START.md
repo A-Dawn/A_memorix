@@ -219,7 +219,7 @@ enabled = true
 - `YYYY/MM/DD`
 - `YYYY/MM/DD HH:mm`
 
-### 3.3 人物画像（v0.5.0 主更新）
+### 3.3 人物画像（v0.5.0）
 
 查询人物画像：
 
@@ -248,6 +248,23 @@ enabled = true
 `http://localhost:8082`
 
 可在 `plugins/A_memorix/config.toml` 的 `[web]` 里改端口和绑定地址。
+
+### 3.5 Web Import 导入中心（v0.6.0 新增）
+
+在可视化服务启动后，直接访问：
+
+`http://localhost:8082/import`
+
+导入中心支持：
+
+- 上传文件 / 粘贴导入
+- 本地扫描（alias + relative_path）
+- LPMM OpenIE 导入
+- LPMM 二进制转换（staging + switch）
+- 时序回填
+- MaiBot 迁移
+
+并可查看任务/文件/分块三级状态，支持取消与“重试失败项（分块优先）”。
 
 ---
 

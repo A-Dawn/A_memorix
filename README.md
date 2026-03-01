@@ -1,6 +1,6 @@
 # A_Memorix
 
-**轻量级知识图谱插件** - 基于双路检索 + 人物画像的独立记忆增强系统 (v0.5.1)
+**轻量级知识图谱插件** - 基于双路检索 + 人物画像的独立记忆增强系统 (v0.6.0)
 
 > 消えていかない感覚 , まだまだ足りてないみたい !
 
@@ -9,16 +9,11 @@
 > 升级后，虽然系统会尝试自动迁移部分数据，但为确保知识图谱的检索精度和完整性，强烈建议在升级后使用 `process_knowledge.py` 脚本重新导入原始文本。
 
 > [!NOTE]
-> **v0.5.0 人物画像增强（主更新）**：
-> 1. 新增 `PersonProfileService`，基于“别名解析 + 图关系证据 + 向量证据”生成人物画像快照；
-> 2. 新增 `/person_profile on|off|status`，支持按 `stream_id + user_id` 控制画像注入；
-> 3. `knowledge_query` 新增 `query_type=person`，`/query person|p` 支持人物画像查询；
-> 4. 新增画像定时刷新任务与 override/快照存储能力（依赖 metadata 新表）。
-> 
-> **v0.5.1 版本与Schema同步**：
-> 1. 插件版本升级到 `0.5.1`；
-> 2. 配置版本升级到 `4.0.1`；
-> 3. `manifest_version` 保持为 `1`（兼容当前仅支持 v1 的宿主校验器）。
+> **v0.6.0 导入能力与WebUI增强**：
+> 1. 新增 Web Import 导入中心（`/import`），支持上传/粘贴/本地扫描/LPMM OpenIE/LPMM转换/时序回填/MaiBot 迁移；
+> 2. 导入状态细化到任务/文件/分块级，支持取消与“失败项重试（分块优先 + 文件回退）”；
+> 3. 导入期间写操作保护、删除后 manifest 同步失效、导入文档弹窗与中文状态展示已对齐。
+
 
 ## 📑 文档索引
 
@@ -32,8 +27,9 @@
 ## ✨ 特性
 
 - **🧠 双路检索** - 关系图谱 + 向量语义并行检索，结合 Personalized PageRank 智能排序。
-- **⏱️ 时序检索（分钟级）** - 支持 `time/hybrid` 模式，按事件时间区间命中并可回退 `created_at`。
-- **👤 人物画像（v0.5.1）** - 支持人物画像快照、别名解析、手工覆盖、按会话 opt-in 注入控制。
+- **⏱️ 时序检索（v0.5.0）** - 支持 `time/hybrid` 模式，按事件时间区间命中并可回退 `created_at`。
+- **👤 人物画像（v0.5.0）** - 支持人物画像快照、别名解析、手工覆盖、按会话 opt-in 注入控制。
+- **📥 Web Import 导入中心（v0.6.0）** - 提供统一导入控制台（`/import`），支持上传/粘贴/路径扫描/LPMM 迁移与任务级可观测。
 - **🧩 稀疏检索增强（FTS5 + BM25）** - embedding 不可用或召回偏弱时自动走 sparse，支持 `jieba/mixed/char_2gram` 分词与 `ngram` 倒排回退。
 - **🧬 生物学记忆 (V5)** - 模拟人类记忆的**衰减 (Decay)**、**强化 (Reinforce)** 与 **结构化重组 (Prune)** 机制，实现记忆的动态生命周期管理。
 - **🔄 智能回退** - 当直接检索结果弱时，自动触发多跳路径搜索，增强间接关系召回。
@@ -69,7 +65,9 @@ pip install -r requirements.txt
 - `tenacity` (重试机制)
 - `nest-asyncio` (环境兼容)
 - `jieba` (稀疏检索中文分词；未安装时自动回退 char n-gram)
+- `networkx`, `pyarrow`, `pandas` (LPMM 转换链路)
 - `fastapi`, `uvicorn`, `pydantic` (可视化服务器)
+- `python-multipart` (Web 上传解析)
 
 ---
 

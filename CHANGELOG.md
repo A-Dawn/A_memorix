@@ -1,5 +1,63 @@
 # 更新日志 (Changelog)
 
+## [0.6.0] - 2026-03-02
+
+本次 `0.6.0` 为中版本升级，主线是 **Web Import 导入中心上线与脚本能力对齐**、**失败重试机制升级**、**删除后 manifest 同步** 与 **导入链路稳定性增强**。
+
+### 🔖 版本信息
+
+- 插件版本：`0.5.1` → `0.6.0`
+- 配置版本：`4.0.1` → `4.1.0`
+
+### 🚀 重点能力
+
+- 新增 Web Import 导入中心（`/import`）：
+  - 上传/粘贴/本地扫描/LPMM OpenIE/LPMM 转换/时序回填/MaiBot 迁移。
+  - 任务/文件/分块三级状态展示，支持取消与失败重试。
+  - 导入文档弹窗读取（远程优先，失败回退本地）。
+- 失败重试升级为“分块优先 + 文件回退”：
+  - `POST /api/import/tasks/{task_id}/retry_failed` 保持原路径，语义升级。
+  - 支持对 `extracting` 失败分块进行子集重试。
+  - `writing`/JSON 解析失败自动回退为文件级重试。
+- 删除后 manifest 同步失效：
+  - 覆盖 `/api/source/batch_delete` 与 `/api/source`。
+  - 返回 `manifest_cleanup` 明细，避免误命中去重跳过重导入。
+
+### 📂 变更文件清单（本次发布）
+
+新增文件：
+
+- `core/utils/web_import_manager.py`
+- `scripts/migrate_maibot_memory.py`
+- `web/import.html`
+
+修改文件：
+
+- `CHANGELOG.md`
+- `CONFIG_REFERENCE.md`
+- `IMPORT_GUIDE.md`
+- `QUICK_START.md`
+- `README.md`
+- `__init__.py`
+- `_manifest.json`
+- `components/commands/debug_server_command.py`
+- `core/embedding/api_adapter.py`
+- `core/storage/graph_store.py`
+- `core/utils/summary_importer.py`
+- `plugin.py`
+- `requirements.txt`
+- `server.py`
+- `web/index.html`
+
+删除文件：
+
+- 无
+
+### 📚 文档同步
+
+- 同步更新 `README.md`、`QUICK_START.md`、`CONFIG_REFERENCE.md`、`IMPORT_GUIDE.md` 与本日志。
+- `IMPORT_GUIDE.md` 新增 “Web Import 导入中心” 专区，统一说明能力范围、状态语义与安全边界。
+
 ## [0.5.1] - 2026-02-23
 
 本次 `0.5.1` 为热修订小版本，重点修复“随主程序启动的后台任务拉起”“空名单过滤语义”以及“知识抽取模型选择”。

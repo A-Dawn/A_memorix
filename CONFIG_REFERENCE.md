@@ -1,10 +1,10 @@
 # A_Memorix 配置参数详解（config.toml）
 
-适用版本：`plugins/A_memorix/config.toml`（`config_version = "4.0.1"`，插件代码 `v0.5.1`）。
+适用版本：`plugins/A_memorix/config.toml`（`config_version = "4.1.0"`，插件代码 `v0.6.0`）。
 
 ---
 
-## ⚠️ 先看这 5 条
+## ⚠️ 先看这 6 条
 
 - `embedding.quantization_type` 当前**基本不生效**：虽然配置支持 `float32/int8/pq`，但 `VectorStore` 内部目前固定走 SQ8（`int8`）实现（后期预期不会走其他实现）。
 - `retrieval.sparse` 与 `retrieval.fusion` 是新增检索增强配置：可在 embedding 异常时自动回退 BM25，并通过 weighted RRF 融合候选。
@@ -12,6 +12,7 @@
 - `memory.reinforce_buffer_max_size`、`memory.min_active_weight_protected` 当前代码里**未实际使用**。
 - `filter.chats = []` 时采用安全兜底：`whitelist`=全部拒绝，`blacklist`=全部放行。
 - `retrieval.sparse.enable_relation_sparse_fallback = false` 会关闭关系 sparse 召回，但当前段落 sparse 查询路径仍会幂等检查 `relations_fts` schema/backfill（有轻微额外开销）。
+- `web.import.*` 新增导入中心运行配置（并发、队列、Token、路径别名、转换策略）；如未配置将使用插件默认值。
 
 ---
 
@@ -58,6 +59,9 @@
 - `embedding.retry.min_wait_seconds`
   - 功能：最小退避等待秒数。
   - 生效：指数退避初始等待时间。
+- `embedding.retry.backoff_multiplier`
+  - 功能：指数退避倍率。
+  - 生效：等待序列按 `min_wait_seconds * multiplier^(attempt-1)` 计算，默认 `3 -> 9 -> 27 -> 40(封顶)`。
 
 ## `[retrieval]` 检索
 
@@ -281,6 +285,63 @@
 - `web.host`
   - 功能：服务监听地址。
   - 生效：Web 服务绑定地址。
+
+### `[web.import]` 导入中心
+
+- `web.import.enabled`
+  - 功能：导入中心开关。
+  - 生效：关闭后 `/import` 与 `/api/import/*` 返回 404。
+- `web.import.max_queue_size`
+  - 功能：导入任务队列上限。
+  - 生效：超过上限时新任务创建被拒绝。
+- `web.import.max_files_per_task`
+  - 功能：单任务最大文件数。
+  - 生效：上传/扫描任务超过上限直接拒绝。
+- `web.import.max_file_size_mb`
+  - 功能：单文件体积上限（MB）。
+  - 生效：上传文件超限时直接拒绝。
+- `web.import.max_paste_chars`
+  - 功能：粘贴导入最大字符数。
+  - 生效：超限时拒绝创建粘贴任务。
+- `web.import.default_file_concurrency`
+  - 功能：默认文件并发。
+  - 生效：前端未传值时作为默认并发。
+- `web.import.default_chunk_concurrency`
+  - 功能：默认分块并发。
+  - 生效：前端未传值时作为默认并发。
+- `web.import.max_file_concurrency`
+  - 功能：文件并发上限。
+  - 生效：请求值会被 clamp 到该上限内。
+- `web.import.max_chunk_concurrency`
+  - 功能：分块并发上限。
+  - 生效：请求值会被 clamp 到该上限内。
+- `web.import.poll_interval_ms`
+  - 功能：前端建议轮询间隔。
+  - 生效：`/api/import/tasks` 返回给前端作为轮询间隔。
+- `web.import.token`
+  - 功能：导入 API 鉴权 token。
+  - 生效：非空时 `X-Memorix-Import-Token` 必须匹配。
+- `web.import.path_aliases`
+  - 功能：本地路径白名单别名。
+  - 生效：`raw_scan/openie/convert/backfill` 只能使用 alias + relative_path。
+- `web.import.llm_retry.max_attempts`
+  - 功能：导入抽取链路 LLM 重试次数。
+  - 生效：导入中心文本抽取失败时重试上限。
+- `web.import.llm_retry.min_wait_seconds`
+  - 功能：导入抽取重试最小等待秒数。
+  - 生效：重试等待基准值。
+- `web.import.llm_retry.max_wait_seconds`
+  - 功能：导入抽取重试最大等待秒数。
+  - 生效：重试等待上限。
+- `web.import.llm_retry.backoff_multiplier`
+  - 功能：导入抽取重试退避倍率。
+  - 生效：重试等待按指数序列增长。
+- `web.import.convert.enable_staging_switch`
+  - 功能：是否启用 LPMM 转换 staging 切换。
+  - 生效：关闭时 `lpmm_convert` 任务不会执行最终切换。
+- `web.import.convert.keep_backup_count`
+  - 功能：LPMM 转换备份保留数。
+  - 生效：超出数量的历史备份会自动清理。
 
 ## `[advanced]` 高级
 

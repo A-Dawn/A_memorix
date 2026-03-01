@@ -18,6 +18,130 @@ A_Memorix 采用 **策略模式 (Strategy-Aware)** 来处理不同类型的文�
 
 ---
 
+## Web Import 导入中心（`/import`）
+
+从 `v0.6.0` 开始，A_Memorix 提供 Web Import 导入中心作为统一导入入口。
+
+### 入口与基本使用流程
+
+1. 启动可视化服务后，访问 `http://localhost:8082/import`。
+2. 在顶部选择任务类型页签（上传、粘贴、本地扫描、OpenIE、转换、回填、MaiBot迁移）。
+3. 设置通用参数（并发、策略、去重、LLM、chat_log 等）。
+4. 按当前页签填写任务参数并提交。
+5. 在右侧任务详情查看任务/文件/分块三级状态与进度。
+6. 需要时执行取消或失败重试。
+
+### 通用参数说明（适用于多数任务）
+
+- `file_concurrency`：任务内文件并发数（建议 1-6）。
+- `chunk_concurrency`：单文件分块并发数（建议 1-12）。
+- `strategy_override`：`auto/narrative/factual/quote`。
+- `llm_enabled`：是否开启 LLM 抽取。
+- `dedupe_policy`：`content_hash/manifest/none`。
+- `chat_log` + `chat_reference_time`：聊天时间语义抽取及参考时间。
+- `force`：强制重导。
+- `clear_manifest`：导入前清理 manifest 命中记录。
+- `X-Memorix-Import-Token`：当 `web.import.token` 非空时必须携带。
+
+### 任务类型总览（功能介绍 + 使用方式）
+
+#### 1) 上传文件（`upload`）
+
+功能介绍：
+- 导入本机选择的 `txt/md/json` 文件。
+- 支持部分文件多选，支持文件级与分块级并发。
+
+使用方式：
+1. 选择“上传文件”页签。
+2. 选择 `文本输入模式`（`text` 或 `json`）。
+3. 点击“选择文件”并添加目标文件。
+4. 点击“提交上传任务”。
+
+#### 2) 粘贴导入（`paste`）
+
+功能介绍：
+- 直接粘贴文本或 JSON 字符串，无需落盘文件。
+- 适合快速验证抽取策略或小批量补录。
+
+使用方式：
+1. 选择“粘贴导入”页签。
+2. 选择 `text/json` 模式并粘贴内容。
+3. 可选填写名称。
+4. 点击“提交粘贴任务”。
+
+#### 3) 本地扫描（`raw_scan`）
+
+功能介绍：
+- 按白名单路径别名扫描目录并批量导入。
+- 支持 `glob` 与递归扫描，适合批量离线文档。
+
+使用方式：
+1. 选择“本地扫描”页签。
+2. 选择 `alias`，填写 `relative_path`（可选）。
+3. 设置 `glob`（如 `*.txt`）与 `recursive`。
+4. 点击“提交本地扫描任务”。
+
+#### 4) LPMM OpenIE 导入（`lpmm_openie`）
+
+功能介绍：
+- 导入 OpenIE JSON（优先 `*-openie.json`）。
+- 将 `docs[].passage/triples/entities` 映射到 A_Memorix 标准入库链路。
+
+使用方式：
+1. 选择“LPMM OpenIE”页签。
+2. 选择 `alias`，填写 `relative_path`（目录或文件）。
+3. 需要时开启“找不到 openie 文件时回退全部 json”。
+4. 提交任务并观察导入状态。
+
+#### 5) LPMM 二进制转换（`lpmm_convert`）
+
+功能介绍：
+- 对 LPMM 存储执行 staging 转换、校验、切换。
+- 目标是无 Token 迁移向量/图/元数据。
+
+使用方式：
+1. 选择“LPMM转换”页签。
+2. 填写输入 `alias + relative_path`。
+3. 填写目标 `alias + relative_path`。
+4. 设置 `dimension/batch_size`（可选）。
+5. 确认风险提示后提交任务。
+
+#### 6) 时序回填（`temporal_backfill`）
+
+功能介绍：
+- 为历史段落回填缺失的时间字段，提升时序检索命中率。
+- 支持 dry-run 预览与 limit 限流。
+
+使用方式：
+1. 选择“时序回填”页签。
+2. 选择目标路径（`alias + relative_path`）。
+3. 设置 `limit`、`dry_run`、`no_created_fallback`。
+4. 提交任务查看回填统计。
+
+#### 7) MaiBot 迁移（`maibot_migration`）
+
+功能介绍：
+- 调用迁移脚本将 `chat_history` 数据迁移入 A_Memorix。
+- 支持时间范围、ID范围、stream/group/user 过滤及断点续传控制。
+
+使用方式：
+1. 选择“MaiBot迁移”页签。
+2. 填写 `source_db` 及过滤参数（可选）。
+3. 设置批量参数（`read_batch_size`、`commit_window_rows` 等）。
+4. 按需选择 `dry-run/verify-only/no-resume/reset-state`。
+5. 提交任务并观察迁移进度。
+
+### 状态、重试与冲突保护
+
+- 三级可观测：任务级 / 文件级 / 分块级。
+- 失败重试：按钮“重试失败项（分块优先）”调用 `/retry_failed`。
+- 重试语义：先重试可安全分块失败；不可安全项自动回退文件级重试。
+- 运行控制：可取消任务，取消后已写入内容不回滚。
+- 写保护：导入运行中，其他写接口返回 `409` 以避免冲突写入。
+- 路径安全：本地路径任务仅允许 `web.import.path_aliases` 白名单目录。
+
+---
+
 ## 文件格式与最佳实践
 
 ### 1. 叙事文本 (.txt) - `Narrative`
@@ -142,6 +266,20 @@ python plugins/A_memorix/scripts/convert_lpmm.py -i data/lpmm_storage -o plugins
 3. 自动重建元数据。
 
 ## 常用命令速查
+
+### Web Import 失败重试语义（2026-03）
+
+导入中心的“重试失败项（分块优先）”按钮仍调用：
+
+`POST /api/import/tasks/{task_id}/retry_failed`
+
+但语义已升级为：
+
+1. 优先对 `text` 模式下、失败阶段为 `extracting` 的失败分块做子集重试。
+2. 对写入阶段失败、JSON解析失败或无法安全分块重试的失败项，自动回退为文件级重试。
+3. 在同一个重试子任务中可同时包含“分块重试文件”和“文件回退重试文件”。
+
+接口响应会附带 `retry_summary`，可用于前端展示重试构成统计。
 
 ### 时间元数据导入（时序检索）
 

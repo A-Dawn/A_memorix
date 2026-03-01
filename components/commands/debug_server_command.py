@@ -20,7 +20,16 @@ class DebugServerCommand(BaseCommand):
             status = []
             status.append(f"Plugin initialized: {plugin._initialized}")
             status.append(f"Server instance: {plugin.server}")
-            
+
+            # 先确保核心存储已初始化，避免只启动了 WebUI 但导入依赖为空
+            if not getattr(plugin, "_initialized", False):
+                status.append("Storage not initialized, trying _sync_initialize() ...")
+                try:
+                    plugin._sync_initialize()
+                    status.append(f"Storage initialized: {plugin._initialized}")
+                except Exception as e:
+                    status.append(f"❌ _sync_initialize failed: {e}")
+
             # 尝试强制启动
             if not plugin.server:
                 status.append("Attempting to start server...")

@@ -15,6 +15,7 @@ from src.common.logger import get_logger
 from src.chat.utils.utils import get_embedding
 from src.config.config import model_config
 from src.llm_models.model_client.base_client import client_registry
+from src.llm_models.exceptions import NetworkConnectionError
 
 logger = get_logger("A_Memorix.EmbeddingAPIAdapter")
 
@@ -56,9 +57,11 @@ class EmbeddingAPIAdapter:
         
         # 重试配置
         self.retry_config = retry_config or {}
-        self.max_attempts = self.retry_config.get("max_attempts", 3)
-        self.max_wait_seconds = self.retry_config.get("max_wait_seconds", 10)
-        self.min_wait_seconds = self.retry_config.get("min_wait_seconds", 2)
+        # 默认目标：4 次重试（共 5 次尝试），等待序列 3 -> 9 -> 27 -> 40(封顶)
+        self.max_attempts = self.retry_config.get("max_attempts", 5)
+        self.max_wait_seconds = self.retry_config.get("max_wait_seconds", 40)
+        self.min_wait_seconds = self.retry_config.get("min_wait_seconds", 3)
+        self.backoff_multiplier = self.retry_config.get("backoff_multiplier", 3)
         
         # 嵌入维度（延迟初始化）
         self._dimension: Optional[int] = None
@@ -78,10 +81,17 @@ class EmbeddingAPIAdapter:
         """
         统一重试逻辑，避免在模块导入期依赖第三方重试框架。
         """
-        retriable_exceptions = (openai.APIConnectionError, aiohttp.ClientError, asyncio.TimeoutError)
+        retriable_exceptions = (
+            openai.APIConnectionError,
+            openai.APITimeoutError,
+            aiohttp.ClientError,
+            asyncio.TimeoutError,
+            NetworkConnectionError,
+        )
         max_attempts = max(1, int(self.max_attempts))
         base_wait = max(0.1, float(self.min_wait_seconds))
         max_wait = max(base_wait, float(self.max_wait_seconds))
+        backoff_multiplier = max(1.0, float(self.backoff_multiplier))
 
         last_exc = None
         for attempt in range(1, max_attempts + 1):
@@ -95,7 +105,7 @@ class EmbeddingAPIAdapter:
                 last_exc = e
                 if attempt >= max_attempts:
                     raise
-                wait_seconds = min(max_wait, base_wait * (2 ** (attempt - 1)))
+                wait_seconds = min(max_wait, base_wait * (backoff_multiplier ** (attempt - 1)))
                 logger.warning(
                     f"Embedding 请求失败，重试 {attempt}/{max_attempts - 1}，"
                     f"{wait_seconds:.1f}s 后重试: {e}"

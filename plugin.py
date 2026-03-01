@@ -123,12 +123,25 @@ class A_MemorixPlugin(BasePlugin):
 
     # 插件基本信息（PluginBase要求的抽象属性）
     plugin_name = "A_Memorix"
-    plugin_version = "0.5.1"
+    plugin_version = "0.6.0"
     plugin_description = "轻量级知识库插件 - 含人物画像能力的独立记忆增强系统"
     plugin_author = "A_Dawn"
     enable_plugin = False  # 默认禁用，需要在config.toml中启用
     dependencies: list[str] = []
-    python_dependencies: list[str] = ["numpy", "scipy", "nest-asyncio", "faiss-cpu", "fastapi", "uvicorn", "pydantic", "jieba"]  # 插件所需Python依赖
+    python_dependencies: list[str] = [
+        "numpy",
+        "scipy",
+        "networkx",
+        "pyarrow",
+        "pandas",
+        "nest-asyncio",
+        "faiss-cpu",
+        "fastapi",
+        "uvicorn",
+        "pydantic",
+        "python-multipart",
+        "jieba",
+    ]  # 插件所需Python依赖
     config_file_name: str = "config.toml"
 
     # 配置节描述
@@ -154,7 +167,7 @@ class A_MemorixPlugin(BasePlugin):
         "plugin": {
             "config_version": ConfigField(
                 type=str,
-                default="4.0.1",
+                default="4.1.0",
                 description="配置文件版本"
             ),
             "enabled": ConfigField(
@@ -200,10 +213,11 @@ class A_MemorixPlugin(BasePlugin):
                 type=dict,
                 default={
                     "max_attempts": 5,
-                    "max_wait_seconds": 30,
-                    "min_wait_seconds": 2,
+                    "max_wait_seconds": 40,
+                    "min_wait_seconds": 3,
+                    "backoff_multiplier": 3,
                 },
-                description="嵌入重试配置: max_attempts, max_wait_seconds, min_wait_seconds"
+                description="嵌入重试配置: max_attempts, min_wait_seconds, max_wait_seconds, backoff_multiplier"
             ),
         },
         "retrieval": {
@@ -372,6 +386,38 @@ class A_MemorixPlugin(BasePlugin):
                 type=str,
                 default="0.0.0.0",
                 description="服务器绑定地址"
+            ),
+            "import": ConfigField(
+                type=dict,
+                default={
+                    "enabled": True,
+                    "max_queue_size": 20,
+                    "max_files_per_task": 200,
+                    "max_file_size_mb": 20,
+                    "max_paste_chars": 200000,
+                    "default_file_concurrency": 2,
+                    "default_chunk_concurrency": 4,
+                    "max_file_concurrency": 6,
+                    "max_chunk_concurrency": 12,
+                    "poll_interval_ms": 1000,
+                    "token": "",
+                    "path_aliases": {
+                        "raw": "./plugins/A_memorix/data/raw",
+                        "lpmm": "./data/lpmm_storage",
+                        "plugin_data": "./plugins/A_memorix/data",
+                    },
+                    "llm_retry": {
+                        "max_attempts": 4,
+                        "min_wait_seconds": 3,
+                        "max_wait_seconds": 40,
+                        "backoff_multiplier": 3,
+                    },
+                    "convert": {
+                        "enable_staging_switch": True,
+                        "keep_backup_count": 3,
+                    },
+                },
+                description="Web 导入中心配置（队列、并发、大小限制、鉴权）"
             ),
         },
         "advanced": {

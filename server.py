@@ -3,7 +3,7 @@ import asyncio
 import threading
 import json
 import uvicorn
-from fastapi import FastAPI, HTTPException, Body, Query
+from fastapi import FastAPI, HTTPException, Body, Query, UploadFile, File, Form, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from src.common.logger import get_logger
 from src.common.database.database_model import PersonInfo
+from .core.utils.hash import compute_hash
 
 logger = get_logger("A_Memorix.Server")
 
@@ -70,6 +71,104 @@ class PersonProfileOverrideUpsertRequest(BaseModel):
 class PersonProfileOverrideDeleteRequest(BaseModel):
     person_id: str
 
+class ImportPasteRequest(BaseModel):
+    input_mode: str = "text"
+    content: str
+    name: Optional[str] = None
+    file_concurrency: Optional[int] = None
+    chunk_concurrency: Optional[int] = None
+    llm_enabled: Optional[bool] = True
+    strategy_override: Optional[str] = "auto"
+    chat_log: Optional[bool] = False
+    chat_reference_time: Optional[str] = None
+    force: Optional[bool] = False
+    clear_manifest: Optional[bool] = False
+    dedupe_policy: Optional[str] = None
+
+class ImportRetryRequest(BaseModel):
+    file_concurrency: Optional[int] = None
+    chunk_concurrency: Optional[int] = None
+    llm_enabled: Optional[bool] = None
+    strategy_override: Optional[str] = None
+    chat_log: Optional[bool] = None
+    chat_reference_time: Optional[str] = None
+    force: Optional[bool] = None
+    clear_manifest: Optional[bool] = None
+    dedupe_policy: Optional[str] = None
+
+class ImportPathResolveRequest(BaseModel):
+    alias: str
+    relative_path: Optional[str] = ""
+    must_exist: Optional[bool] = True
+
+class ImportRawScanRequest(BaseModel):
+    alias: Optional[str] = "raw"
+    relative_path: Optional[str] = ""
+    glob: Optional[str] = "*"
+    recursive: Optional[bool] = True
+    input_mode: Optional[str] = "text"
+    file_concurrency: Optional[int] = None
+    chunk_concurrency: Optional[int] = None
+    llm_enabled: Optional[bool] = True
+    strategy_override: Optional[str] = "auto"
+    chat_log: Optional[bool] = False
+    chat_reference_time: Optional[str] = None
+    force: Optional[bool] = False
+    clear_manifest: Optional[bool] = False
+    dedupe_policy: Optional[str] = None
+
+class ImportLpmmOpenieRequest(BaseModel):
+    alias: Optional[str] = "lpmm"
+    relative_path: Optional[str] = ""
+    include_all_json: Optional[bool] = False
+    file_concurrency: Optional[int] = None
+    chunk_concurrency: Optional[int] = None
+    llm_enabled: Optional[bool] = True
+    strategy_override: Optional[str] = "auto"
+    chat_log: Optional[bool] = False
+    chat_reference_time: Optional[str] = None
+    force: Optional[bool] = False
+    clear_manifest: Optional[bool] = False
+    dedupe_policy: Optional[str] = None
+
+class ImportLpmmConvertRequest(BaseModel):
+    alias: Optional[str] = "lpmm"
+    relative_path: Optional[str] = ""
+    target_alias: Optional[str] = "plugin_data"
+    target_relative_path: Optional[str] = ""
+    dimension: Optional[int] = None
+    batch_size: Optional[int] = None
+
+class ImportTemporalBackfillRequest(BaseModel):
+    alias: Optional[str] = "plugin_data"
+    relative_path: Optional[str] = ""
+    dry_run: Optional[bool] = False
+    no_created_fallback: Optional[bool] = False
+    limit: Optional[int] = 100000
+
+
+class ImportMaiBotMigrationRequest(BaseModel):
+    source_db: Optional[str] = None
+    time_from: Optional[str] = None
+    time_to: Optional[str] = None
+    stream_ids: Optional[List[str]] = None
+    group_ids: Optional[List[str]] = None
+    user_ids: Optional[List[str]] = None
+    start_id: Optional[int] = None
+    end_id: Optional[int] = None
+    no_resume: Optional[bool] = None
+    reset_state: Optional[bool] = None
+    read_batch_size: Optional[int] = None
+    commit_window_rows: Optional[int] = None
+    embed_batch_size: Optional[int] = None
+    entity_embed_batch_size: Optional[int] = None
+    embed_workers: Optional[int] = None
+    max_errors: Optional[int] = None
+    log_every: Optional[int] = None
+    preview_limit: Optional[int] = None
+    dry_run: Optional[bool] = None
+    verify_only: Optional[bool] = None
+
 class MemorixServer:
     def __init__(self, plugin_instance, host="0.0.0.0", port=8082):
         self.plugin = plugin_instance
@@ -78,12 +177,29 @@ class MemorixServer:
         self.app = FastAPI(title="A_Memorix 可视化编辑器")
         self.server_thread = None
         self._server = None
-        self._server = None
         self.should_exit = False
         
         # 缓存 relations predicate map
         self._relation_cache = None
         self._relation_cache_timestamp = 0
+        self._relation_cache_snapshot = None
+
+        # 兜底：确保核心存储在 Web 服务启动前可用（例如 debug_server 直启场景）
+        if any(
+            getattr(self.plugin, attr, None) is None
+            for attr in ("metadata_store", "vector_store", "graph_store", "embedding_manager")
+        ):
+            sync_init = getattr(self.plugin, "_sync_initialize", None)
+            if callable(sync_init):
+                try:
+                    sync_init()
+                except Exception as e:
+                    logger.warning(f"MemorixServer pre-init storage failed: {e}")
+
+        # 导入任务管理器
+        from .core.utils.web_import_manager import ImportTaskManager
+        self.import_manager = ImportTaskManager(plugin_instance)
+        self.import_manager.set_write_changed_callback(self._on_import_write_changed)
         
         # 配置 CORS
         self.app.add_middleware(
@@ -138,6 +254,232 @@ class MemorixServer:
                     if nick:
                         out.append(nick)
             return out
+
+        def _is_import_enabled() -> bool:
+            return bool(self.plugin.get_config("web.import.enabled", True))
+
+        def _ensure_write_allowed() -> None:
+            if self.import_manager and self.import_manager.is_write_blocked():
+                raise HTTPException(
+                    status_code=409,
+                    detail="导入任务运行中，写操作已临时禁用",
+                )
+
+        def _ensure_import_token(token_header: Optional[str]) -> None:
+            configured = str(self.plugin.get_config("web.import.token", "") or "").strip()
+            if not configured:
+                return
+            if not token_header:
+                raise HTTPException(status_code=401, detail="Missing import token")
+            if token_header.strip() != configured:
+                raise HTTPException(status_code=403, detail="Invalid import token")
+
+        def _relation_db_snapshot() -> tuple[int, float, str]:
+            if not self.plugin.metadata_store:
+                return (0, 0.0, "")
+            try:
+                rows = self.plugin.metadata_store.query(
+                    """
+                    SELECT
+                        COUNT(*) AS relation_count,
+                        COALESCE(MAX(created_at), 0) AS max_created_at,
+                        COALESCE(MAX(hash), '') AS max_hash
+                    FROM relations
+                    """
+                )
+                if not rows:
+                    return (0, 0.0, "")
+                row = rows[0]
+                if isinstance(row, dict):
+                    return (
+                        int(row.get("relation_count") or 0),
+                        float(row.get("max_created_at") or 0.0),
+                        str(row.get("max_hash") or ""),
+                    )
+                return (int(row[0] or 0), float(row[1] or 0.0), str(row[2] or ""))
+            except Exception as e:
+                logger.warning(f"Failed to read relation snapshot: {e}")
+                return (0, 0.0, "")
+
+        def _fallback_predicates_for_edge(source: str, target: str) -> List[str]:
+            if not self.plugin.metadata_store:
+                return []
+            try:
+                rows = self.plugin.metadata_store.get_relations(subject=source, object=target)
+            except Exception as e:
+                logger.warning(f"Fallback relation lookup failed for {source}->{target}: {e}")
+                return []
+
+            predicates: List[str] = []
+            seen = set()
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                pred = str(row.get("predicate", "") or "").strip()
+                if not pred:
+                    continue
+                key = pred.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                predicates.append(pred)
+            return predicates
+
+        def _empty_manifest_cleanup(requested_sources: Optional[List[str]] = None) -> Dict[str, Any]:
+            return {
+                "requested_sources": list(requested_sources or []),
+                "removed_count": 0,
+                "removed_keys": [],
+                "remaining_count": 0,
+                "unmatched_sources": [],
+                "warnings": [],
+            }
+
+        async def _cleanup_manifest_for_sources(sources: List[str]) -> Dict[str, Any]:
+            requested_sources = [str(s or "").strip() for s in (sources or []) if str(s or "").strip()]
+            cleanup = _empty_manifest_cleanup(requested_sources)
+            if not self.import_manager:
+                if requested_sources:
+                    cleanup["unmatched_sources"] = list(requested_sources)
+                cleanup["warnings"].append("import_manager_unavailable")
+                return cleanup
+
+            try:
+                payload = await self.import_manager.invalidate_manifest_for_sources(requested_sources)
+                if not isinstance(payload, dict):
+                    if requested_sources:
+                        cleanup["unmatched_sources"] = list(requested_sources)
+                    cleanup["warnings"].append("manifest_cleanup_invalid_response")
+                    return cleanup
+
+                cleanup["requested_sources"] = list(payload.get("requested_sources") or requested_sources)
+                cleanup["removed_count"] = int(payload.get("removed_count") or 0)
+                cleanup["removed_keys"] = [str(k) for k in (payload.get("removed_keys") or [])]
+                cleanup["remaining_count"] = int(payload.get("remaining_count") or 0)
+                cleanup["unmatched_sources"] = [str(s) for s in (payload.get("unmatched_sources") or [])]
+                cleanup["warnings"] = [str(w) for w in (payload.get("warnings") or [])]
+                return cleanup
+            except Exception as e:
+                logger.warning(f"Manifest cleanup failed for sources={requested_sources}: {e}")
+                if requested_sources:
+                    cleanup["unmatched_sources"] = list(requested_sources)
+                cleanup["warnings"].append(f"manifest_cleanup_failed: {e}")
+                return cleanup
+
+        def _load_import_guide_text() -> Dict[str, Any]:
+            # 使用插件工作目录内的相对路径文档，不依赖远端网络。
+            local_path = (Path(__file__).resolve().parent / "IMPORT_GUIDE.md").resolve()
+            if not local_path.exists():
+                raise HTTPException(status_code=404, detail=f"导入文档不存在: {local_path}")
+            try:
+                text = local_path.read_text(encoding="utf-8")
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"读取导入文档失败: {e}")
+            if not text.strip():
+                raise HTTPException(status_code=404, detail=f"导入文档为空: {local_path}")
+            return {
+                "source": "local",
+                "url": "",
+                "path": str(local_path),
+                "content": text,
+            }
+
+        def _collect_paragraph_entities(paragraph_hash: str) -> Dict[str, str]:
+            candidates: Dict[str, str] = {}
+            if not self.plugin.metadata_store:
+                return candidates
+            try:
+                entities = self.plugin.metadata_store.get_paragraph_entities(paragraph_hash)
+            except Exception as e:
+                logger.warning(f"Collect paragraph entities failed: {e}")
+                return candidates
+
+            for ent in entities:
+                entity_hash = str(ent.get("hash", "") or "").strip()
+                entity_name = str(ent.get("name", "") or "").strip()
+                if entity_hash and entity_name:
+                    candidates[entity_hash] = entity_name
+            return candidates
+
+        def _is_entity_still_referenced(entity_hash: str, entity_name: str) -> bool:
+            if not self.plugin.metadata_store:
+                return False
+
+            if self.plugin.metadata_store.query(
+                "SELECT 1 FROM paragraph_entities WHERE entity_hash = ? LIMIT 1",
+                (entity_hash,),
+            ):
+                return True
+
+            canon_name = str(entity_name or "").strip().lower()
+            if canon_name and self.plugin.metadata_store.query(
+                """
+                SELECT 1
+                FROM relations
+                WHERE LOWER(TRIM(subject)) = ? OR LOWER(TRIM(object)) = ?
+                LIMIT 1
+                """,
+                (canon_name, canon_name),
+            ):
+                return True
+
+            if self.plugin.graph_store:
+                try:
+                    if self.plugin.graph_store.get_neighbors(entity_name):
+                        return True
+                except Exception:
+                    pass
+
+            return False
+
+        def _cleanup_orphan_entities(candidate_entities: Dict[str, str]) -> tuple[int, int]:
+            removed = 0
+            skipped = 0
+
+            if (
+                not candidate_entities
+                or not self.plugin.metadata_store
+            ):
+                return removed, skipped
+
+            for entity_hash, entity_name in candidate_entities.items():
+                if _is_entity_still_referenced(entity_hash, entity_name):
+                    skipped += 1
+                    continue
+
+                try:
+                    deleted = self.plugin.metadata_store.delete_entity(entity_hash)
+                except Exception as e:
+                    logger.warning(f"Delete orphan entity failed: {entity_hash[:8]}... ({e})")
+                    skipped += 1
+                    continue
+
+                if not deleted:
+                    skipped += 1
+                    continue
+
+                if self.plugin.vector_store:
+                    try:
+                        self.plugin.vector_store.delete([entity_hash])
+                    except Exception:
+                        pass
+
+                if self.plugin.graph_store:
+                    try:
+                        self.plugin.graph_store.delete_nodes([entity_name])
+                    except Exception:
+                        pass
+
+                removed += 1
+
+            return removed, skipped
+
+        @self.app.on_event("shutdown")
+        async def _on_shutdown():
+            try:
+                await self.import_manager.shutdown()
+            except Exception as e:
+                logger.warning(f"Import manager shutdown failed: {e}")
 
         
         @self.app.get("/api/graph")
@@ -200,6 +542,8 @@ class MemorixServer:
                     
                     # 4. (修正) 应用叶子节点过滤 (之前此处有且逻辑错误，会导致无法进入此分支)
                     if exclude_leaf:
+                       original_nodes = nodes
+                       original_edges = edges
                        # 重新计算局部度数 (针对当前来源过滤出的子图)
                        degrees = {}
                        for e in edges:
@@ -211,6 +555,11 @@ class MemorixServer:
                        node_ids = set(n['id'] for n in nodes)
                        # 只保留连接两个已存在节点的边
                        edges = [e for e in edges if e['from'] in node_ids and e['to'] in node_ids]
+
+                       # 兜底：若过滤后为空，回退到原始来源子图，避免聚焦视图“全空白”。
+                       if not nodes and (original_nodes or original_edges):
+                           nodes = original_nodes
+                           edges = original_edges
 
                     return {
                         "nodes": nodes, 
@@ -298,10 +647,13 @@ class MemorixServer:
             # 使用缓存优化性能
             edge_predicates = {}
             relation_count = 0
+            cache_rebuilt = False
+            relation_snapshot = (0, 0.0, "")
             
             if self.plugin.metadata_store:
                 try:
-                    if self._relation_cache is None:
+                    relation_snapshot = _relation_db_snapshot()
+                    if self._relation_cache is None or self._relation_cache_snapshot != relation_snapshot:
                         # 重新构建缓存
                         import time
                         start_t = time.time()
@@ -314,11 +666,13 @@ class MemorixServer:
                             cache[key].append(p)
                             count += 1
                         self._relation_cache = cache
+                        self._relation_cache_snapshot = relation_snapshot
+                        self._relation_cache_timestamp = time.time()
+                        cache_rebuilt = True
                         logger.info(f"[Cache] 重新构建关系缓存，共 {count} 条关系，耗时 {time.time() - start_t:.4f}s")
                     
-                    edge_predicates = self._relation_cache
-                    # relation_count = sum(len(x) for x in edge_predicates.values()) # 优化：仅在需要时求和，避免每次都计算
-                    relation_count = -1 # 调试用，跳过耗时的计数逻辑
+                    edge_predicates = self._relation_cache or {}
+                    relation_count = int(relation_snapshot[0])
                         
                 except Exception as e:
                     logger.error(f"Error fetching relations for graph: {e}")
@@ -346,6 +700,13 @@ class MemorixServer:
                                     predicates = preds
                                     logger.info(f"[DEBUG] Found case-insensitive match for {source}->{target}: {preds}")
                                     break
+
+                        # 缓存未命中时，回查 MetadataStore（兜底），避免仅显示权重。
+                        if not predicates:
+                            predicates = _fallback_predicates_for_edge(source, target)
+                            if predicates and isinstance(self._relation_cache, dict):
+                                self._relation_cache[(source, target)] = predicates
+                                edge_predicates[(source, target)] = predicates
                         
                         # 如果有谓语，优先显示谓语；否则显示权重
                         if predicates:
@@ -408,55 +769,52 @@ class MemorixServer:
             # --- V5: 注入节点状态 (软删除) ---
             if self.plugin.metadata_store and nodes:
                 try:
-                   # 1. 为所有可见节点计算哈希
-                   # 映射 hash -> node_index/node_id
-                   node_hash_map = {}
-                   node_hashes = []
-                   
-                   # 我们需要规范化的哈希。GraphStore 知道如何规范化？
-                   # 通常应与 MetadataStore.compute_hash(node_id) 相同？
-                   # 如果可用，让我们使用 MetadataStore.compute_hash 逻辑，或者直接使用 GraphStore 逻辑。
-                   # GraphStore 使用 _canonicalize (lower().strip())。MetadataStore 使用 compute_hash(name)。
-                   # 它们应该匹配。
-                   
-                   for i, n in enumerate(nodes):
-                       # 注意：在某些分支中 node['id'] 是显示名称，或者是规范化的 ID？
-                       # 在分支 2 (filtered_nodes) 中，'id' 是来自 GraphStore 的名称。
-                       nid = n['id']
-                       # MetadataStore 期望规范化的哈希
-                       # 假设 compute_hash 封装了简单的逻辑？
-                       # 我们可以导入或重用逻辑。
-                       # 安全的做法：如果可用则使用 GraphStore 规范化，然后哈希。
-                       # 或者直接尝试按原样对 ID 进行哈希，假设它就是名称。
-                       
-                       # 更好的做法：尽可能使用实用程序。
-                       from src.utils.hash_util import compute_hash
-                       
-                       # GraphStore 节点名称保留了大小写，但为了键值进行了规范化。
-                       # MetadataStore 的删除基于规范化哈希。
-                       # 所以我们应该对规范化名称进行哈希。
-                       
-                       # 如果不容易获取规范化器，则将其转换为小写。
-                       canon_name = nid.strip().lower() 
-                       h = compute_hash(canon_name)
-                       
-                       node_hashes.append(h)
-                       node_hash_map[h] = i
-                       
-                   # 2. 批量查询
-                   if node_hashes:
-                       node_status_map = self.plugin.metadata_store.get_entity_status_batch(node_hashes)
-                       
-                       # 3. 应用到节点
-                       for h, status in node_status_map.items():
-                           if h in node_hash_map:
-                               idx = node_hash_map[h]
-                               node_ref = nodes[idx]
-                               if status.get('is_deleted'):
-                                   node_ref['is_deleted'] = True
-                                   node_ref['color'] = {'background': '#ef4444', 'border': '#fee2e2'} # 红色警告
-                                   node_ref['shape'] = 'box' # 不同的形状？
-                                   node_ref['label'] += ' (已删除)'
+                    # 1. 为所有可见节点计算哈希
+                    # 映射 hash -> node_index/node_id
+                    node_hash_map = {}
+                    node_hashes = []
+                    
+                    # 我们需要规范化的哈希。GraphStore 知道如何规范化？
+                    # 通常应与 MetadataStore.compute_hash(node_id) 相同？
+                    # 如果可用，让我们使用 MetadataStore.compute_hash 逻辑，或者直接使用 GraphStore 逻辑。
+                    # GraphStore 使用 _canonicalize (lower().strip())。MetadataStore 使用 compute_hash(name)。
+                    # 它们应该匹配。
+                    
+                    for i, n in enumerate(nodes):
+                        # 注意：在某些分支中 node['id'] 是显示名称，或者是规范化的 ID？
+                        # 在分支 2 (filtered_nodes) 中，'id' 是来自 GraphStore 的名称。
+                        nid = n['id']
+                        # MetadataStore 期望规范化的哈希
+                        # 假设 compute_hash 封装了简单的逻辑？
+                        # 我们可以导入或重用逻辑。
+                        # 安全的做法：如果可用则使用 GraphStore 规范化，然后哈希。
+                        # 或者直接尝试按原样对 ID 进行哈希，假设它就是名称。
+                        
+                        # GraphStore 节点名称保留了大小写，但为了键值进行了规范化。
+                        # MetadataStore 的删除基于规范化哈希。
+                        # 所以我们应该对规范化名称进行哈希。
+                        
+                        # 如果不容易获取规范化器，则将其转换为小写。
+                        canon_name = nid.strip().lower()
+                        h = compute_hash(canon_name)
+
+                        node_hashes.append(h)
+                        node_hash_map[h] = i
+
+                    # 2. 批量查询
+                    if node_hashes:
+                        node_status_map = self.plugin.metadata_store.get_entity_status_batch(node_hashes)
+
+                        # 3. 应用到节点
+                        for h, status in node_status_map.items():
+                            if h in node_hash_map:
+                                idx = node_hash_map[h]
+                                node_ref = nodes[idx]
+                                if status.get('is_deleted'):
+                                    node_ref['is_deleted'] = True
+                                    node_ref['color'] = {'background': '#ef4444', 'border': '#fee2e2'} # 红色警告
+                                    node_ref['shape'] = 'box' # 不同的形状？
+                                    node_ref['label'] += ' (已删除)'
                 except Exception as e:
                     logger.warning(f"Failed to inject node status: {e}")
 
@@ -543,7 +901,13 @@ class MemorixServer:
                 "relation_count": relation_count,
                 "sample_key": list(edge_predicates.keys())[0] if edge_predicates else None,
                 "edge_count": len(edges),
-                "exclude_leaf": exclude_leaf
+                "exclude_leaf": exclude_leaf,
+                "cache_rebuilt": cache_rebuilt,
+                "relation_snapshot": {
+                    "count": int(relation_snapshot[0]),
+                    "max_created_at": float(relation_snapshot[1]),
+                    "max_hash": str(relation_snapshot[2]),
+                },
             }
                 
             return {"nodes": nodes, "edges": edges, "debug": debug_info}
@@ -551,6 +915,7 @@ class MemorixServer:
         @self.app.post("/api/edge/weight")
         async def update_edge_weight(data: EdgeWeightUpdate):
             """更新边权重"""
+            _ensure_write_allowed()
             if self.plugin.graph_store is None:
                 raise HTTPException(status_code=503, detail="Graph store not initialized")
             
@@ -574,6 +939,7 @@ class MemorixServer:
         @self.app.delete("/api/node")
         async def delete_node(data: NodeDelete):
             """删除节点"""
+            _ensure_write_allowed()
             if self.plugin.graph_store is None:
                 raise HTTPException(status_code=503, detail="Graph store not initialized")
                 
@@ -587,7 +953,7 @@ class MemorixServer:
                 
                 # 持久化保存
                 self.plugin.graph_store.save()
-                self._relation_cache = None
+                self._invalidate_relation_cache("delete_node")
                 return {"success": True, "deleted_count": deleted_count}
             except Exception as e:
                 logger.error(f"Delete node failed: {e}")
@@ -596,6 +962,7 @@ class MemorixServer:
         @self.app.delete("/api/edge")
         async def delete_edge(data: EdgeDelete):
             """删除边"""
+            _ensure_write_allowed()
             if self.plugin.graph_store is None:
                 raise HTTPException(status_code=503, detail="Graph store not initialized")
             
@@ -607,7 +974,7 @@ class MemorixServer:
                 
                 # 持久化保存
                 self.plugin.graph_store.save()
-                self._relation_cache = None
+                self._invalidate_relation_cache("delete_edge")
                 return {"success": True}
             except Exception as e:
                 logger.error(f"Delete edge failed: {e}")
@@ -616,7 +983,7 @@ class MemorixServer:
         @self.app.post("/api/node")
         async def create_node(data: NodeCreate):
             """创建节点"""
-            print(f"DEBUG: graph_store={self.plugin.graph_store}")
+            _ensure_write_allowed()
             if self.plugin.graph_store is None:
                 raise HTTPException(status_code=503, detail="Graph store not initialized")
             
@@ -638,6 +1005,7 @@ class MemorixServer:
         @self.app.post("/api/edge")
         async def create_edge(data: EdgeCreate):
             """创建边 (支持语义关系)"""
+            _ensure_write_allowed()
             if self.plugin.graph_store is None:
                 raise HTTPException(status_code=503, detail="Graph store not initialized")
             
@@ -662,7 +1030,7 @@ class MemorixServer:
                 
                 # 持久化保存
                 self.plugin.graph_store.save()
-                self._relation_cache = None
+                self._invalidate_relation_cache("create_edge")
                 return {"success": True, "added_count": added_count, "predicate": data.predicate}
             except Exception as e:
                 logger.error(f"Create edge failed: {e}")
@@ -671,6 +1039,7 @@ class MemorixServer:
         @self.app.put("/api/node/rename")
         async def rename_node(data: NodeRename):
             """重命名节点 (实际上是创建新节点，复制边，删除旧节点)"""
+            _ensure_write_allowed()
             if self.plugin.graph_store is None:
                 raise HTTPException(status_code=503, detail="Graph store not initialized")
             
@@ -704,7 +1073,7 @@ class MemorixServer:
                 
                 # 持久化保存
                 self.plugin.graph_store.save()
-                self._relation_cache = None
+                self._invalidate_relation_cache("rename_node")
                 return {"success": True, "old_id": data.old_id, "new_id": data.new_id}
             except HTTPException:
                 raise
@@ -769,6 +1138,7 @@ class MemorixServer:
         @self.app.post("/api/source/batch_delete")
         async def batch_delete_source(data: BatchSourceDeleteRequest):
             """按来源批量删除（文件删除）"""
+            _ensure_write_allowed()
             if not self.plugin.metadata_store or not self.plugin.vector_store or not self.plugin.graph_store:
                  raise HTTPException(status_code=503, detail="Stores not fully initialized")
                  
@@ -776,15 +1146,31 @@ class MemorixServer:
                 # 1. 找出所有相关段落
                 paragraphs = self.plugin.metadata_store.get_paragraphs_by_source(data.source)
                 if not paragraphs:
-                    return {"success": True, "message": "No paragraphs found for this source", "count": 0}
+                    manifest_cleanup = await _cleanup_manifest_for_sources([data.source])
+                    logger.info(
+                        f"[ManifestCleanup] batch_delete source='{data.source}' removed="
+                        f"{manifest_cleanup.get('removed_count', 0)} unmatched="
+                        f"{len(manifest_cleanup.get('unmatched_sources', []))}"
+                    )
+                    return {
+                        "success": True,
+                        "message": "No paragraphs found for this source",
+                        "count": 0,
+                        "manifest_cleanup": manifest_cleanup,
+                    }
                 
                 deleted_count = 0
                 errors = []
+                candidate_entities: Dict[str, str] = {}
+                relation_prune_ops: List[tuple[str, str, str]] = []
+                fallback_edges = set()
                 
                 # 2. 逐个删除 (复用原子删除逻辑)
                 # 考虑到性能，这里是简单的循环。如果有成千上万条，可能需要优化为批量事务。
                 for p in paragraphs:
                     try:
+                        candidate_entities.update(_collect_paragraph_entities(p["hash"]))
+
                         # Phase 1: DB Transaction
                         cleanup_plan = self.plugin.metadata_store.delete_paragraph_atomic(p['hash'])
                         
@@ -795,19 +1181,31 @@ class MemorixServer:
                                 self.plugin.vector_store.delete([vec_id])
                             except Exception:
                                 pass # ignore missing vector
-                                
-                        edges_to_remove = cleanup_plan.get("edges_to_remove", [])
-                        if edges_to_remove:
-                            try:
-                                self.plugin.graph_store.delete_edges(edges_to_remove)
-                            except Exception:
-                                pass
+
+                        for op in cleanup_plan.get("relation_prune_ops", []):
+                            relation_prune_ops.append(op)
+
+                        for edge in cleanup_plan.get("edges_to_remove", []):
+                            fallback_edges.add(tuple(edge))
                                 
                         deleted_count += 1
                         
                     except Exception as pe:
                         logger.error(f"Failed to delete paragraph {p['hash']}: {pe}")
                         errors.append(f"{p['hash']}: {pe}")
+
+                # 2.1 图清理：优先使用 relation hash 精准裁剪，避免残留 edge_hash_map。
+                try:
+                    if relation_prune_ops and hasattr(self.plugin.graph_store, "prune_relation_hashes"):
+                        self.plugin.graph_store.prune_relation_hashes(relation_prune_ops)
+                    elif fallback_edges:
+                        self.plugin.graph_store.delete_edges(list(fallback_edges))
+                except Exception as ge:
+                    logger.error(f"Batch graph cleanup failed: {ge}")
+                    errors.append(f"graph_cleanup: {ge}")
+
+                # 2.2 孤儿实体清理：避免批删后残留无引用节点。
+                removed_entities, skipped_entities = _cleanup_orphan_entities(candidate_entities)
                 
                 # 3. 保存变更
                 try:
@@ -819,9 +1217,23 @@ class MemorixServer:
                 msg = f"Successfully deleted {deleted_count} paragraphs from source '{data.source}'"
                 if errors:
                     msg += f". Errors: {len(errors)} occurred."
-                    
-                self._relation_cache = None
-                return {"success": True, "message": msg, "count": deleted_count, "errors": errors}
+                msg += f" Orphan entities removed={removed_entities}, skipped={skipped_entities}."
+
+                manifest_cleanup = await _cleanup_manifest_for_sources([data.source])
+                logger.info(
+                    f"[ManifestCleanup] batch_delete source='{data.source}' removed="
+                    f"{manifest_cleanup.get('removed_count', 0)} unmatched="
+                    f"{len(manifest_cleanup.get('unmatched_sources', []))}"
+                )
+
+                self._invalidate_relation_cache("batch_delete_source")
+                return {
+                    "success": True,
+                    "message": msg,
+                    "count": deleted_count,
+                    "errors": errors,
+                    "manifest_cleanup": manifest_cleanup,
+                }
                 
             except Exception as e:
                 logger.error(f"Batch source delete failed: {e}")
@@ -829,14 +1241,21 @@ class MemorixServer:
         @self.app.delete("/api/source")
         async def delete_source(data: SourceDeleteRequest):
             """删除来源段落（两阶段提交）"""
+            _ensure_write_allowed()
             if not self.plugin.metadata_store or not self.plugin.vector_store or not self.plugin.graph_store:
                  raise HTTPException(status_code=503, detail="Stores not fully initialized")
-                 
+
             try:
                 # === Phase 1: DB Transaction & Plan Generation ===
                 # 调用我们在 MetadataStore 实现的原子方法
+                paragraph_before_delete = self.plugin.metadata_store.get_paragraph(data.paragraph_hash)
+                source_to_cleanup = ""
+                if isinstance(paragraph_before_delete, dict):
+                    source_to_cleanup = str(paragraph_before_delete.get("source") or "").strip()
+
+                candidate_entities = _collect_paragraph_entities(data.paragraph_hash)
                 cleanup_plan = self.plugin.metadata_store.delete_paragraph_atomic(data.paragraph_hash)
-                
+            
                 # === Phase 2: Post-Commit Cleanup (In-Memory Stores) ===
                 # 这一步失败不会回滚 DB，但保证了 DB 的一致性
                 errors = []
@@ -852,18 +1271,28 @@ class MemorixServer:
                         errors.append(f"Vector cleanup error: {ve}")
                         
                 # 2. 清理图边 (批量删除)
+                relation_prune_ops = cleanup_plan.get("relation_prune_ops", []) or []
                 edges_to_remove = cleanup_plan.get("edges_to_remove", [])
-                if edges_to_remove:
+                if relation_prune_ops:
+                    try:
+                        self.plugin.graph_store.prune_relation_hashes(relation_prune_ops)
+                    except Exception as ge:
+                        logger.error(f"Graph cleanup failed: {ge}")
+                        errors.append(f"Graph cleanup error: {ge}")
+                elif edges_to_remove:
                     try:
                         self.plugin.graph_store.delete_edges(edges_to_remove)
                     except Exception as ge:
                         logger.error(f"Graph cleanup failed: {ge}")
                         errors.append(f"Graph cleanup error: {ge}")
+
+                removed_entities, skipped_entities = _cleanup_orphan_entities(candidate_entities)
                 
                 # 如果有非致命错误，记录并在响应中提示
                 msg = "来源删除成功"
                 if errors:
                     msg += f"，但带有清理警告: {'; '.join(errors)}"
+                msg += f"；孤儿实体清理: 删除 {removed_entities}，跳过 {skipped_entities}"
                     
                 # 触发保存以持久化内存中的变更
                 try:
@@ -871,10 +1300,51 @@ class MemorixServer:
                     self.plugin.graph_store.save()
                 except Exception as se:
                     logger.warning(f"删除来源后的自动保存失败: {se}")
-                
-                self._relation_cache = None
-                return {"success": True, "message": msg, "details": cleanup_plan}
-                
+
+                manifest_cleanup = await _cleanup_manifest_for_sources([])
+                manifest_cleanup["skipped"] = False
+                if source_to_cleanup:
+                    try:
+                        remaining_rows = self.plugin.metadata_store.get_paragraphs_by_source(source_to_cleanup)
+                    except Exception as source_err:
+                        manifest_cleanup["requested_sources"] = [source_to_cleanup]
+                        manifest_cleanup["skipped"] = True
+                        manifest_cleanup["unmatched_sources"] = [source_to_cleanup]
+                        manifest_cleanup["warnings"] = list(manifest_cleanup.get("warnings") or [])
+                        manifest_cleanup["warnings"].append(f"source_check_failed: {source_err}")
+                    else:
+                        if remaining_rows:
+                            manifest_cleanup["requested_sources"] = [source_to_cleanup]
+                            manifest_cleanup["removed_count"] = 0
+                            manifest_cleanup["removed_keys"] = []
+                            manifest_cleanup["unmatched_sources"] = []
+                            manifest_cleanup["skipped"] = True
+                            manifest_cleanup["warnings"] = list(manifest_cleanup.get("warnings") or [])
+                            manifest_cleanup["warnings"].append("source_still_exists")
+                        else:
+                            manifest_cleanup = await _cleanup_manifest_for_sources([source_to_cleanup])
+                            manifest_cleanup["skipped"] = False
+                else:
+                    manifest_cleanup["requested_sources"] = []
+                    manifest_cleanup["skipped"] = True
+                    manifest_cleanup["warnings"] = list(manifest_cleanup.get("warnings") or [])
+                    manifest_cleanup["warnings"].append("source_missing_or_not_found")
+
+                logger.info(
+                    f"[ManifestCleanup] single_delete source='{source_to_cleanup or '-'}' removed="
+                    f"{manifest_cleanup.get('removed_count', 0)} unmatched="
+                    f"{len(manifest_cleanup.get('unmatched_sources', []))} skipped="
+                    f"{bool(manifest_cleanup.get('skipped', False))}"
+                )
+
+                self._invalidate_relation_cache("delete_source")
+                return {
+                    "success": True,
+                    "message": msg,
+                    "details": cleanup_plan,
+                    "manifest_cleanup": manifest_cleanup,
+                }
+
             except Exception as e:
                 logger.error(f"Delete source failed: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
@@ -919,6 +1389,7 @@ class MemorixServer:
         @self.app.post("/api/memory/restore")
         async def restore_memory(data: MemoryRestoreRequest):
             """从回收站恢复记忆"""
+            _ensure_write_allowed()
             if not self.plugin.metadata_store or not self.plugin.graph_store:
                 raise HTTPException(status_code=503, detail="Stores missing")
 
@@ -946,7 +1417,7 @@ class MemorixServer:
                     relation_hashes=[data.hash],
                 )
                 self.plugin.graph_store.save()
-                self._relation_cache = None
+                self._invalidate_relation_cache("memory_restore")
 
                 return {"success": True, "type": "relation", "hash": data.hash}
             except HTTPException:
@@ -958,6 +1429,7 @@ class MemorixServer:
         @self.app.post("/api/memory/reinforce")
         async def reinforce_memory(data: MemoryActionRequest):
             """强化记忆 (Reset decay)"""
+            _ensure_write_allowed()
             if "_" not in data.id: raise HTTPException(400, "Invalid ID format")
             s, t = data.id.split("_", 1) 
             
@@ -985,6 +1457,7 @@ class MemorixServer:
         @self.app.post("/api/memory/freeze")
         async def freeze_memory(data: MemoryActionRequest):
             """手动冷冻记忆"""
+            _ensure_write_allowed()
             if "_" not in data.id: raise HTTPException(400, "Invalid ID format")
             s, t = data.id.split("_", 1)
             
@@ -1013,6 +1486,7 @@ class MemorixServer:
         @self.app.post("/api/memory/protect")
         async def protect_memory(data: MemoryProtectRequest):
             """设置保护 (Pin/TTL)"""
+            _ensure_write_allowed()
             if "_" not in data.id: raise HTTPException(400, "Invalid ID format")
             s, t = data.id.split("_", 1)
             
@@ -1040,6 +1514,7 @@ class MemorixServer:
         @self.app.post("/api/person_profile/query")
         async def query_person_profile(data: PersonProfileQueryRequest):
             """查询人物画像（自动画像 + 手工覆盖结果）。"""
+            _ensure_write_allowed()
             if not bool(self.plugin.get_config("person_profile.enabled", True)):
                 raise HTTPException(status_code=400, detail="人物画像功能未启用")
             if self.plugin.metadata_store is None:
@@ -1151,6 +1626,7 @@ class MemorixServer:
         @self.app.post("/api/person_profile/override")
         async def save_person_profile_override(data: PersonProfileOverrideUpsertRequest):
             """保存/更新人物画像手工覆盖。"""
+            _ensure_write_allowed()
             if not bool(self.plugin.get_config("person_profile.enabled", True)):
                 raise HTTPException(status_code=400, detail="人物画像功能未启用")
             if self.plugin.metadata_store is None:
@@ -1191,6 +1667,7 @@ class MemorixServer:
         @self.app.delete("/api/person_profile/override")
         async def delete_person_profile_override(data: PersonProfileOverrideDeleteRequest):
             """清除人物画像手工覆盖。"""
+            _ensure_write_allowed()
             if self.plugin.metadata_store is None:
                 raise HTTPException(status_code=503, detail="Metadata store not initialized")
             try:
@@ -1211,6 +1688,7 @@ class MemorixServer:
         @self.app.post("/api/save")
         async def manual_save():
             """手动保存所有数据到磁盘"""
+            _ensure_write_allowed()
             try:
                 saved_components = []
                 if self.plugin.graph_store is not None:
@@ -1236,9 +1714,264 @@ class MemorixServer:
         @self.app.post("/api/config/auto_save")
         async def set_auto_save(data: AutoSaveConfig):
             """设置自动保存开关（仅运行时生效）"""
+            _ensure_write_allowed()
             self.plugin._runtime_auto_save = data.enabled
             logger.info(f"自动保存已{'启用' if data.enabled else '禁用'}（运行时）")
             return {"success": True, "auto_save_enabled": data.enabled}
+
+        @self.app.post("/api/import/tasks/upload")
+        async def create_import_task_upload(
+            files: Optional[List[UploadFile]] = File(default=None),
+            files_array: Optional[List[UploadFile]] = File(default=None, alias="files[]"),
+            payload: str = Form("{}"),
+            x_memorix_import_token: Optional[str] = Header(default=None, alias="X-Memorix-Import-Token"),
+        ):
+            if not _is_import_enabled():
+                raise HTTPException(status_code=404, detail="导入功能未启用")
+            _ensure_import_token(x_memorix_import_token)
+            merged_files = list(files or []) + list(files_array or [])
+            if not merged_files:
+                raise HTTPException(status_code=400, detail="至少需要上传一个文件")
+            try:
+                payload_obj = json.loads(payload or "{}")
+            except Exception:
+                raise HTTPException(status_code=400, detail="payload 必须为合法 JSON")
+            if not isinstance(payload_obj, dict):
+                raise HTTPException(status_code=400, detail="payload 必须为 JSON 对象")
+            try:
+                task = await self.import_manager.create_upload_task(merged_files, payload_obj)
+                return {"success": True, "task": task}
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            except Exception as e:
+                logger.error(f"Create import upload task failed: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.post("/api/import/tasks/paste")
+        async def create_import_task_paste(
+            data: ImportPasteRequest,
+            x_memorix_import_token: Optional[str] = Header(default=None, alias="X-Memorix-Import-Token"),
+        ):
+            if not _is_import_enabled():
+                raise HTTPException(status_code=404, detail="导入功能未启用")
+            _ensure_import_token(x_memorix_import_token)
+            try:
+                task = await self.import_manager.create_paste_task(data.model_dump())
+                return {"success": True, "task": task}
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            except Exception as e:
+                logger.error(f"Create import paste task failed: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.post("/api/import/tasks/maibot_migration")
+        async def create_import_task_maibot_migration(
+            data: ImportMaiBotMigrationRequest,
+            x_memorix_import_token: Optional[str] = Header(default=None, alias="X-Memorix-Import-Token"),
+        ):
+            if not _is_import_enabled():
+                raise HTTPException(status_code=404, detail="导入功能未启用")
+            _ensure_import_token(x_memorix_import_token)
+            try:
+                task = await self.import_manager.create_maibot_migration_task(data.model_dump())
+                return {"success": True, "task": task}
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            except Exception as e:
+                logger.error(f"Create maibot migration task failed: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.get("/api/import/path_aliases")
+        async def get_import_path_aliases(
+            x_memorix_import_token: Optional[str] = Header(default=None, alias="X-Memorix-Import-Token"),
+        ):
+            if not _is_import_enabled():
+                raise HTTPException(status_code=404, detail="导入功能未启用")
+            _ensure_import_token(x_memorix_import_token)
+            return {"success": True, "items": self.import_manager.get_path_aliases()}
+
+        @self.app.post("/api/import/path_resolve")
+        async def resolve_import_path(
+            data: ImportPathResolveRequest,
+            x_memorix_import_token: Optional[str] = Header(default=None, alias="X-Memorix-Import-Token"),
+        ):
+            if not _is_import_enabled():
+                raise HTTPException(status_code=404, detail="导入功能未启用")
+            _ensure_import_token(x_memorix_import_token)
+            try:
+                resolved = await self.import_manager.resolve_path_request(data.model_dump())
+                return {"success": True, **resolved}
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+
+        @self.app.post("/api/import/tasks/raw_scan")
+        async def create_import_task_raw_scan(
+            data: ImportRawScanRequest,
+            x_memorix_import_token: Optional[str] = Header(default=None, alias="X-Memorix-Import-Token"),
+        ):
+            if not _is_import_enabled():
+                raise HTTPException(status_code=404, detail="导入功能未启用")
+            _ensure_import_token(x_memorix_import_token)
+            try:
+                task = await self.import_manager.create_raw_scan_task(data.model_dump())
+                return {"success": True, "task": task}
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            except Exception as e:
+                logger.error(f"Create raw scan task failed: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.post("/api/import/tasks/lpmm_openie")
+        async def create_import_task_lpmm_openie(
+            data: ImportLpmmOpenieRequest,
+            x_memorix_import_token: Optional[str] = Header(default=None, alias="X-Memorix-Import-Token"),
+        ):
+            if not _is_import_enabled():
+                raise HTTPException(status_code=404, detail="导入功能未启用")
+            _ensure_import_token(x_memorix_import_token)
+            try:
+                task = await self.import_manager.create_lpmm_openie_task(data.model_dump())
+                return {"success": True, "task": task}
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            except Exception as e:
+                logger.error(f"Create lpmm openie task failed: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.post("/api/import/tasks/lpmm_convert")
+        async def create_import_task_lpmm_convert(
+            data: ImportLpmmConvertRequest,
+            x_memorix_import_token: Optional[str] = Header(default=None, alias="X-Memorix-Import-Token"),
+        ):
+            if not _is_import_enabled():
+                raise HTTPException(status_code=404, detail="导入功能未启用")
+            _ensure_import_token(x_memorix_import_token)
+            try:
+                task = await self.import_manager.create_lpmm_convert_task(data.model_dump())
+                return {"success": True, "task": task}
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            except Exception as e:
+                logger.error(f"Create lpmm convert task failed: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.post("/api/import/tasks/temporal_backfill")
+        async def create_import_task_temporal_backfill(
+            data: ImportTemporalBackfillRequest,
+            x_memorix_import_token: Optional[str] = Header(default=None, alias="X-Memorix-Import-Token"),
+        ):
+            if not _is_import_enabled():
+                raise HTTPException(status_code=404, detail="导入功能未启用")
+            _ensure_import_token(x_memorix_import_token)
+            try:
+                task = await self.import_manager.create_temporal_backfill_task(data.model_dump())
+                return {"success": True, "task": task}
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            except Exception as e:
+                logger.error(f"Create temporal backfill task failed: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.get("/api/import/tasks")
+        async def list_import_tasks(
+            limit: int = Query(50, ge=1, le=200),
+            x_memorix_import_token: Optional[str] = Header(default=None, alias="X-Memorix-Import-Token"),
+        ):
+            if not _is_import_enabled():
+                raise HTTPException(status_code=404, detail="导入功能未启用")
+            _ensure_import_token(x_memorix_import_token)
+            items = await self.import_manager.list_tasks(limit=limit)
+            settings = await self.import_manager.get_runtime_settings()
+            return {"success": True, "items": items, "settings": settings}
+
+        @self.app.get("/api/import/guide")
+        async def get_import_guide(
+            x_memorix_import_token: Optional[str] = Header(default=None, alias="X-Memorix-Import-Token"),
+        ):
+            if not _is_import_enabled():
+                raise HTTPException(status_code=404, detail="导入功能未启用")
+            _ensure_import_token(x_memorix_import_token)
+            guide = _load_import_guide_text()
+            return {"success": True, **guide}
+
+        @self.app.get("/api/import/tasks/{task_id}")
+        async def get_import_task(
+            task_id: str,
+            include_chunks: bool = Query(False),
+            x_memorix_import_token: Optional[str] = Header(default=None, alias="X-Memorix-Import-Token"),
+        ):
+            if not _is_import_enabled():
+                raise HTTPException(status_code=404, detail="导入功能未启用")
+            _ensure_import_token(x_memorix_import_token)
+            task = await self.import_manager.get_task(task_id, include_chunks=include_chunks)
+            if not task:
+                raise HTTPException(status_code=404, detail="任务不存在")
+            return {"success": True, "task": task}
+
+        @self.app.get("/api/import/tasks/{task_id}/files/{file_id}/chunks")
+        async def get_import_task_chunks(
+            task_id: str,
+            file_id: str,
+            offset: int = Query(0, ge=0),
+            limit: int = Query(100, ge=1, le=500),
+            x_memorix_import_token: Optional[str] = Header(default=None, alias="X-Memorix-Import-Token"),
+        ):
+            if not _is_import_enabled():
+                raise HTTPException(status_code=404, detail="导入功能未启用")
+            _ensure_import_token(x_memorix_import_token)
+            data = await self.import_manager.get_chunks(task_id, file_id, offset=offset, limit=limit)
+            if not data:
+                raise HTTPException(status_code=404, detail="任务或文件不存在")
+            return {"success": True, **data}
+
+        @self.app.post("/api/import/tasks/{task_id}/cancel")
+        async def cancel_import_task(
+            task_id: str,
+            x_memorix_import_token: Optional[str] = Header(default=None, alias="X-Memorix-Import-Token"),
+        ):
+            if not _is_import_enabled():
+                raise HTTPException(status_code=404, detail="导入功能未启用")
+            _ensure_import_token(x_memorix_import_token)
+            task = await self.import_manager.cancel_task(task_id)
+            if not task:
+                raise HTTPException(status_code=404, detail="任务不存在")
+            return {"success": True, "task": task}
+
+        @self.app.post("/api/import/tasks/{task_id}/retry_failed")
+        async def retry_import_task_failed(
+            task_id: str,
+            data: Optional[ImportRetryRequest] = Body(default=None),
+            x_memorix_import_token: Optional[str] = Header(default=None, alias="X-Memorix-Import-Token"),
+        ):
+            if not _is_import_enabled():
+                raise HTTPException(status_code=404, detail="导入功能未启用")
+            _ensure_import_token(x_memorix_import_token)
+            try:
+                overrides = data.model_dump(exclude_none=True) if data else {}
+                task = await self.import_manager.retry_failed(task_id, overrides=overrides)
+                if not task:
+                    raise HTTPException(status_code=404, detail="任务不存在")
+                retry_summary = {}
+                if isinstance(task, dict):
+                    retry_summary = dict(task.get("retry_summary") or {})
+                return {"success": True, "task": task, "retry_summary": retry_summary}
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Retry failed import task error: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.get("/import")
+        async def import_page():
+            """返回导入中心页面"""
+            if not _is_import_enabled():
+                raise HTTPException(status_code=404, detail="导入功能未启用")
+            html_path = Path(__file__).parent / "web" / "import.html"
+            if html_path.exists():
+                return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
+            return HTMLResponse(content="<h1>Import UI Not Found</h1>")
 
         @self.app.get("/")
         async def index():
@@ -1247,6 +1980,18 @@ class MemorixServer:
             if html_path.exists():
                 return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
             return HTMLResponse(content="<h1>UI Not Found</h1>")
+
+    def _invalidate_relation_cache(self, reason: str = "") -> None:
+        self._relation_cache = None
+        self._relation_cache_timestamp = 0
+        self._relation_cache_snapshot = None
+        if reason:
+            logger.debug(f"关系谓词缓存已失效: {reason}")
+
+    async def _on_import_write_changed(self, payload: Dict[str, Any]) -> None:
+        task_kind = str(payload.get("task_kind") or "").strip() or "unknown"
+        task_id = str(payload.get("task_id") or "").strip() or "-"
+        self._invalidate_relation_cache(f"import_task:{task_kind}:{task_id}")
 
     def run(self):
         """运行服务器 (阻塞)"""

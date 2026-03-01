@@ -679,6 +679,10 @@
         <div class="dock-icon">📂</div>
         <span>记忆溯源</span>
       </div>
+      <div class="dock-btn" onclick="openImportCenter()">
+        <div class="dock-icon">📥</div>
+        <span>导入中心</span>
+      </div>
       <div class="dock-btn" onclick="openPanel('person-profile-panel')">
         <div class="dock-icon">👤</div>
         <span>人物画像</span>
@@ -1663,7 +1667,9 @@
         isHighlighting = false; // Reset highlight state
         showLoader("正在同步图谱...", true);
         try {
-          let url = `/api/graph?exclude_leaf=${!detailedMode}&density=${infoDensity}`;
+          // 批次聚焦时强制展示完整子图，避免叶子过滤把导入关系全部裁掉。
+          const excludeLeaf = currentSource ? false : !detailedMode;
+          let url = `/api/graph?exclude_leaf=${excludeLeaf}&density=${infoDensity}`;
           if (currentSource) {
             url += `&source=${encodeURIComponent(currentSource)}`;
           }
@@ -1838,6 +1844,10 @@
 
       function layout() {
         if (network) network.stabilize();
+      }
+
+      function openImportCenter() {
+        window.open("/import", "_blank");
       }
 
       // --- Panel Control ---
@@ -2525,25 +2535,29 @@
           let header = "";
           if (currentSource) {
             header = `<div style="padding: 10px; background: rgba(56, 189, 248, 0.2); border-radius: 8px; margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center;">
-                        <span>🔎 当前聚焦: <b>${currentSource}</b></span>
+                        <span>🔎 当前聚焦: <b>${escapeHtml(currentSource)}</b></span>
                         <button class="btn btn-ghost" style="padding: 4px 10px; font-size: 0.8rem;" onclick="setSourceFilter(null)">重置 / 查看全部</button>
                     </div>`;
           }
 
           const listHtml = sources
             .map(
-              (f) => `
+              (f) => {
+                const encodedSource = encodeURIComponent(f.source || "");
+                const safeSource = escapeHtml(f.source || "");
+                return `
                     <div class="list-item" style="display: flex; justify-content: space-between; align-items: center;">
                         <div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; margin-right: 15px;">
-                            <div style="font-size: 0.9rem; color: ${currentSource === f.source ? "var(--accent-primary)" : "white"};">${f.source}</div>
+                            <div style="font-size: 0.9rem; color: ${currentSource === f.source ? "var(--accent-primary)" : "white"};">${safeSource}</div>
                             <div style="font-size: 0.7rem; color: var(--text-dim);">${f.count} 段记忆记录</div>
                         </div>
                         <div style="display: flex; gap: 6px;">
-                            <button class="btn btn-ghost" style="padding: 4px 8px;" onclick="setSourceFilter('${f.source}')" title="聚焦此批次">👁️</button>
-                            <button class="btn btn-danger" style="padding: 4px 8px;" onclick="deleteSourceFile('${f.source}')" title="删除">🗑️</button>
+                            <button class="btn btn-ghost" style="padding: 4px 8px;" onclick="setSourceFilterByEncoded('${encodedSource}')" title="聚焦此批次">👁️</button>
+                            <button class="btn btn-danger" style="padding: 4px 8px;" onclick="deleteSourceFileByEncoded('${encodedSource}')" title="删除">🗑️</button>
                         </div>
                     </div>
-                `,
+                `;
+              },
             )
             .join("");
 
@@ -2559,6 +2573,17 @@
         loadSourceFiles(); // Refresh UI
         if (source) showToast(`已聚焦批次: ${source}`);
         else showToast("已重置视图");
+      }
+
+      function setSourceFilterByEncoded(encodedSource) {
+        const source = decodeURIComponent(encodedSource || "");
+        setSourceFilter(source || null);
+      }
+
+      function deleteSourceFileByEncoded(encodedSource) {
+        const source = decodeURIComponent(encodedSource || "");
+        if (!source) return;
+        deleteSourceFile(source);
       }
 
       async function deleteSourceFile(src) {

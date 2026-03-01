@@ -440,10 +440,20 @@ class GraphStore:
             else: # csc
                 self._adjacency = csc_matrix((new_data, (new_rows, new_cols)), shape=(n, n))
 
+        # 重建关系哈希映射，移除涉及已删除节点的记录并重映射索引。
+        if self._edge_hash_map:
+            new_edge_hash_map: Dict[Tuple[int, int], Set[str]] = defaultdict(set)
+            for (old_src, old_tgt), hashes in self._edge_hash_map.items():
+                if old_src in indices_to_delete or old_tgt in indices_to_delete:
+                    continue
+                if old_src in old_to_new and old_tgt in old_to_new and hashes:
+                    new_edge_hash_map[(old_to_new[old_src], old_to_new[old_tgt])] = set(hashes)
+            self._edge_hash_map = new_edge_hash_map
 
         deleted_count = len(existing_nodes)
         self._total_nodes_deleted += deleted_count
         self._adjacency_dirty = True
+        self._saliency_cache = None
 
         logger.info(f"删除 {deleted_count} 个节点")
         return deleted_count
@@ -465,13 +475,10 @@ class GraphStore:
         Returns:
             成功删除的边数量
         """
-        if not edges or self._adjacency is None:
+        if not edges:
             return 0
 
         deleted = 0
-        # 转换为COO格式便于修改
-        adj_coo = self._adjacency.tocoo()
-
         # 构建要删除的边的索引集合
         edges_to_delete = set()
         for src, tgt in edges:
@@ -482,29 +489,39 @@ class GraphStore:
                 tgt_idx = self._node_to_idx[tgt_canon]
                 edges_to_delete.add((src_idx, tgt_idx))
 
-        # 过滤要删除的边
-        new_row = []
-        new_col = []
-        new_data = []
+        if self._adjacency is not None and edges_to_delete:
+            # 转换为COO格式便于修改
+            adj_coo = self._adjacency.tocoo()
 
-        for i, j, val in zip(adj_coo.row, adj_coo.col, adj_coo.data):
-            if (i, j) not in edges_to_delete:
-                new_row.append(i)
-                new_col.append(j)
-                new_data.append(val)
-            else:
-                deleted += 1
+            # 过滤要删除的边
+            new_row = []
+            new_col = []
+            new_data = []
 
-        # 重建邻接矩阵
-        n = len(self._nodes)
-        self._adjacency = csr_matrix((new_data, (new_row, new_col)), shape=(n, n))
+            for i, j, val in zip(adj_coo.row, adj_coo.col, adj_coo.data):
+                if (i, j) not in edges_to_delete:
+                    new_row.append(i)
+                    new_col.append(j)
+                    new_data.append(val)
+                else:
+                    deleted += 1
 
-        # 转换回指定格式
-        if self.matrix_format == "csc":
-            self._adjacency = self._adjacency.tocsc()
+            # 重建邻接矩阵
+            n = len(self._nodes)
+            self._adjacency = csr_matrix((new_data, (new_row, new_col)), shape=(n, n))
+
+            # 转换回指定格式
+            if self.matrix_format == "csc":
+                self._adjacency = self._adjacency.tocsc()
+
+        # delete_edges 是“物理删除”语义，必须同步清理 edge_hash_map。
+        if edges_to_delete and self._edge_hash_map:
+            for key in edges_to_delete:
+                self._edge_hash_map.pop(key, None)
 
         self._total_edges_deleted += deleted
         self._adjacency_dirty = True
+        self._saliency_cache = None
         logger.info(f"删除 {deleted} 条边")
         return deleted
 

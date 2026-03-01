@@ -1,0 +1,912 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>A_Memorix 导入中心</title>
+    <style>
+      :root {
+        --bg: #0b1220;
+        --panel: #111827;
+        --border: #334155;
+        --text: #e2e8f0;
+        --muted: #94a3b8;
+        --pri: #38bdf8;
+        --ok: #10b981;
+        --warn: #f59e0b;
+        --err: #ef4444;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; color: var(--text); font-family: "Segoe UI", "Microsoft YaHei", sans-serif; background: radial-gradient(circle at 0 0, #0f2a4a, transparent 35%), var(--bg); }
+      .page { width: min(1400px, 96vw); margin: 18px auto 28px; }
+      .top { display: flex; gap: 10px; justify-content: space-between; align-items: end; margin-bottom: 12px; }
+      .top-mid { flex: 1; display: flex; justify-content: center; align-items: end; }
+      .title { font-size: 22px; font-weight: 700; }
+      .sub { color: var(--muted); font-size: 12px; }
+      .token { display: flex; gap: 8px; min-width: 360px; }
+      .grid { display: grid; grid-template-columns: 420px 1fr; gap: 12px; }
+      .card { background: rgba(17, 24, 39, 0.92); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+      .hd { padding: 10px 12px; font-size: 13px; color: var(--pri); border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; }
+      .bd { padding: 12px; }
+      .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+      .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+      label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+      input, select, textarea, button { font: inherit; }
+      input, select, textarea { width: 100%; border: 1px solid var(--border); border-radius: 8px; padding: 7px 9px; background: #0f172a; color: var(--text); }
+      input[type="checkbox"] { width: 16px; height: 16px; padding: 0; border-radius: 4px; accent-color: var(--pri); flex: 0 0 auto; }
+      textarea { min-height: 120px; resize: vertical; }
+      .checkline { display: flex; align-items: center; gap: 8px; color: var(--text); margin-bottom: 8px; line-height: 1.4; }
+      .checkline:last-child { margin-bottom: 0; }
+      .checkgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; margin-bottom: 8px; }
+      .file-pick { display: flex; align-items: center; gap: 8px; min-height: 38px; padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: #0f172a; }
+      .file-pick .tiny { margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .file-pick input[type="file"] { display: none; }
+      .modal-mask { position: fixed; inset: 0; background: rgba(2, 6, 23, 0.72); display: none; align-items: center; justify-content: center; z-index: 120; padding: 20px; }
+      .modal-mask.show { display: flex; }
+      .modal { width: min(980px, 96vw); max-height: 86vh; background: #0b1528; border: 1px solid var(--border); border-radius: 12px; display: flex; flex-direction: column; overflow: hidden; }
+      .modal-hd { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--border); color: var(--pri); }
+      .modal-bd { padding: 12px; overflow: auto; line-height: 1.62; font-size: 14px; }
+      .md h1, .md h2, .md h3 { margin: 14px 0 8px; color: #f8fafc; }
+      .md p { margin: 8px 0; }
+      .md ul { margin: 8px 0 8px 20px; padding: 0; }
+      .md pre { margin: 10px 0; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: #0f172a; overflow: auto; }
+      .md code { font-family: Consolas, Menlo, Monaco, monospace; font-size: 12px; }
+      .md a { color: #67e8f9; text-decoration: none; }
+      .md a:hover { text-decoration: underline; }
+      .md blockquote { margin: 10px 0; padding: 8px 10px; border-left: 3px solid var(--pri); background: rgba(56, 189, 248, 0.08); color: #cbd5e1; }
+      .tabs { display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
+      .tabs button { flex: 1 1 calc(33.33% - 6px); min-width: 104px; border: 1px solid var(--border); border-radius: 8px; background: #1f2937; color: var(--text); padding: 7px; cursor: pointer; }
+      .tabs button.active { background: linear-gradient(120deg, #0ea5e9, #22d3ee); color: #01243a; font-weight: 700; border: none; }
+      .panel { display: none; }
+      .panel.active { display: block; }
+      .btns { display: flex; gap: 8px; flex-wrap: wrap; }
+      .btn { border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; background: #1f2937; color: var(--text); cursor: pointer; }
+      .btn.p { background: linear-gradient(120deg, #0ea5e9, #22d3ee); color: #022f4d; border: none; font-weight: 700; }
+      .btn.warn { border-color: #854d0e; color: #fbbf24; }
+      .btn.err { border-color: #7f1d1d; color: #fca5a5; }
+      .tiny { color: var(--muted); font-size: 12px; }
+      .list { max-height: 150px; overflow: auto; border: 1px dashed var(--border); border-radius: 8px; padding: 6px; }
+      .list-item { display: flex; justify-content: space-between; gap: 8px; padding: 5px; border-radius: 7px; }
+      .list-item:hover { background: #1e293b; }
+      .task-list { max-height: 260px; overflow: auto; display: grid; gap: 7px; }
+      .task { border: 1px solid var(--border); border-radius: 8px; padding: 7px; cursor: pointer; background: #0f172a; }
+      .task.active { border-color: var(--pri); }
+      .badge { font-size: 11px; border: 1px solid var(--border); border-radius: 999px; padding: 1px 7px; }
+      .b-run { color: #67e8f9; } .b-q { color: #c4b5fd; } .b-ok { color: #6ee7b7; } .b-err { color: #fca5a5; } .b-cancel { color: #fcd34d; }
+      .bar { height: 7px; border-radius: 999px; background: #334155; overflow: hidden; margin-top: 5px; }
+      .bar > div { height: 100%; background: linear-gradient(120deg, #0ea5e9, #22d3ee); width: 0; }
+      .mgrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; margin-top: 8px; }
+      .m { border: 1px solid var(--border); border-radius: 8px; padding: 7px; background: #0f172a; }
+      .m .k { color: var(--muted); font-size: 11px; } .m .v { font-size: 16px; font-weight: 700; margin-top: 3px; }
+      table { width: 100%; border-collapse: collapse; font-size: 12px; }
+      th, td { text-align: left; border-bottom: 1px solid var(--border); padding: 7px 5px; vertical-align: top; }
+      tr.pick { cursor: pointer; } tr.pick.active { background: #10324f; }
+      .foot { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
+      #toast { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); background: #111827; border: 1px solid var(--border); border-radius: 8px; padding: 8px 11px; display: none; z-index: 99; }
+      @media (max-width: 1100px) {
+        .grid { grid-template-columns: 1fr; }
+        .token { min-width: 0; width: 100%; }
+        .top { flex-direction: column; align-items: stretch; }
+        .top-mid { justify-content: flex-start; }
+        .mgrid { grid-template-columns: repeat(2, 1fr); }
+        .checkgrid { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="toast"></div>
+    <div id="guide-modal" class="modal-mask" role="dialog" aria-modal="true" aria-labelledby="guide-modal-title">
+      <div class="modal">
+        <div class="modal-hd">
+          <div id="guide-modal-title">导入相关文档</div>
+          <button class="btn" id="guide-close" type="button">关闭</button>
+        </div>
+        <div class="tiny" id="guide-meta" style="padding: 8px 12px 0;"></div>
+        <div class="modal-bd md" id="guide-body"></div>
+      </div>
+    </div>
+    <div class="page">
+      <div class="top">
+        <div>
+          <div class="title">A_Memorix 导入中心</div>
+          <div class="sub">可控并发、部分文件导入、粘贴导入、分块级进度</div>
+        </div>
+        <div class="top-mid">
+          <button class="btn" id="guide-open" type="button">阅读导入文档</button>
+        </div>
+        <div class="token">
+          <input id="token-input" type="password" placeholder="可选：X-Memorix-Import-Token" />
+          <button class="btn" id="token-save">保存</button>
+          <button class="btn" id="token-clear">清空</button>
+        </div>
+      </div>
+
+      <div class="grid">
+        <div>
+          <div class="card">
+            <div class="hd">创建导入任务</div>
+            <div class="bd">
+              <div class="tabs">
+                <button id="tab-upload" class="active">上传文件</button>
+                <button id="tab-paste">粘贴导入</button>
+                <button id="tab-raw">本地扫描</button>
+                <button id="tab-openie">LPMM OpenIE</button>
+                <button id="tab-convert">LPMM转换</button>
+                <button id="tab-backfill">时序回填</button>
+                <button id="tab-maibot">MaiBot迁移</button>
+              </div>
+
+              <div class="row3">
+                <div>
+                  <label>文件并发</label>
+                  <input id="file-concurrency" type="number" min="1" max="6" value="2" />
+                </div>
+                <div>
+                  <label>分块并发</label>
+                  <input id="chunk-concurrency" type="number" min="1" max="12" value="4" />
+                </div>
+                <div>
+                  <label>策略覆盖</label>
+                  <select id="strategy-override">
+                    <option value="auto">自动（auto）</option>
+                    <option value="narrative">叙事（narrative）</option>
+                    <option value="factual">事实（factual）</option>
+                    <option value="quote">引用（quote）</option>
+                  </select>
+                </div>
+              </div>
+              <div class="row3">
+                <div>
+                  <label>去重策略</label>
+                  <select id="dedupe-policy">
+                    <option value="content_hash">内容哈希（content_hash）</option>
+                    <option value="manifest">导入清单（manifest）</option>
+                    <option value="none">不去重（none）</option>
+                  </select>
+                </div>
+                <div>
+                  <label>聊天参考时间（chat_reference_time）</label>
+                  <input id="chat-reference-time" placeholder="2026/02/12 10:30" />
+                </div>
+                <div></div>
+              </div>
+              <div class="checkgrid tiny">
+                <label class="checkline">
+                  <input id="llm-enabled" type="checkbox" checked />
+                  <span>启用 LLM 抽取</span>
+                </label>
+                <label class="checkline">
+                  <input id="chat-log" type="checkbox" />
+                  <span>按聊天日志抽取时间（chat_log）</span>
+                </label>
+                <label class="checkline">
+                  <input id="force-reimport" type="checkbox" />
+                  <span>强制重导（force）</span>
+                </label>
+                <label class="checkline">
+                  <input id="clear-manifest" type="checkbox" />
+                  <span>清理导入清单（clear_manifest）</span>
+                </label>
+              </div>
+
+              <div id="panel-upload" class="panel active">
+                <div class="row">
+                  <div>
+                    <label>文本输入模式</label>
+                    <select id="upload-input-mode">
+                      <option value="text">文本（text）</option>
+                      <option value="json">JSON（json）</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label>选择文件 (txt/md/json)</label>
+                    <div class="file-pick">
+                      <button class="btn" id="upload-file-pick" type="button">选择文件</button>
+                      <div class="tiny" id="upload-file-hint">未选择文件</div>
+                      <input id="upload-file-input" type="file" multiple accept=".txt,.md,.json" />
+                    </div>
+                  </div>
+                </div>
+                <div class="tiny" id="upload-count">已选择 0 个文件</div>
+                <div class="list" id="upload-files"></div>
+                <div class="btns" style="margin-top: 8px;">
+                  <button class="btn p" id="upload-submit">提交上传任务</button>
+                  <button class="btn" id="upload-clear">清空文件列表</button>
+                </div>
+              </div>
+
+              <div id="panel-paste" class="panel">
+                <div class="row">
+                  <div>
+                    <label>粘贴模式</label>
+                    <select id="paste-input-mode">
+                      <option value="text">文本（text）</option>
+                      <option value="json">JSON（json）</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label>名称（可选）</label>
+                    <input id="paste-name" placeholder="paste_时间戳" />
+                  </div>
+                </div>
+                <label>内容</label>
+                <textarea id="paste-content" placeholder="粘贴 text/json"></textarea>
+                <div class="btns" style="margin-top: 8px;">
+                  <button class="btn p" id="paste-submit">提交粘贴任务</button>
+                </div>
+              </div>
+
+              <div id="panel-raw" class="panel">
+                <div class="row">
+                  <div>
+                    <label>路径别名</label>
+                    <select id="raw-alias"></select>
+                  </div>
+                  <div>
+                    <label>相对路径（relative_path）</label>
+                    <input id="raw-relative-path" placeholder="raw 子目录（可选）" />
+                  </div>
+                </div>
+                <div class="row3">
+                  <div>
+                    <label>匹配规则（glob）</label>
+                    <input id="raw-glob" value="*" />
+                  </div>
+                  <div>
+                    <label>输入模式</label>
+                    <select id="raw-input-mode">
+                      <option value="text">文本（text）</option>
+                      <option value="json">JSON（json）</option>
+                    </select>
+                  </div>
+                  <label class="checkline tiny" style="margin-top: 20px;">
+                    <input id="raw-recursive" type="checkbox" checked />
+                    <span>递归扫描</span>
+                  </label>
+                </div>
+                <div class="btns" style="margin-top: 8px;">
+                  <button class="btn p" id="raw-submit">提交本地扫描任务</button>
+                </div>
+              </div>
+
+              <div id="panel-openie" class="panel">
+                <div class="row">
+                  <div>
+                    <label>路径别名</label>
+                    <select id="openie-alias"></select>
+                  </div>
+                  <div>
+                    <label>相对路径（relative_path）</label>
+                    <input id="openie-relative-path" placeholder="OpenIE 目录或文件" />
+                  </div>
+                </div>
+                <label class="checkline tiny">
+                  <input id="openie-include-all" type="checkbox" />
+                  <span>找不到 *-openie.json 时回退全部 .json</span>
+                </label>
+                <div class="btns" style="margin-top: 8px;">
+                  <button class="btn p" id="openie-submit">提交 OpenIE 任务</button>
+                </div>
+              </div>
+
+              <div id="panel-convert" class="panel">
+                <div class="row">
+                  <div>
+                    <label>输入别名</label>
+                    <select id="convert-alias"></select>
+                  </div>
+                  <div>
+                    <label>输入相对路径（relative_path）</label>
+                    <input id="convert-relative-path" placeholder="LPMM 数据目录" />
+                  </div>
+                </div>
+                <div class="row">
+                  <div>
+                    <label>目标别名</label>
+                    <select id="convert-target-alias"></select>
+                  </div>
+                  <div>
+                    <label>目标相对路径（relative_path）</label>
+                    <input id="convert-target-relative-path" placeholder="可选：目标子目录" />
+                  </div>
+                </div>
+                <div class="row3">
+                  <div>
+                    <label>向量维度（dimension）</label>
+                    <input id="convert-dimension" type="number" min="1" placeholder="默认读取配置" />
+                  </div>
+                  <div>
+                    <label>批大小（batch_size）</label>
+                    <input id="convert-batch-size" type="number" min="1" value="1024" />
+                  </div>
+                  <div></div>
+                </div>
+                <div class="tiny">将执行 staging 转换与切换，请确认输入目录正确。</div>
+                <div class="btns" style="margin-top: 8px;">
+                  <button class="btn warn" id="convert-submit">提交 LPMM 转换任务</button>
+                </div>
+              </div>
+
+              <div id="panel-backfill" class="panel">
+                <div class="row">
+                  <div>
+                    <label>路径别名</label>
+                    <select id="backfill-alias"></select>
+                  </div>
+                  <div>
+                    <label>相对路径（relative_path）</label>
+                    <input id="backfill-relative-path" placeholder="默认插件 data 目录" />
+                  </div>
+                </div>
+                <div class="row3">
+                  <div>
+                    <label>处理上限（limit）</label>
+                    <input id="backfill-limit" type="number" min="1" value="100000" />
+                  </div>
+                  <label class="checkline tiny" style="margin-top: 20px;">
+                    <input id="backfill-dry-run" type="checkbox" />
+                    <span>仅预览（dry-run）</span>
+                  </label>
+                  <label class="checkline tiny" style="margin-top: 20px;">
+                    <input id="backfill-no-created" type="checkbox" />
+                    <span>禁用 created 回退（no-created-fallback）</span>
+                  </label>
+                </div>
+                <div class="btns" style="margin-top: 8px;">
+                  <button class="btn p" id="backfill-submit">提交时序回填任务</button>
+                </div>
+              </div>
+
+              <div id="panel-maibot" class="panel">
+                <div class="row">
+                  <div>
+                    <label>源数据库路径</label>
+                    <input id="maibot-source-db" placeholder="data/MaiBot.db" />
+                  </div>
+                  <div>
+                    <label>时间范围（可选）</label>
+                    <input id="maibot-time-from" placeholder="from: YYYY-MM-DD HH:mm" />
+                  </div>
+                </div>
+                <div class="row">
+                  <div>
+                    <label>时间范围（可选）</label>
+                    <input id="maibot-time-to" placeholder="to: YYYY-MM-DD HH:mm" />
+                  </div>
+                  <div>
+                    <label>ID范围（可选）</label>
+                    <input id="maibot-start-id" type="number" min="1" placeholder="start_id" />
+                  </div>
+                </div>
+                <div class="row">
+                  <div>
+                    <label>ID范围（可选）</label>
+                    <input id="maibot-end-id" type="number" min="1" placeholder="end_id" />
+                  </div>
+                  <div>
+                    <label>stream_ids（逗号分隔）</label>
+                    <input id="maibot-stream-ids" placeholder="stream1,stream2" />
+                  </div>
+                </div>
+                <div class="row">
+                  <div>
+                    <label>group_ids（逗号分隔）</label>
+                    <input id="maibot-group-ids" placeholder="123456,234567" />
+                  </div>
+                  <div>
+                    <label>user_ids（逗号分隔）</label>
+                    <input id="maibot-user-ids" placeholder="10001,10002" />
+                  </div>
+                </div>
+                <div class="row3">
+                  <div>
+                    <label>读取批大小（read_batch_size）</label>
+                    <input id="maibot-read-batch-size" type="number" min="1" value="2000" />
+                  </div>
+                  <div>
+                    <label>提交窗口行数（commit_window_rows）</label>
+                    <input id="maibot-commit-window-rows" type="number" min="1" value="20000" />
+                  </div>
+                  <div>
+                    <label>嵌入工作线程（embed_workers）</label>
+                    <input id="maibot-embed-workers" type="number" min="1" placeholder="默认读取配置" />
+                  </div>
+                </div>
+                <div class="checkgrid tiny">
+                  <label class="checkline">
+                    <input id="maibot-no-resume" type="checkbox" />
+                    <span>禁用断点续传（--no-resume）</span>
+                  </label>
+                  <label class="checkline">
+                    <input id="maibot-reset-state" type="checkbox" />
+                    <span>重置迁移状态（--reset-state）</span>
+                  </label>
+                  <label class="checkline">
+                    <input id="maibot-dry-run" type="checkbox" />
+                    <span>仅预览（--dry-run）</span>
+                  </label>
+                  <label class="checkline">
+                    <input id="maibot-verify-only" type="checkbox" />
+                    <span>仅校验（--verify-only）</span>
+                  </label>
+                </div>
+                <div class="btns" style="margin-top: 8px;">
+                  <button class="btn p" id="maibot-submit">提交 MaiBot 迁移任务</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card" style="margin-top: 12px;">
+            <div class="hd"><span>任务队列</span><span class="tiny" id="poll-meta">轮询: 1000ms</span></div>
+            <div class="bd">
+              <div class="btns" style="margin-bottom: 9px;">
+                <button class="btn" id="refresh-btn">立即刷新</button>
+                <button class="btn err" id="cancel-btn">取消任务</button>
+                <button class="btn warn" id="retry-btn">重试失败项（分块优先）</button>
+              </div>
+              <div class="tiny">运行中 / 准备中</div>
+              <div class="task-list" id="tasks-running"></div>
+              <div class="tiny" style="margin-top: 8px;">排队中</div>
+              <div class="task-list" id="tasks-queued"></div>
+              <div class="tiny" style="margin-top: 8px;">最近完成</div>
+              <div class="task-list" id="tasks-recent"></div>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <div class="card">
+            <div class="hd">任务详情</div>
+            <div class="bd">
+              <div id="task-empty" class="tiny">请选择任务查看详情</div>
+              <div id="task-body" style="display: none;">
+                <div class="row">
+                  <div><div class="tiny">任务 ID</div><div id="d-id" style="font-size: 12px;"></div></div>
+                  <div><div class="tiny">状态 / 步骤</div><div id="d-status"></div></div>
+                </div>
+                <div class="bar"><div id="d-progress"></div></div>
+                <div class="tiny" id="d-progress-text" style="margin-top: 5px;"></div>
+                <div class="mgrid">
+                  <div class="m"><div class="k">总分块</div><div class="v" id="m-total">0</div></div>
+                  <div class="m"><div class="k">完成</div><div class="v" id="m-done">0</div></div>
+                  <div class="m"><div class="k">失败</div><div class="v" id="m-fail">0</div></div>
+                  <div class="m"><div class="k">取消</div><div class="v" id="m-cancel">0</div></div>
+                </div>
+                <div id="d-error" style="color: #fca5a5; margin-top: 6px;"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card" style="margin-top: 12px;">
+            <div class="hd">文件级状态</div>
+            <div class="bd">
+              <table>
+                <thead><tr><th>文件</th><th>类型</th><th>状态</th><th>步骤</th><th>进度</th><th>统计</th></tr></thead>
+                <tbody id="files-body"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card" style="margin-top: 12px;">
+            <div class="hd">分块级状态</div>
+            <div class="bd">
+              <table>
+                <thead><tr><th>#</th><th>类型</th><th>状态</th><th>步骤</th><th>预览</th><th>错误</th></tr></thead>
+                <tbody id="chunks-body"></tbody>
+              </table>
+              <div class="foot">
+                <div class="tiny" id="chunk-meta">0 / 0</div>
+                <div class="btns">
+                  <button class="btn" id="chunk-prev">上一页</button>
+                  <button class="btn" id="chunk-next">下一页</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const state = { files: [], tasks: [], task: null, taskId: null, fileId: null, chunkOffset: 0, chunkLimit: 100, chunkTotal: 0, settings: {}, pathAliases: {}, pollMs: 1000, timer: null, pollErrSig: "", pollErrAt: 0 };
+      const $ = (id) => document.getElementById(id);
+      const esc = (s) => String(s ?? "").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#39;");
+      const pct = (n) => `${(Math.max(0, Math.min(1, Number(n || 0))) * 100).toFixed(1)}%`;
+      const badgeClass = (s) => ["running","preparing","cancel_requested"].includes(s) ? "b-run" : s==="queued" ? "b-q" : ["completed","completed_with_errors"].includes(s) ? "b-ok" : s==="failed" ? "b-err" : s==="cancelled" ? "b-cancel" : "";
+      const STATUS_ZH = {
+        queued: "排队中",
+        preparing: "准备中",
+        running: "运行中",
+        cancel_requested: "取消中",
+        cancelled: "已取消",
+        completed: "已完成",
+        completed_with_errors: "完成（有错误）",
+        failed: "失败",
+        splitting: "分块中",
+        extracting: "抽取中",
+        writing: "写入中",
+        saving: "保存中",
+      };
+      const STEP_ZH = {
+        queued: "排队中",
+        scanning: "扫描中",
+        preparing: "准备中",
+        splitting: "分块中",
+        extracting: "抽取中",
+        writing: "写入中",
+        saving: "保存中",
+        converting: "转换中",
+        verifying: "校验中",
+        switching: "切换中",
+        backfilling: "回填中",
+        cancel_requested: "取消中",
+        cancelled: "已取消",
+        completed: "已完成",
+        completed_with_errors: "完成（有错误）",
+        failed: "失败",
+      };
+      const STRATEGY_ZH = {
+        auto: "自动",
+        narrative: "叙事",
+        factual: "事实",
+        quote: "引用",
+        json: "JSON",
+        text: "文本",
+      };
+      const TASK_KIND_ZH = {
+        upload: "上传文件",
+        paste: "粘贴导入",
+        raw_scan: "本地扫描",
+        lpmm_openie: "LPMM OpenIE",
+        lpmm_convert: "LPMM 转换",
+        temporal_backfill: "时序回填",
+        maibot_migration: "MaiBot 迁移",
+      };
+      const SCHEMA_ZH = {
+        web_json: "Web JSON",
+        script_json: "脚本 JSON",
+        lpmm_openie: "LPMM OpenIE",
+        plain_text: "纯文本",
+      };
+      const SOURCE_ZH = {
+        upload: "上传文件",
+        paste: "粘贴导入",
+        raw_scan: "本地扫描",
+        lpmm_openie: "LPMM OpenIE",
+        lpmm_convert: "LPMM 转换",
+        temporal_backfill: "时序回填",
+        maibot_migration: "MaiBot 迁移",
+      };
+      const chunkTypeZh = (v) => STRATEGY_ZH[String(v || "").trim()] || String(v || "-");
+      const statusZh = (v) => STATUS_ZH[String(v || "").trim()] || String(v || "-");
+      const stepZh = (v) => STEP_ZH[String(v || "").trim()] || String(v || "-");
+      const taskKindZh = (v) => TASK_KIND_ZH[String(v || "").trim()] || String(v || "-");
+      const schemaZh = (v) => SCHEMA_ZH[String(v || "").trim()] || String(v || "-");
+      const sourceZh = (v) => SOURCE_ZH[String(v || "").trim()] || String(v || "-");
+
+      function toast(msg) { const t=$("toast"); t.textContent=msg; t.style.display="block"; clearTimeout(window._tt); window._tt=setTimeout(()=>t.style.display="none",2200); }
+      function token(){ return String(localStorage.getItem("memorix_import_token") || "").trim(); }
+      function headers(isJson=true){ const h={}; if(isJson) h["Content-Type"]="application/json"; const tk=token(); if(tk) h["X-Memorix-Import-Token"]=tk; return h; }
+      async function req(path,opt={}){ const r=await fetch(path,opt); let b=null; try{b=await r.json();}catch{} if(!r.ok) throw new Error(typeof b?.detail==="string"?b.detail:`请求失败（HTTP ${r.status}）`); return b||{}; }
+      const parseCsvList = (v) => String(v || "").split(",").map(x => x.trim()).filter(Boolean);
+      const numOrNull = (v) => { const t = String(v ?? "").trim(); if(!t) return null; const n = Number(t); return Number.isFinite(n) ? n : null; };
+
+      function renderGuideMarkdown(md){
+        const src = String(md || "").replace(/\r\n/g, "\n");
+        const codeBlocks = [];
+        let text = src.replace(/```([\s\S]*?)```/g, (_, code) => {
+          const idx = codeBlocks.length;
+          codeBlocks.push(`<pre><code>${esc(code).trim()}</code></pre>`);
+          return `@@CODE_${idx}@@`;
+        });
+        text = esc(text);
+        text = text.replace(/^###\s+(.+)$/gm, "<h3>$1</h3>");
+        text = text.replace(/^##\s+(.+)$/gm, "<h2>$1</h2>");
+        text = text.replace(/^#\s+(.+)$/gm, "<h1>$1</h1>");
+        text = text.replace(/^>\s+(.+)$/gm, "<blockquote>$1</blockquote>");
+        text = text.replace(/^\s*[-*]\s+(.+)$/gm, "<li>$1</li>");
+        text = text.replace(/(?:<li>[\s\S]*?<\/li>\s*)+/g, (m) => `<ul>${m}</ul>`);
+        text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+        text = text.replace(/`([^`]+)`/g, "<code>$1</code>");
+        text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+        text = text.split(/\n{2,}/).map((blk) => {
+          const b = blk.trim();
+          if(!b) return "";
+          if(/^@@CODE_\d+@@$/.test(b)) return b;
+          if(/^<(h1|h2|h3|ul|pre|blockquote)/.test(b)) return b;
+          return `<p>${b.replace(/\n/g, "<br/>")}</p>`;
+        }).join("");
+        text = text.replace(/@@CODE_(\d+)@@/g, (_, i) => codeBlocks[Number(i)] || "");
+        return text || `<p class="tiny">文档为空</p>`;
+      }
+
+      async function openGuideModal(){
+        $("guide-modal").classList.add("show");
+        $("guide-meta").textContent = "";
+        $("guide-body").innerHTML = `<p class="tiny">正在加载文档...</p>`;
+        try{
+          const d = await req("/api/import/guide", { headers: headers(false) });
+          const srcText = d.source === "remote" ? "远程" : "本地";
+          const sourceDesc = d.source === "remote" ? (d.url || "") : (d.path || "");
+          $("guide-meta").textContent = `来源: ${srcText}${sourceDesc ? ` | ${sourceDesc}` : ""}`;
+          $("guide-body").innerHTML = renderGuideMarkdown(d.content || "");
+        }catch(e){
+          $("guide-meta").textContent = "";
+          $("guide-body").innerHTML = `<p style="color:#fca5a5;">文档加载失败: ${esc(e.message || "")}</p>`;
+        }
+      }
+
+      function closeGuideModal(){ $("guide-modal").classList.remove("show"); }
+
+      function commonParams(){
+        const mf=Number(state.settings.max_file_concurrency || 6), mc=Number(state.settings.max_chunk_concurrency || 12);
+        const fc=Math.max(1,Math.min(mf,Number($("file-concurrency").value||2)));
+        const cc=Math.max(1,Math.min(mc,Number($("chunk-concurrency").value||4)));
+        $("file-concurrency").value=fc; $("chunk-concurrency").value=cc;
+        return {
+          file_concurrency: fc,
+          chunk_concurrency: cc,
+          llm_enabled: $("llm-enabled").checked,
+          strategy_override: $("strategy-override").value,
+          dedupe_policy: $("dedupe-policy").value,
+          chat_log: !!$("chat-log").checked,
+          chat_reference_time: ($("chat-reference-time").value || "").trim() || null,
+          force: !!$("force-reimport").checked,
+          clear_manifest: !!$("clear-manifest").checked,
+        };
+      }
+
+      function renderUploadFiles(){
+        $("upload-count").textContent=`已选择 ${state.files.length} 个文件`;
+        $("upload-file-hint").textContent = state.files.length ? `已选择 ${state.files.length} 个文件` : "未选择文件";
+        $("upload-files").innerHTML = state.files.length ? state.files.map((f,i)=>`<div class="list-item"><div><div>${esc(f.name)}</div><div class="tiny">${(f.size/1024).toFixed(1)} KB</div></div><button class="btn" data-rm="${i}">移除</button></div>`).join("") : `<div class="tiny">暂无文件</div>`;
+      }
+
+      function populateAliasSelects(){
+        const aliases = state.pathAliases || {};
+        const keys = Object.keys(aliases);
+        const html = keys.length ? keys.map((k)=>`<option value="${esc(k)}">${esc(k)} (${esc(aliases[k])})</option>`).join("") : `<option value="">(无可用路径别名)</option>`;
+        ["raw-alias","openie-alias","convert-alias","convert-target-alias","backfill-alias"].forEach((id)=>{
+          const el=$(id); if(!el) return;
+          const old=el.value;
+          el.innerHTML=html;
+          if(old && keys.includes(old)) el.value=old;
+          if(!el.value){
+            if(id==="raw-alias" && keys.includes("raw")) el.value="raw";
+            else if(id==="openie-alias" && keys.includes("lpmm")) el.value="lpmm";
+            else if(id==="convert-alias" && keys.includes("lpmm")) el.value="lpmm";
+            else if(id==="convert-target-alias" && keys.includes("plugin_data")) el.value="plugin_data";
+            else if(id==="backfill-alias" && keys.includes("plugin_data")) el.value="plugin_data";
+          }
+        });
+      }
+
+      function renderTaskLists(){
+        const g={run:[],q:[],r:[]};
+        for(const t of state.tasks){ if(["running","preparing","cancel_requested"].includes(t.status)) g.run.push(t); else if(t.status==="queued") g.q.push(t); else g.r.push(t); }
+        const render = (list) => list.length ? list.map(t=>`<div class="task ${state.taskId===t.task_id?"active":""}" data-tid="${t.task_id}"><div style="display:flex;justify-content:space-between;gap:8px;"><span>${esc(t.task_id.slice(0,12))}</span><span class="badge ${badgeClass(t.status)}">${esc(statusZh(t.status))}</span></div><div class="tiny">来源=${esc(sourceZh(t.source))} | 步骤=${esc(stepZh(t.current_step||"-"))}</div><div class="bar"><div style="width:${pct(t.progress)}"></div></div><div class="tiny">${pct(t.progress)} | ${t.done_chunks}/${t.total_chunks}</div></div>`).join("") : `<div class="tiny">暂无任务</div>`;
+        $("tasks-running").innerHTML=render(g.run); $("tasks-queued").innerHTML=render(g.q); $("tasks-recent").innerHTML=render(g.r);
+      }
+
+      async function loadTasks(){
+        const d=await req("/api/import/tasks?limit=80",{headers:headers(false)});
+        state.tasks=Array.isArray(d.items)?d.items:[]; state.settings=d.settings||state.settings||{};
+        state.pathAliases = state.settings.path_aliases || state.pathAliases || {};
+        const p=Number(state.settings.poll_interval_ms||1000); if(p!==state.pollMs){ state.pollMs=Math.max(200,p); restartPoll(); }
+        $("poll-meta").textContent=`轮询: ${state.pollMs}ms`;
+        if(state.settings.default_file_concurrency && !$("file-concurrency").dataset.touched) $("file-concurrency").value=state.settings.default_file_concurrency;
+        if(state.settings.default_chunk_concurrency && !$("chunk-concurrency").dataset.touched) $("chunk-concurrency").value=state.settings.default_chunk_concurrency;
+        if(state.settings.max_file_concurrency) $("file-concurrency").max=state.settings.max_file_concurrency;
+        if(state.settings.max_chunk_concurrency) $("chunk-concurrency").max=state.settings.max_chunk_concurrency;
+        if(state.settings.maibot_source_db_default && !$("maibot-source-db").dataset.touched) $("maibot-source-db").value=state.settings.maibot_source_db_default;
+        populateAliasSelects();
+        if(!state.taskId && state.tasks.length) state.taskId=state.tasks[0].task_id;
+        if(state.taskId && !state.tasks.some(t=>t.task_id===state.taskId)){ state.taskId=state.tasks.length?state.tasks[0].task_id:null; state.fileId=null; }
+        renderTaskLists();
+      }
+
+      function renderTaskDetail(task){
+        if(!task){ $("task-empty").style.display="block"; $("task-body").style.display="none"; $("files-body").innerHTML=`<tr><td colspan="6" class="tiny">暂无数据</td></tr>`; $("chunks-body").innerHTML=`<tr><td colspan="6" class="tiny">暂无数据</td></tr>`; $("chunk-meta").textContent="0 / 0"; return; }
+        $("task-empty").style.display="none"; $("task-body").style.display="block";
+        $("d-id").textContent=task.task_id; $("d-status").innerHTML=`<span class="badge ${badgeClass(task.status)}">${esc(statusZh(task.status))}</span> <span class="tiny">步骤=${esc(stepZh(task.current_step||"-"))}</span>`;
+        $("d-progress").style.width=pct(task.progress); $("d-progress-text").textContent=`${pct(task.progress)} | 完成=${task.done_chunks} 失败=${task.failed_chunks} 取消=${task.cancelled_chunks} 总计=${task.total_chunks}`;
+        $("m-total").textContent=task.total_chunks||0; $("m-done").textContent=task.done_chunks||0; $("m-fail").textContent=task.failed_chunks||0; $("m-cancel").textContent=task.cancelled_chunks||0;
+        const extraMeta = [];
+        if(task.schema_detected) extraMeta.push(`识别模式=${schemaZh(task.schema_detected)}`);
+        if(task.task_kind) extraMeta.push(`任务类型=${taskKindZh(task.task_kind)}`);
+        if(task.retry_parent_task_id) extraMeta.push(`父任务=${task.retry_parent_task_id}`);
+        if(task.retry_summary && Object.keys(task.retry_summary).length) extraMeta.push(`重试摘要=${JSON.stringify(task.retry_summary)}`);
+        if(task.artifact_paths && Object.keys(task.artifact_paths).length) extraMeta.push(`产物=${JSON.stringify(task.artifact_paths)}`);
+        if(task.rollback_info && Object.keys(task.rollback_info).length) extraMeta.push(`回滚=${JSON.stringify(task.rollback_info)}`);
+        const errText = task.error ? `错误: ${task.error}` : "";
+        $("d-error").textContent = [errText, ...extraMeta].filter(Boolean).join(" | ");
+        const files=Array.isArray(task.files)?task.files:[];
+        $("files-body").innerHTML=files.length?files.map(f=>`<tr class="pick ${state.fileId===f.file_id?"active":""}" data-fid="${f.file_id}"><td>${esc(f.name)}</td><td>${esc(chunkTypeZh(f.detected_strategy_type||"-"))}</td><td><span class="badge ${badgeClass(f.status)}">${esc(statusZh(f.status))}</span></td><td>${esc(stepZh(f.current_step||"-"))}</td><td><div class="bar"><div style="width:${pct(f.progress)}"></div></div><div class="tiny">${pct(f.progress)}</div></td><td>${f.done_chunks}/${f.total_chunks} (失败:${f.failed_chunks} 取消:${f.cancelled_chunks})</td></tr>`).join(""):`<tr><td colspan="6" class="tiny">暂无文件</td></tr>`;
+      }
+
+      async function loadTaskDetail(){
+        if(!state.taskId){ renderTaskDetail(null); return; }
+        const d=await req(`/api/import/tasks/${encodeURIComponent(state.taskId)}`,{headers:headers(false)});
+        state.task=d.task||null; const files=Array.isArray(state.task?.files)?state.task.files:[]; if(!state.fileId || !files.some(x=>x.file_id===state.fileId)){ state.fileId=files.length?files[0].file_id:null; state.chunkOffset=0; }
+        renderTaskDetail(state.task);
+      }
+
+      async function loadChunks(){
+        if(!state.taskId || !state.fileId){ $("chunks-body").innerHTML=`<tr><td colspan="6" class="tiny">请选择文件</td></tr>`; $("chunk-meta").textContent="0 / 0"; return; }
+        const d=await req(`/api/import/tasks/${encodeURIComponent(state.taskId)}/files/${encodeURIComponent(state.fileId)}/chunks?offset=${state.chunkOffset}&limit=${state.chunkLimit}`,{headers:headers(false)});
+        const it=Array.isArray(d.items)?d.items:[]; state.chunkTotal=Number(d.total||0);
+        $("chunks-body").innerHTML=it.length?it.map(c=>`<tr><td>${c.index}</td><td>${esc(chunkTypeZh(c.chunk_type||"-"))}</td><td><span class="badge ${badgeClass(c.status)}">${esc(statusZh(c.status))}</span></td><td>${esc(stepZh(c.step||"-"))}</td><td title="${esc(c.content_preview||"")}">${esc(c.content_preview||"").slice(0,90)}</td><td style="color:#fca5a5">${esc(c.error||"")}</td></tr>`).join(""):`<tr><td colspan="6" class="tiny">暂无分块</td></tr>`;
+        const from=state.chunkTotal?state.chunkOffset+1:0, to=Math.min(state.chunkOffset+state.chunkLimit,state.chunkTotal); $("chunk-meta").textContent=`${from}-${to} / ${state.chunkTotal}`;
+      }
+
+      async function createUploadTask(){
+        if(!state.files.length){ toast("请先选择文件"); return; }
+        const fd=new FormData(); state.files.forEach(f=>fd.append("files[]",f,f.name)); fd.append("payload",JSON.stringify({ ...commonParams(), input_mode:$("upload-input-mode").value }));
+        const d=await req("/api/import/tasks/upload",{method:"POST",headers:headers(false),body:fd}); if(d?.task?.task_id) state.taskId=d.task.task_id; state.files=[]; renderUploadFiles(); toast("上传任务已创建");
+      }
+
+      async function createPasteTask(){
+        const content=$("paste-content").value||""; if(!content.trim()){ toast("粘贴内容不能为空"); return; }
+        const d=await req("/api/import/tasks/paste",{method:"POST",headers:headers(true),body:JSON.stringify({ ...commonParams(), input_mode:$("paste-input-mode").value, content, name:$("paste-name").value||"" })});
+        if(d?.task?.task_id) state.taskId=d.task.task_id; toast("粘贴任务已创建");
+      }
+
+      async function createRawScanTask(){
+        const payload = {
+          ...commonParams(),
+          alias: $("raw-alias").value,
+          relative_path: ($("raw-relative-path").value || "").trim(),
+          glob: ($("raw-glob").value || "*").trim() || "*",
+          recursive: !!$("raw-recursive").checked,
+          input_mode: $("raw-input-mode").value,
+        };
+        const d=await req("/api/import/tasks/raw_scan",{method:"POST",headers:headers(true),body:JSON.stringify(payload)});
+        if(d?.task?.task_id) state.taskId=d.task.task_id;
+        toast("本地扫描任务已创建");
+      }
+
+      async function createLpmmOpenieTask(){
+        const payload = {
+          ...commonParams(),
+          alias: $("openie-alias").value,
+          relative_path: ($("openie-relative-path").value || "").trim(),
+          include_all_json: !!$("openie-include-all").checked,
+        };
+        const d=await req("/api/import/tasks/lpmm_openie",{method:"POST",headers:headers(true),body:JSON.stringify(payload)});
+        if(d?.task?.task_id) state.taskId=d.task.task_id;
+        toast("LPMM OpenIE 任务已创建");
+      }
+
+      async function createLpmmConvertTask(){
+        if(!confirm("该任务会执行 staging 转换并切换 vectors/graph/metadata，是否继续？")) return;
+        const payload = {
+          alias: $("convert-alias").value,
+          relative_path: ($("convert-relative-path").value || "").trim(),
+          target_alias: $("convert-target-alias").value,
+          target_relative_path: ($("convert-target-relative-path").value || "").trim(),
+          dimension: numOrNull($("convert-dimension").value),
+          batch_size: numOrNull($("convert-batch-size").value),
+        };
+        const d=await req("/api/import/tasks/lpmm_convert",{method:"POST",headers:headers(true),body:JSON.stringify(payload)});
+        if(d?.task?.task_id) state.taskId=d.task.task_id;
+        toast("LPMM 转换任务已创建");
+      }
+
+      async function createTemporalBackfillTask(){
+        const payload = {
+          alias: $("backfill-alias").value,
+          relative_path: ($("backfill-relative-path").value || "").trim(),
+          dry_run: !!$("backfill-dry-run").checked,
+          no_created_fallback: !!$("backfill-no-created").checked,
+          limit: numOrNull($("backfill-limit").value),
+        };
+        const d=await req("/api/import/tasks/temporal_backfill",{method:"POST",headers:headers(true),body:JSON.stringify(payload)});
+        if(d?.task?.task_id) state.taskId=d.task.task_id;
+        toast("时序回填任务已创建");
+      }
+
+      async function createMaibotMigrationTask(){
+        const payload = {
+          source_db: ($("maibot-source-db").value || "").trim() || null,
+          time_from: ($("maibot-time-from").value || "").trim() || null,
+          time_to: ($("maibot-time-to").value || "").trim() || null,
+          stream_ids: parseCsvList($("maibot-stream-ids").value),
+          group_ids: parseCsvList($("maibot-group-ids").value),
+          user_ids: parseCsvList($("maibot-user-ids").value),
+          start_id: numOrNull($("maibot-start-id").value),
+          end_id: numOrNull($("maibot-end-id").value),
+          read_batch_size: numOrNull($("maibot-read-batch-size").value),
+          commit_window_rows: numOrNull($("maibot-commit-window-rows").value),
+          embed_workers: numOrNull($("maibot-embed-workers").value),
+          no_resume: !!$("maibot-no-resume").checked,
+          reset_state: !!$("maibot-reset-state").checked,
+          dry_run: !!$("maibot-dry-run").checked,
+          verify_only: !!$("maibot-verify-only").checked,
+        };
+        const d = await req("/api/import/tasks/maibot_migration", {
+          method: "POST",
+          headers: headers(true),
+          body: JSON.stringify(payload),
+        });
+        if(d?.task?.task_id) state.taskId = d.task.task_id;
+        toast("MaiBot 迁移任务已创建");
+      }
+
+      async function cancelTask(){ if(!state.taskId){ toast("请先选择任务"); return; } await req(`/api/import/tasks/${encodeURIComponent(state.taskId)}/cancel`,{method:"POST",headers:headers(false)}); toast("已请求取消"); }
+      async function retryTask(){
+        if(!state.taskId){ toast("请先选择任务"); return; }
+        const d=await req(`/api/import/tasks/${encodeURIComponent(state.taskId)}/retry_failed`,{method:"POST",headers:headers(true),body:JSON.stringify(commonParams())});
+        if(d?.task?.task_id) state.taskId=d.task.task_id;
+        const rs = d?.retry_summary || d?.task?.retry_summary || {};
+        const chunkFiles = Number(rs?.chunk_retry_files || 0);
+        const chunkCount = Number(rs?.chunk_retry_chunks || 0);
+        const fileFallback = Number(rs?.file_fallback_files || 0);
+        toast(`重试任务已创建：分块重试 ${chunkFiles} 文件/${chunkCount} 分块，文件回退 ${fileFallback} 文件`);
+      }
+
+      async function poll(){
+        try{
+          await loadTasks(); await loadTaskDetail(); await loadChunks();
+          state.pollErrSig = "";
+        }catch(e){
+          const sig = String(e.message || "请求失败");
+          const now = Date.now();
+          if(sig !== state.pollErrSig || now - state.pollErrAt > 5000){
+            toast(`请求失败: ${sig}`);
+            state.pollErrSig = sig;
+            state.pollErrAt = now;
+          }
+        }
+      }
+      function restartPoll(){ if(state.timer) clearInterval(state.timer); state.timer=setInterval(poll,state.pollMs); }
+
+      function bind(){
+        $("token-input").value=token();
+        $("token-save").onclick=()=>{ localStorage.setItem("memorix_import_token",String($("token-input").value||"").trim()); toast("Token 已保存"); };
+        $("token-clear").onclick=()=>{ localStorage.removeItem("memorix_import_token"); $("token-input").value=""; toast("Token 已清空"); };
+        $("guide-open").onclick=()=>openGuideModal();
+        $("guide-close").onclick=()=>closeGuideModal();
+        $("guide-modal").onclick=(e)=>{ if(e.target === $("guide-modal")) closeGuideModal(); };
+        window.addEventListener("keydown",(e)=>{ if(e.key==="Escape" && $("guide-modal").classList.contains("show")) closeGuideModal(); });
+        const tabs = ["upload","paste","raw","openie","convert","backfill","maibot"];
+        const activateTab = (name) => {
+          tabs.forEach((t)=>{
+            const tab = $(`tab-${t}`);
+            const panel = $(`panel-${t}`);
+            if(tab) tab.classList.toggle("active", t===name);
+            if(panel) panel.classList.toggle("active", t===name);
+          });
+          if(["raw","openie"].includes(name)){
+            $("dedupe-policy").value = "manifest";
+          }else if(["upload","paste"].includes(name)){
+            $("dedupe-policy").value = "content_hash";
+          }
+        };
+        tabs.forEach((t)=>{ const tab = $(`tab-${t}`); if(tab) tab.onclick=()=>activateTab(t); });
+        $("file-concurrency").oninput=(e)=>e.target.dataset.touched="1"; $("chunk-concurrency").oninput=(e)=>e.target.dataset.touched="1";
+        $("maibot-source-db").oninput=(e)=>e.target.dataset.touched="1";
+        $("upload-file-pick").onclick=()=>$("upload-file-input").click();
+        $("upload-file-input").onchange=(e)=>{ Array.from(e.target.files||[]).forEach(f=>state.files.push(f)); e.target.value=""; renderUploadFiles(); };
+        $("upload-files").onclick=(e)=>{ const i=e.target?.dataset?.rm; if(i===undefined) return; state.files.splice(Number(i),1); renderUploadFiles(); };
+        $("upload-clear").onclick=()=>{ state.files=[]; renderUploadFiles(); };
+        $("upload-submit").onclick=async()=>{ try{ await createUploadTask(); await poll(); }catch(e){ toast(`上传失败: ${e.message}`); } };
+        $("paste-submit").onclick=async()=>{ try{ await createPasteTask(); await poll(); }catch(e){ toast(`粘贴失败: ${e.message}`); } };
+        $("raw-submit").onclick=async()=>{ try{ await createRawScanTask(); await poll(); }catch(e){ toast(`本地扫描失败: ${e.message}`); } };
+        $("openie-submit").onclick=async()=>{ try{ await createLpmmOpenieTask(); await poll(); }catch(e){ toast(`OpenIE 导入失败: ${e.message}`); } };
+        $("convert-submit").onclick=async()=>{ try{ await createLpmmConvertTask(); await poll(); }catch(e){ toast(`LPMM 转换失败: ${e.message}`); } };
+        $("backfill-submit").onclick=async()=>{ try{ await createTemporalBackfillTask(); await poll(); }catch(e){ toast(`回填任务失败: ${e.message}`); } };
+        $("maibot-submit").onclick=async()=>{ try{ await createMaibotMigrationTask(); await poll(); }catch(e){ toast(`迁移任务创建失败: ${e.message}`); } };
+        $("refresh-btn").onclick=async()=>{ await poll(); toast("已刷新"); };
+        $("cancel-btn").onclick=async()=>{ try{ await cancelTask(); await poll(); }catch(e){ toast(`取消失败: ${e.message}`); } };
+        $("retry-btn").onclick=async()=>{ try{ await retryTask(); await poll(); }catch(e){ toast(`重试失败: ${e.message}`); } };
+        ["tasks-running","tasks-queued","tasks-recent"].forEach(id=>$(id).onclick=async(e)=>{ const n=e.target.closest("[data-tid]"); if(!n) return; state.taskId=n.dataset.tid; state.fileId=null; state.chunkOffset=0; renderTaskLists(); try{ await loadTaskDetail(); await loadChunks(); }catch(err){ toast(`加载失败: ${err.message}`); } });
+        $("files-body").onclick=async(e)=>{ const n=e.target.closest("[data-fid]"); if(!n) return; state.fileId=n.dataset.fid; state.chunkOffset=0; renderTaskDetail(state.task); try{ await loadChunks(); }catch(err){ toast(`加载分块失败: ${err.message}`); } };
+        $("chunk-prev").onclick=async()=>{ if(state.chunkOffset<=0) return; state.chunkOffset=Math.max(0,state.chunkOffset-state.chunkLimit); try{ await loadChunks(); }catch(e){ toast(`翻页失败: ${e.message}`); } };
+        $("chunk-next").onclick=async()=>{ if(state.chunkOffset+state.chunkLimit>=state.chunkTotal) return; state.chunkOffset+=state.chunkLimit; try{ await loadChunks(); }catch(e){ toast(`翻页失败: ${e.message}`); } };
+      }
+
+      bind(); renderUploadFiles(); poll(); restartPoll();
+    </script>
+  </body>
+</html>
