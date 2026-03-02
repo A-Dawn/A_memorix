@@ -5,6 +5,7 @@ A_Memorix 插件主入口
 """
 
 import sys
+import inspect
 from pathlib import Path
 from typing import List, Tuple, Type, Optional, Dict, Union, Any, Set, Callable, Awaitable
 from src.plugin_system import (
@@ -25,6 +26,7 @@ from src.plugin_system import (
     register_plugin,
 )
 from src.common.logger import get_logger
+from src.common.toml_utils import to_builtin_data
 import asyncio
 import uuid
 import time
@@ -55,6 +57,93 @@ def _set_global_instance(instance):
 
 def _get_global_instance():
     return sys.modules.get("A_MEMORIX_GLOBAL_INSTANCE")
+
+
+def _patch_webui_a_memorix_routes_for_tomlkit_serialization() -> None:
+    """
+    运行时补丁：仅修正 A_Memorix 插件配置接口返回中的 tomlkit 节点序列化问题。
+
+    限制：
+    - 仅补丁 `/api/webui/plugins/config/{plugin_id}` 及其 schema 路由
+    - 仅在 plugin_id == "A_Memorix" 时做返回值原生化
+    - 不修改核心源码文件，仅在插件加载后动态包裹路由回调
+    """
+    try:
+        from src.webui import webui_server as webui_server_module
+    except Exception as e:
+        logger.debug(f"WebUI 模块未就绪，跳过配置接口补丁: {e}")
+        return
+
+    webui_server = getattr(webui_server_module, "_webui_server", None)
+    if webui_server is None:
+        logger.debug("WebUI 服务实例尚未创建，跳过配置接口补丁")
+        return
+
+    app = getattr(webui_server, "app", None)
+    if app is None:
+        logger.debug("WebUI 应用实例缺失，跳过配置接口补丁")
+        return
+
+    target_paths = {
+        "/api/webui/plugins/config/{plugin_id}",
+        "/api/webui/plugins/config/{plugin_id}/schema",
+    }
+    patched_paths: list[str] = []
+
+    for route in getattr(app, "routes", []):
+        path = getattr(route, "path", "")
+        methods = getattr(route, "methods", set()) or set()
+        dependant = getattr(route, "dependant", None)
+        if path not in target_paths or "GET" not in methods or dependant is None:
+            continue
+
+        original_call = getattr(dependant, "call", None)
+        if original_call is None:
+            continue
+        if getattr(original_call, "_a_memorix_tomlkit_patch_applied", False):
+            continue
+
+        original_signature = inspect.signature(original_call)
+
+        async def _patched_call(
+            *args,
+            __original_call=original_call,
+            __original_signature=original_signature,
+            **kwargs,
+        ):
+            result = await __original_call(*args, **kwargs)
+            plugin_id = None
+            try:
+                bound = __original_signature.bind_partial(*args, **kwargs)
+                plugin_id = bound.arguments.get("plugin_id")
+            except Exception:
+                plugin_id = kwargs.get("plugin_id")
+
+            if plugin_id != "A_Memorix" or not isinstance(result, dict):
+                return result
+
+            patched = dict(result)
+            if "config" in patched:
+                patched["config"] = to_builtin_data(patched.get("config"))
+            if "schema" in patched:
+                patched["schema"] = to_builtin_data(patched.get("schema"))
+            return patched
+
+        _patched_call.__name__ = getattr(original_call, "__name__", "_patched_call")
+        _patched_call.__doc__ = getattr(original_call, "__doc__", None)
+        setattr(_patched_call, "_a_memorix_tomlkit_patch_applied", True)
+
+        dependant.call = _patched_call
+        if hasattr(route, "endpoint"):
+            route.endpoint = _patched_call
+        patched_paths.append(path)
+
+    if patched_paths:
+        unique_paths = ", ".join(sorted(set(patched_paths)))
+        logger.info(f"A_Memorix 已应用插件配置接口序列化补丁: {unique_paths}")
+
+    # 补充说明：此补丁仅针对 A_Memorix 插件的配置接口进行结果原生化处理，确保返回给前端的数据结构不包含 tomlkit 的特殊类型，从而避免前端解析错误。
+    # 其他插件不受影响，且仅在路径和方法完全匹配时才会进行处理，最大程度地减少了对Core的影响(迫真)(讨厌monkey patching但实在没有更优雅的方案了)
 
 
 class A_MemorixStartHandler(BaseEventHandler):
@@ -123,7 +212,7 @@ class A_MemorixPlugin(BasePlugin):
 
     # 插件基本信息（PluginBase要求的抽象属性）
     plugin_name = "A_Memorix"
-    plugin_version = "0.6.0"
+    plugin_version = "0.6.1"
     plugin_description = "轻量级知识库插件 - 含人物画像能力的独立记忆增强系统"
     plugin_author = "A_Dawn"
     enable_plugin = False  # 默认禁用，需要在config.toml中启用
@@ -587,6 +676,7 @@ class A_MemorixPlugin(BasePlugin):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         _set_global_instance(self)
+        _patch_webui_a_memorix_routes_for_tomlkit_serialization()
         self._initialized = False
 
         # 核心存储组件

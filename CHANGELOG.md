@@ -1,5 +1,26 @@
 # 更新日志 (Changelog)
 
+## [0.6.1] - 2026-03-03
+
+本次 `0.6.1` 为热修复小版本，重点修复 WebUI 插件配置接口在 A_Memorix 场景下的 `tomlkit` 节点序列化兼容问题。
+
+### 🔖 版本信息
+
+- 插件版本：`0.6.0` → `0.6.1`
+- 配置版本：`4.1.0`（不变）
+
+### 🛠️ 代码修复
+
+- 新增运行时补丁 `_patch_webui_a_memorix_routes_for_tomlkit_serialization()`：
+  - 仅包裹 `/api/webui/plugins/config/{plugin_id}` 及其 schema 的 `GET` 路由。
+  - 仅在 `plugin_id == "A_Memorix"` 时，将返回中的 `config/schema` 通过 `to_builtin_data` 原生化。
+  - 保持 `/api/webui/config/*` 全局接口行为不变，避免对其他插件或核心配置路径产生副作用。
+- 在插件初始化时执行该补丁，确保 WebUI 读取插件配置时返回结构可稳定序列化。
+
+### 📚 文档同步
+
+- 同步更新 `README.md`、`CONFIG_REFERENCE.md` 与本日志中的版本信息及修复说明。
+
 ## [0.6.0] - 2026-03-02
 
 本次 `0.6.0` 为中版本升级，主线是 **Web Import 导入中心上线与脚本能力对齐**、**失败重试机制升级**、**删除后 manifest 同步** 与 **导入链路稳定性增强**。

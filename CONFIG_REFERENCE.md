@@ -1,6 +1,6 @@
 # A_Memorix 配置参数详解（config.toml）
 
-适用版本：`plugins/A_memorix/config.toml`（`config_version = "4.1.0"`，插件代码 `v0.6.0`）。
+适用版本：`plugins/A_memorix/config.toml`（`config_version = "4.1.0"`，插件代码 `v0.6.1`）。
 
 ---
 
