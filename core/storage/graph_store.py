@@ -577,31 +577,43 @@ class GraphStore:
 
     def get_neighbors(self, node: str) -> List[str]:
         """
-        获取节点的邻居
+        获取节点的出邻居
 
         Args:
             node: 节点名称
 
         Returns:
-            邻居节点列表
+            出邻居节点列表
         """
         canon = self._canonicalize(node)
         if canon not in self._node_to_idx or self._adjacency is None:
             return []
 
         idx = self._node_to_idx[canon]
+        neighbor_indices = self._row_neighbor_indices(self._adjacency, idx)
+        return [self._nodes[int(i)] for i in neighbor_indices]
 
-        # 获取邻接行
-        if self.matrix_format == "csr":
-            row = self._adjacency.getrow(idx).toarray().flatten()
-        else:
-            row = self._adjacency[:, idx].toarray().flatten()
+    def get_in_neighbors(self, node: str) -> List[str]:
+        """
+        获取节点的入邻居
 
-        # 找非零元素
-        neighbor_indices = np.where(row > 0)[0]
-        neighbors = [self._nodes[i] for i in neighbor_indices]
+        Args:
+            node: 节点名称
 
-        return neighbors
+        Returns:
+            入邻居节点列表
+        """
+        canon = self._canonicalize(node)
+        if canon not in self._node_to_idx or self._adjacency is None:
+            return []
+
+        self._ensure_adjacency_T()
+        if self._adjacency_T is None:
+            return []
+
+        idx = self._node_to_idx[canon]
+        neighbor_indices = self._row_neighbor_indices(self._adjacency_T, idx)
+        return [self._nodes[int(i)] for i in neighbor_indices]
 
     def get_edge_weight(self, source: str, target: str) -> float:
         """

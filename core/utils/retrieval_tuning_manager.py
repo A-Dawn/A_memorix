@@ -32,6 +32,15 @@ logger = get_logger("A_Memorix.RetrievalTuningManager")
 OBJECTIVES = {"precision_priority", "balanced", "recall_priority"}
 INTENSITIES = {"quick": 8, "standard": 20, "deep": 32}
 CATEGORIES = {"query_nl", "query_kw", "spo_relation", "spo_search"}
+_RUNTIME_CONFIG_INSTANCE_KEYS = {
+    "vector_store",
+    "graph_store",
+    "metadata_store",
+    "embedding_manager",
+    "sparse_index",
+    "relation_write_service",
+    "plugin_instance",
+}
 
 
 def _now() -> float:
@@ -1465,7 +1474,15 @@ class RetrievalTuningManager:
         return self._normalize_profile(candidate, fallback=base)
 
     def _build_runtime_config(self, normalized_profile: Dict[str, Any]) -> Dict[str, Any]:
-        base = dict(getattr(self.plugin, "config", {}) or {})
+        raw_base = getattr(self.plugin, "config", {}) or {}
+        if isinstance(raw_base, dict):
+            base = {
+                key: value
+                for key, value in raw_base.items()
+                if key not in _RUNTIME_CONFIG_INSTANCE_KEYS
+            }
+        else:
+            base = {}
         merged = _deep_merge(base, normalized_profile)
         # 调优评估场景优先稳定性，避免并发访问共享 SQLite/Faiss 导致长时阻塞。
         _nested_set(merged, "retrieval.enable_parallel", False)

@@ -651,7 +651,17 @@ class MemorixServer:
             # --- 分支 2: 全量图谱 (现有逻辑) ---
             if self.plugin.graph_store is None:
                 raise HTTPException(status_code=503, detail="Graph store not initialized")
-            
+
+            graph_lazy_loaded = False
+            graph_disk_data_exists = bool(self.plugin.graph_store.has_data())
+            if graph_disk_data_exists and self.plugin.graph_store.num_nodes <= 0:
+                try:
+                    self.plugin.graph_store.load()
+                    graph_lazy_loaded = True
+                    logger.info("Graph route lazy-loaded graph data from disk for WebUI request")
+                except Exception as e:
+                    logger.warning(f"Graph route lazy-load failed: {e}")
+
             node_names = self.plugin.graph_store.get_nodes()
             
             # --- 智能显著性过滤 (Saliency Filtering) ---
@@ -676,6 +686,10 @@ class MemorixServer:
                     # 识别核心节点 (Hubs) - PageRank 前 10%
                     hub_threshold = sorted_scores[int(n * 0.9)] if n > 10 else 0
                     hubs = {node for node, score in scores.items() if score >= hub_threshold}
+                    hub_neighbors = set()
+                    for hub in hubs:
+                        hub_neighbors.update(self.plugin.graph_store.get_neighbors(hub))
+                        hub_neighbors.update(self.plugin.graph_store.get_in_neighbors(hub))
                     
                     filtered_nodes = [] # 最终显示的节点 ID 列表
                     node_status = {} # nodeId -> score/ghost status
@@ -686,8 +700,7 @@ class MemorixServer:
 
                     for name in node_names:
                         score = scores.get(name, 0)
-                        is_hub_neighbor = any(self.plugin.graph_store.get_edge_weight(name, hub) > 0 for hub in hubs) or \
-                                          any(self.plugin.graph_store.get_edge_weight(hub, name) > 0 for hub in hubs)
+                        is_hub_neighbor = name in hub_neighbors
                         
                         if score >= min_score or is_hub_neighbor:
                             # 正常保留
@@ -957,6 +970,9 @@ class MemorixServer:
                 "sample_key": list(edge_predicates.keys())[0] if edge_predicates else None,
                 "edge_count": len(edges),
                 "exclude_leaf": exclude_leaf,
+                "graph_disk_data_exists": graph_disk_data_exists,
+                "graph_lazy_loaded": graph_lazy_loaded,
+                "graph_loaded_nodes": len(node_names),
                 "cache_rebuilt": cache_rebuilt,
                 "relation_snapshot": {
                     "count": int(relation_snapshot[0]),
