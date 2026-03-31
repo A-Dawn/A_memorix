@@ -184,7 +184,7 @@ python plugins/A_memorix/scripts/process_knowledge.py
 高频配置项：
 
 - `storage.data_dir`
-- `embedding.dimension`
+- `embedding.dimension`（唯一公开维度控制项，provider 差异由插件内部映射）
 - `embedding.quantization_type`（当前仅支持 `int8`）
 - `retrieval.*`
 - `retrieval.sparse.*`

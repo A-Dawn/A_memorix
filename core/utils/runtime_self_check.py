@@ -41,6 +41,7 @@ def _build_report(
     code: str,
     message: str,
     configured_dimension: int,
+    requested_dimension: int,
     vector_store_dimension: int,
     detected_dimension: int,
     encoded_dimension: int,
@@ -52,6 +53,7 @@ def _build_report(
         "code": str(code or "").strip(),
         "message": str(message or "").strip(),
         "configured_dimension": int(configured_dimension),
+        "requested_dimension": int(requested_dimension),
         "vector_store_dimension": int(vector_store_dimension),
         "detected_dimension": int(detected_dimension),
         "encoded_dimension": int(encoded_dimension),
@@ -84,6 +86,18 @@ def _normalize_encoded_vector(encoded: Any) -> np.ndarray:
     return array.astype(np.float32, copy=False)
 
 
+def _get_requested_dimension(embedding_manager: Optional[Any], fallback: int = 0) -> int:
+    if embedding_manager is None:
+        return int(fallback)
+    getter = getattr(embedding_manager, "get_requested_dimension", None)
+    if callable(getter):
+        return _safe_int(getter(), fallback)
+    getter = getattr(embedding_manager, "get_embedding_dimension", None)
+    if callable(getter):
+        return _safe_int(getter(), fallback)
+    return int(fallback)
+
+
 async def run_embedding_runtime_self_check(
     *,
     config: Any,
@@ -94,6 +108,7 @@ async def run_embedding_runtime_self_check(
     """Probe the real embedding path and compare dimensions with runtime storage."""
     configured_dimension = _safe_int(_get_config_value(config, "embedding.dimension", 0), 0)
     vector_store_dimension = _safe_int(getattr(vector_store, "dimension", 0), 0)
+    requested_dimension = _get_requested_dimension(embedding_manager, configured_dimension)
 
     if vector_store is None or embedding_manager is None:
         return _build_report(
@@ -101,6 +116,7 @@ async def run_embedding_runtime_self_check(
             code="runtime_components_missing",
             message="vector_store 或 embedding_manager 未初始化",
             configured_dimension=configured_dimension,
+            requested_dimension=requested_dimension,
             vector_store_dimension=vector_store_dimension,
             detected_dimension=0,
             encoded_dimension=0,
@@ -113,6 +129,7 @@ async def run_embedding_runtime_self_check(
     encoded_dimension = 0
     try:
         detected_dimension = _safe_int(await embedding_manager._detect_dimension(), 0)
+        requested_dimension = _get_requested_dimension(embedding_manager, detected_dimension or configured_dimension)
         encoded = await embedding_manager.encode(sample_text)
         encoded_array = _normalize_encoded_vector(encoded)
         encoded_dimension = int(encoded_array.shape[0])
@@ -124,6 +141,7 @@ async def run_embedding_runtime_self_check(
             code="embedding_probe_failed",
             message=f"embedding probe failed: {exc}",
             configured_dimension=configured_dimension,
+            requested_dimension=requested_dimension,
             vector_store_dimension=vector_store_dimension,
             detected_dimension=detected_dimension,
             encoded_dimension=encoded_dimension,
@@ -139,6 +157,7 @@ async def run_embedding_runtime_self_check(
             code="invalid_expected_dimension",
             message="无法确定期望 embedding 维度",
             configured_dimension=configured_dimension,
+            requested_dimension=requested_dimension,
             vector_store_dimension=vector_store_dimension,
             detected_dimension=detected_dimension,
             encoded_dimension=encoded_dimension,
@@ -157,6 +176,7 @@ async def run_embedding_runtime_self_check(
             code="embedding_dimension_mismatch",
             message=msg,
             configured_dimension=configured_dimension,
+            requested_dimension=requested_dimension,
             vector_store_dimension=vector_store_dimension,
             detected_dimension=detected_dimension,
             encoded_dimension=encoded_dimension,
@@ -169,6 +189,7 @@ async def run_embedding_runtime_self_check(
         code="ok",
         message="embedding runtime self-check passed",
         configured_dimension=configured_dimension,
+        requested_dimension=requested_dimension,
         vector_store_dimension=vector_store_dimension,
         detected_dimension=detected_dimension,
         encoded_dimension=encoded_dimension,
@@ -190,6 +211,7 @@ async def ensure_runtime_self_check(
             code="missing_plugin_or_config",
             message="plugin/config unavailable",
             configured_dimension=0,
+            requested_dimension=0,
             vector_store_dimension=0,
             detected_dimension=0,
             encoded_dimension=0,

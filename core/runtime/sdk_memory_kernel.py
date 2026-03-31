@@ -2827,7 +2827,7 @@ class SDKMemoryKernel:
         content = str(text or "").strip()
         if not token or not content:
             return False
-        embedding = await self.embedding_manager.encode([content], dimensions=self.embedding_dimension)
+        embedding = await self.embedding_manager.encode([content])
         if getattr(embedding, "ndim", 1) == 1:
             embedding = embedding.reshape(1, -1)
         if getattr(embedding, "size", 0) <= 0:

@@ -87,7 +87,7 @@ enabled = true
 - `embedding.model_name` (默认 `auto`)
 : embedding 模型选择。
 - `embedding.dimension` (默认 `1024`)
-: 期望维度（运行时会做真实探测并校验）。
+: 唯一公开的维度控制项。插件内部会自动映射为 provider 所需请求字段，并在运行时做真实探测与校验。
 - `embedding.batch_size` (默认 `32`)
 - `embedding.max_concurrent` (默认 `5`)
 - `embedding.enable_cache` (默认 `false`)
