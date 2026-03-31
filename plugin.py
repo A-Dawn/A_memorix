@@ -46,6 +46,19 @@ class AMemorixPlugin(MaiBotPlugin):
                 self._kernel.close()
             self._kernel = None
 
+    async def on_config_update(self, scope: str, config_data: dict[str, Any], version: str) -> None:
+        _ = version
+        if scope == "self":
+            self.set_plugin_config(config_data if isinstance(config_data, dict) else {})
+            return
+        if scope in {"bot", "model"} and self._kernel is not None:
+            shutdown = getattr(self._kernel, "shutdown", None)
+            if callable(shutdown):
+                await shutdown()
+            else:
+                self._kernel.close()
+            self._kernel = None
+
     async def _get_kernel(self) -> SDKMemoryKernel:
         if self._kernel is None:
             self._kernel = SDKMemoryKernel(plugin_root=self._plugin_root, config=self._plugin_config)
