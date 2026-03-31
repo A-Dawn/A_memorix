@@ -1,6 +1,6 @@
 # A_Memorix 配置参考 (v2.0.0)
 
-本文档对应当前仓库代码（`__version__ = 2.0.0`、`SCHEMA_VERSION = 8`）。
+本文档对应当前仓库代码（`__version__ = 2.0.0`、`SCHEMA_VERSION = 9`）。
 
 说明：
 
@@ -24,6 +24,17 @@ batch_size = 32
 max_concurrent = 5
 enable_cache = false
 quantization_type = "int8"
+
+[embedding.fallback]
+enabled = true
+probe_interval_seconds = 180
+allow_metadata_only_write = true
+
+[embedding.paragraph_vector_backfill]
+enabled = true
+interval_seconds = 60
+batch_size = 64
+max_retry = 5
 
 [retrieval]
 top_k_paragraphs = 20
@@ -84,6 +95,13 @@ enabled = true
 : embedding 调用重试策略。
 - `embedding.quantization_type`
 : 当前主路径仅建议 `int8`。
+- `embedding.fallback.enabled` (默认 `true`)
+- `embedding.fallback.probe_interval_seconds` (默认 `180`)
+- `embedding.fallback.allow_metadata_only_write` (默认 `true`)
+- `embedding.paragraph_vector_backfill.enabled` (默认 `true`)
+- `embedding.paragraph_vector_backfill.interval_seconds` (默认 `60`)
+- `embedding.paragraph_vector_backfill.batch_size` (默认 `64`)
+- `embedding.paragraph_vector_backfill.max_retry` (默认 `5`)
 
 ## 2. 检索
 
@@ -108,6 +126,7 @@ enabled = true
 - `backend = "fts5"`
 - `lazy_load = true`
 - `mode = "auto"` (`auto`/`fallback_only`/`hybrid`)
+- 运行时若 embedding 进入 degraded，会强制按 `fallback_only` 执行读路径（不改用户配置文件）
 - `tokenizer_mode = "jieba"` (`jieba`/`mixed`/`char_2gram`)
 - `char_ngram_n = 2`
 - `candidate_k = 80`

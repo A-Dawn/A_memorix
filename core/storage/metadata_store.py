@@ -26,7 +26,7 @@ from .knowledge_types import (
 logger = get_logger("A_Memorix.MetadataStore")
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 class MetadataStore:
@@ -490,6 +490,20 @@ class MetadataStore:
             ON episode_rebuild_sources(updated_at DESC)
         """)
         cursor.execute("""
+            CREATE TABLE IF NOT EXISTS paragraph_vector_backfill (
+                paragraph_hash TEXT PRIMARY KEY,
+                status TEXT DEFAULT 'pending',
+                retry_count INTEGER DEFAULT 0,
+                last_error TEXT,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_paragraph_vector_backfill_status_updated
+            ON paragraph_vector_backfill(status, updated_at)
+        """)
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS external_memory_refs (
                 external_id TEXT PRIMARY KEY,
                 paragraph_hash TEXT NOT NULL,
@@ -663,6 +677,20 @@ class MetadataStore:
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_episode_rebuild_updated_at
             ON episode_rebuild_sources(updated_at DESC)
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS paragraph_vector_backfill (
+                paragraph_hash TEXT PRIMARY KEY,
+                status TEXT DEFAULT 'pending',
+                retry_count INTEGER DEFAULT 0,
+                last_error TEXT,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_paragraph_vector_backfill_status_updated
+            ON paragraph_vector_backfill(status, updated_at)
         """)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS external_memory_refs (
@@ -3579,6 +3607,7 @@ class MetadataStore:
             "paragraph_relations", "paragraph_entities",
             "episodes", "episode_paragraphs",
             "episode_rebuild_sources", "episode_pending_paragraphs",
+            "paragraph_vector_backfill",
         ]
         for table in tables:
             cursor.execute(f"DELETE FROM {table}")
@@ -5163,6 +5192,152 @@ class MetadataStore:
             GROUP BY status
             """,
             (token,),
+        )
+        counts = {"pending": 0, "running": 0, "failed": 0, "done": 0}
+        for row in cursor.fetchall():
+            status = str(row["status"] or "").strip().lower()
+            if status in counts:
+                counts[status] = int(row["count"] or 0)
+        return counts
+
+    def enqueue_paragraph_vector_backfill(
+        self,
+        paragraph_hash: str,
+        *,
+        created_at: Optional[float] = None,
+        error: str = "",
+    ) -> None:
+        """登记段落向量回填任务。"""
+        token = str(paragraph_hash or "").strip()
+        if not token:
+            return
+
+        now = datetime.now().timestamp()
+        created_ts = float(created_at) if created_at is not None else now
+        error_text = str(error or "").strip() or None
+
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO paragraph_vector_backfill (
+                paragraph_hash, status, retry_count, last_error, created_at, updated_at
+            ) VALUES (?, 'pending', 0, ?, ?, ?)
+            ON CONFLICT(paragraph_hash) DO UPDATE SET
+                status = CASE
+                    WHEN paragraph_vector_backfill.status = 'done' THEN 'done'
+                    ELSE 'pending'
+                END,
+                last_error = CASE
+                    WHEN paragraph_vector_backfill.status = 'done' THEN paragraph_vector_backfill.last_error
+                    ELSE excluded.last_error
+                END,
+                created_at = COALESCE(paragraph_vector_backfill.created_at, excluded.created_at),
+                updated_at = excluded.updated_at
+            """,
+            (token, error_text, created_ts, now),
+        )
+        self._conn.commit()
+
+    def fetch_paragraph_vector_backfill_batch(
+        self,
+        limit: int = 64,
+        max_retry: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """获取段落向量回填批次。"""
+        safe_limit = max(1, int(limit))
+        safe_retry = max(0, int(max_retry))
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            SELECT paragraph_hash, status, retry_count, last_error, created_at, updated_at
+            FROM paragraph_vector_backfill
+            WHERE status = 'pending'
+               OR (status = 'failed' AND retry_count < ?)
+            ORDER BY updated_at ASC
+            LIMIT ?
+            """,
+            (safe_retry, safe_limit),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def mark_paragraph_vector_backfill_running(self, hashes: List[str]) -> None:
+        """批量标记段落回填任务为 running。"""
+        if not hashes:
+            return
+        now = datetime.now().timestamp()
+        cursor = self._conn.cursor()
+        uniq = list(dict.fromkeys([str(h or "").strip() for h in hashes if str(h or "").strip()]))
+        if not uniq:
+            return
+        chunk_size = 500
+        for i in range(0, len(uniq), chunk_size):
+            chunk = uniq[i:i + chunk_size]
+            placeholders = ",".join(["?"] * len(chunk))
+            cursor.execute(
+                f"""
+                UPDATE paragraph_vector_backfill
+                SET status = 'running', updated_at = ?
+                WHERE paragraph_hash IN ({placeholders})
+                  AND status IN ('pending', 'failed')
+                """,
+                [now] + chunk,
+            )
+        self._conn.commit()
+
+    def mark_paragraph_vector_backfill_done(self, hashes: List[str]) -> None:
+        """批量标记段落回填任务为 done。"""
+        if not hashes:
+            return
+        now = datetime.now().timestamp()
+        cursor = self._conn.cursor()
+        uniq = list(dict.fromkeys([str(h or "").strip() for h in hashes if str(h or "").strip()]))
+        if not uniq:
+            return
+        chunk_size = 500
+        for i in range(0, len(uniq), chunk_size):
+            chunk = uniq[i:i + chunk_size]
+            placeholders = ",".join(["?"] * len(chunk))
+            cursor.execute(
+                f"""
+                UPDATE paragraph_vector_backfill
+                SET status = 'done',
+                    last_error = NULL,
+                    updated_at = ?
+                WHERE paragraph_hash IN ({placeholders})
+                """,
+                [now] + chunk,
+            )
+        self._conn.commit()
+
+    def mark_paragraph_vector_backfill_failed(self, paragraph_hash: str, error: str = "") -> None:
+        """标记单个段落回填任务失败并累加重试。"""
+        token = str(paragraph_hash or "").strip()
+        if not token:
+            return
+        now = datetime.now().timestamp()
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            UPDATE paragraph_vector_backfill
+            SET status = 'failed',
+                retry_count = COALESCE(retry_count, 0) + 1,
+                last_error = ?,
+                updated_at = ?
+            WHERE paragraph_hash = ?
+            """,
+            (str(error or ""), now, token),
+        )
+        self._conn.commit()
+
+    def get_paragraph_vector_backfill_status_counts(self) -> Dict[str, int]:
+        """统计段落回填任务状态。"""
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            SELECT status, COUNT(*) AS count
+            FROM paragraph_vector_backfill
+            GROUP BY status
+            """
         )
         counts = {"pending": 0, "running": 0, "failed": 0, "done": 0}
         for row in cursor.fetchall():

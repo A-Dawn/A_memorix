@@ -260,6 +260,15 @@ class DualPathRetriever:
             r"relation|related|between.+and)",
             re.IGNORECASE,
         )
+        self._runtime_sparse_only = False
+
+    def set_runtime_sparse_only(self, enabled: bool) -> None:
+        """由运行时控制强制 sparse-only（不改用户配置文件）。"""
+        self._runtime_sparse_only = bool(enabled)
+
+    def _is_sparse_only_runtime(self) -> bool:
+        mode = str(getattr(self.config.sparse, "mode", "auto") or "auto").strip().lower()
+        return bool(self._runtime_sparse_only or mode == "fallback_only")
 
     async def retrieve(
         self,
@@ -414,7 +423,7 @@ class DualPathRetriever:
         if mode == "hybrid":
             return True
         if mode == "fallback_only":
-            return not embedding_ok
+            return True
         # auto
         if not embedding_ok:
             return True
@@ -758,6 +767,10 @@ class DualPathRetriever:
         Returns:
             检索结果列表
         """
+        if self._is_sparse_only_runtime():
+            sparse_results = self._search_paragraphs_sparse(query, top_k, temporal=temporal)
+            return sparse_results[:top_k]
+
         query_emb = None
         embedding_ok = False
         vector_results: List[RetrievalResult] = []
@@ -834,6 +847,18 @@ class DualPathRetriever:
         Returns:
             检索结果列表
         """
+        if self._is_sparse_only_runtime():
+            sparse_results = self._search_relations_sparse(query=query, top_k=top_k, temporal=temporal)
+            graph_results = self._search_relations_graph(query=query, temporal=temporal)
+            if graph_results:
+                merged = self._merge_relation_results_graph_enhanced(
+                    [],
+                    sparse_results,
+                    graph_results,
+                )
+                return merged[:top_k]
+            return sparse_results[:top_k]
+
         query_emb = None
         embedding_ok = False
         vector_results: List[RetrievalResult] = []
@@ -958,6 +983,56 @@ class DualPathRetriever:
             ),
         )
         alpha_override = relation_intent.get("alpha_override")
+
+        if self._is_sparse_only_runtime():
+            para_results = self._search_paragraphs_sparse(
+                query=query,
+                top_k=max(top_k * 2, self.config.sparse.candidate_k),
+                temporal=temporal,
+            )
+            sparse_rel_results = self._search_relations_sparse(
+                query=query,
+                top_k=max(
+                    top_k,
+                    self.config.sparse.relation_candidate_k,
+                    relation_top_k,
+                ),
+                temporal=temporal,
+            )
+            graph_rel_results: List[RetrievalResult] = []
+            if bool(relation_intent.get("enabled", False)):
+                graph_rel_results = self._search_relations_graph(query=query, temporal=temporal)
+            if graph_rel_results:
+                rel_results = self._merge_relation_results_graph_enhanced(
+                    [],
+                    sparse_rel_results,
+                    graph_rel_results,
+                )
+            else:
+                rel_results = sparse_rel_results
+
+            fused_results = self._fuse_results(
+                para_results,
+                rel_results,
+                None,
+                alpha_override=alpha_override,
+                preserve_top_relations=preserve_top_relations,
+            )
+            if self.config.enable_ppr:
+                fused_results = await self._rerank_with_ppr(
+                    fused_results,
+                    query,
+                )
+            if temporal:
+                fused_results = self._sort_results_with_temporal(fused_results, temporal)
+            fused_results = self._apply_relation_intent_pair_rerank(
+                fused_results,
+                enabled=bool(relation_intent.get("enabled", False)),
+                pair_rerank_enabled=pair_predicate_rerank_enabled,
+                pair_limit=pair_predicate_limit,
+            )
+            return fused_results[:top_k]
+
         try:
             query_emb = await self.embedding_manager.encode(query)
             embedding_ok = self._is_embedding_ready_for_vector_search(

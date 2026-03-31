@@ -77,6 +77,18 @@ class SummaryImporter:
             else None
         )
 
+    def _allow_metadata_only_write(self) -> bool:
+        plugin_instance = self.plugin_config.get("plugin_instance") if isinstance(self.plugin_config, dict) else None
+        getter = getattr(plugin_instance, "get_config", None)
+        if callable(getter):
+            return bool(getter("embedding.fallback.allow_metadata_only_write", True))
+        if isinstance(self.plugin_config, dict):
+            embedding_cfg = self.plugin_config.get("embedding", {}) or {}
+            fallback_cfg = embedding_cfg.get("fallback", {}) if isinstance(embedding_cfg, dict) else {}
+            if isinstance(fallback_cfg, dict):
+                return bool(fallback_cfg.get("allow_metadata_only_write", True))
+        return True
+
     def _normalize_summary_model_selectors(self, raw_value: Any) -> List[str]:
         """标准化 summarization.model_name 配置（vNext 仅接受字符串数组）。"""
         if raw_value is None:
@@ -334,6 +346,15 @@ class SummaryImporter:
             )
         if bool(report.get("ok", False)):
             return True, ""
+        if self._allow_metadata_only_write():
+            msg = (
+                f"{report.get('message', 'unknown')} "
+                f"(configured={report.get('configured_dimension', 0)}, "
+                f"store={report.get('vector_store_dimension', 0)}, "
+                f"encoded={report.get('encoded_dimension', 0)})"
+            )
+            logger.warning(f"总结导入进入 metadata-only 回退模式: {msg}")
+            return True, "embedding_degraded_metadata_only"
         return (
             False,
             f"{report.get('message', 'unknown')} "
@@ -379,11 +400,28 @@ class SummaryImporter:
             time_meta=time_meta,
         )
 
-        embedding = await self.embedding_manager.encode(summary)
-        self.vector_store.add(
-            vectors=embedding.reshape(1, -1),
-            ids=[hash_value]
-        )
+        plugin_instance = self.plugin_config.get("plugin_instance") if isinstance(self.plugin_config, dict) else None
+        vector_writer = getattr(plugin_instance, "write_paragraph_vector_or_enqueue", None)
+        if callable(vector_writer):
+            result = await vector_writer(
+                paragraph_hash=hash_value,
+                content=summary,
+                context="summary_import",
+            )
+            if str(result.get("warning", "") or "").strip():
+                logger.warning(f"总结导入段落进入回退写入: {result}")
+        else:
+            try:
+                embedding = await self.embedding_manager.encode(summary)
+                self.vector_store.add(
+                    vectors=embedding.reshape(1, -1),
+                    ids=[hash_value]
+                )
+            except Exception as exc:
+                if not self._allow_metadata_only_write():
+                    raise
+                logger.warning(f"总结导入段落向量写入失败，改为回填队列: {exc}")
+                self.metadata_store.enqueue_paragraph_vector_backfill(hash_value, error=str(exc))
 
         # 导入实体
         if entities:
@@ -403,7 +441,7 @@ class SummaryImporter:
                         predicate=p,
                         obj=o,
                         confidence=1.0,
-                        source_paragraph=summary,
+                        source_paragraph=hash_value,
                         write_vector=write_vector,
                     )
                 else:
@@ -413,7 +451,7 @@ class SummaryImporter:
                         predicate=p,
                         obj=o,
                         confidence=1.0,
-                        source_paragraph=summary
+                        source_paragraph=hash_value
                     )
                     # 写入图数据库（写入 relation_hashes，确保后续可按关系精确修剪）
                     self.graph_store.add_edges([(s, o)], relation_hashes=[rel_hash])

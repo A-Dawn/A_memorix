@@ -110,6 +110,33 @@ class _KernelRuntimeFacade:
     def relation_write_service(self) -> Optional[RelationWriteService]:
         return self._kernel.relation_write_service
 
+    def is_embedding_degraded(self) -> bool:
+        return self._kernel._is_embedding_degraded()
+
+    def allow_metadata_only_write(self) -> bool:
+        return self._kernel._allow_metadata_only_write()
+
+    async def write_paragraph_vector_or_enqueue(
+        self,
+        *,
+        paragraph_hash: str,
+        content: str,
+        context: str = "",
+    ) -> Dict[str, Any]:
+        return await self._kernel._write_paragraph_vector_or_enqueue(
+            paragraph_hash=paragraph_hash,
+            content=content,
+            context=context,
+        )
+
+    def enqueue_paragraph_vector_backfill(
+        self,
+        paragraph_hash: str,
+        *,
+        error: str = "",
+    ) -> None:
+        self._kernel._enqueue_paragraph_vector_backfill(paragraph_hash, error=error)
+
 
 class SDKMemoryKernel:
     def __init__(self, *, plugin_root: Path, config: Optional[Dict[str, Any]] = None) -> None:
@@ -146,6 +173,12 @@ class SDKMemoryKernel:
         self._background_lock = asyncio.Lock()
         self._background_stopping = False
         self._active_person_timestamps: Dict[str, float] = {}
+        self._embedding_degraded: Dict[str, Any] = {
+            "active": False,
+            "reason": "",
+            "since": None,
+            "last_check": None,
+        }
 
     def _cfg(self, key: str, default: Any = None) -> Any:
         current: Any = self.config
@@ -284,8 +317,303 @@ class SDKMemoryKernel:
             "或执行重嵌入/重建向量。"
         )
 
+    def _embedding_fallback_enabled(self) -> bool:
+        return bool(self._cfg("embedding.fallback.enabled", True))
+
+    def _allow_metadata_only_write(self) -> bool:
+        return bool(self._cfg("embedding.fallback.allow_metadata_only_write", True))
+
+    def _embedding_probe_interval_seconds(self) -> float:
+        return max(10.0, float(self._cfg("embedding.fallback.probe_interval_seconds", 180) or 180))
+
+    def _paragraph_vector_backfill_enabled(self) -> bool:
+        return bool(self._cfg("embedding.paragraph_vector_backfill.enabled", True))
+
+    def _paragraph_vector_backfill_interval_seconds(self) -> float:
+        return max(10.0, float(self._cfg("embedding.paragraph_vector_backfill.interval_seconds", 60) or 60))
+
+    def _paragraph_vector_backfill_batch_size(self) -> int:
+        return max(1, int(self._cfg("embedding.paragraph_vector_backfill.batch_size", 64) or 64))
+
+    def _paragraph_vector_backfill_max_retry(self) -> int:
+        return max(1, int(self._cfg("embedding.paragraph_vector_backfill.max_retry", 5) or 5))
+
+    def _is_embedding_degraded(self) -> bool:
+        return bool(self._embedding_degraded.get("active", False))
+
+    def _embedding_degraded_snapshot(self) -> Dict[str, Any]:
+        return {
+            "active": bool(self._embedding_degraded.get("active", False)),
+            "reason": str(self._embedding_degraded.get("reason", "") or ""),
+            "since": self._embedding_degraded.get("since"),
+            "last_check": self._embedding_degraded.get("last_check"),
+        }
+
+    def _set_embedding_degraded(self, *, active: bool, reason: str = "", checked_at: Optional[float] = None) -> None:
+        now = float(checked_at or time.time())
+        prev = self._embedding_degraded_snapshot()
+        if active:
+            since = prev.get("since") if bool(prev.get("active", False)) else now
+            self._embedding_degraded = {
+                "active": True,
+                "reason": str(reason or "").strip(),
+                "since": since,
+                "last_check": now,
+            }
+        else:
+            self._embedding_degraded = {
+                "active": False,
+                "reason": "",
+                "since": None,
+                "last_check": now,
+            }
+        if bool(prev.get("active", False)) != bool(active):
+            if active:
+                logger.warning(
+                    "embedding 进入降级态，将启用 sparse-only 与 metadata-only 写入回退: "
+                    f"reason={self._embedding_degraded.get('reason', '')}"
+                )
+            else:
+                logger.info("embedding 已恢复，退出降级态")
+        self._apply_runtime_sparse_mode()
+
+    def _apply_runtime_sparse_mode(self) -> None:
+        retriever = self.retriever
+        if retriever is None:
+            return
+        setter = getattr(retriever, "set_runtime_sparse_only", None)
+        if not callable(setter):
+            return
+        try:
+            setter(self._is_embedding_degraded())
+        except Exception as exc:
+            logger.warning(f"设置 retriever sparse-only 运行时状态失败: {exc}")
+
+    async def _refresh_runtime_self_check(self, *, sample_text: str = "A_Memorix runtime self check") -> Dict[str, Any]:
+        report = await run_embedding_runtime_self_check(
+            config=self._build_runtime_config(),
+            vector_store=self.vector_store,
+            embedding_manager=self.embedding_manager,
+            sample_text=sample_text,
+        )
+        self._runtime_facade._runtime_self_check_report = dict(report)
+        checked_at = float(report.get("checked_at") or time.time())
+        self._embedding_degraded["last_check"] = checked_at
+        return report
+
+    def _enqueue_paragraph_vector_backfill(self, paragraph_hash: str, *, error: str = "") -> None:
+        if self.metadata_store is None:
+            return
+        try:
+            self.metadata_store.enqueue_paragraph_vector_backfill(
+                paragraph_hash,
+                error=str(error or ""),
+            )
+        except Exception as exc:
+            logger.warning(f"登记 paragraph 向量回填任务失败: {exc}")
+
+    async def _write_paragraph_vector_or_enqueue(
+        self,
+        *,
+        paragraph_hash: str,
+        content: str,
+        context: str = "",
+    ) -> Dict[str, Any]:
+        token = str(paragraph_hash or "").strip()
+        text = str(content or "").strip()
+        if not token or not text:
+            return {
+                "success": False,
+                "vector_written": False,
+                "queued": False,
+                "warning": "",
+                "detail": "invalid_paragraph_input",
+            }
+
+        allow_metadata_only = self._allow_metadata_only_write()
+
+        if self.vector_store is None or self.embedding_manager is None:
+            if not allow_metadata_only:
+                raise RuntimeError("向量写入依赖未初始化")
+            self._enqueue_paragraph_vector_backfill(token, error="vector_runtime_components_missing")
+            return {
+                "success": True,
+                "vector_written": False,
+                "queued": True,
+                "warning": "vector_degraded_write",
+                "detail": "vector_runtime_components_missing",
+            }
+
+        if self._is_embedding_degraded():
+            if not allow_metadata_only:
+                raise RuntimeError("embedding 处于降级态，metadata-only 写入已禁用")
+            self._enqueue_paragraph_vector_backfill(token, error="embedding_degraded")
+            return {
+                "success": True,
+                "vector_written": False,
+                "queued": True,
+                "warning": "vector_degraded_write",
+                "detail": "embedding_degraded",
+            }
+
+        if token in self.vector_store:
+            return {
+                "success": True,
+                "vector_written": True,
+                "queued": False,
+                "warning": "",
+                "detail": "vector_already_exists",
+            }
+
+        try:
+            embedding = await self.embedding_manager.encode(text)
+            if getattr(embedding, "ndim", 1) == 1:
+                embedding = embedding.reshape(1, -1)
+            self.vector_store.add(vectors=embedding, ids=[token])
+            return {
+                "success": True,
+                "vector_written": True,
+                "queued": False,
+                "warning": "",
+                "detail": "",
+            }
+        except Exception as exc:
+            error_text = str(exc)
+            if self._embedding_fallback_enabled():
+                self._set_embedding_degraded(active=True, reason=error_text[:500], checked_at=time.time())
+            if not allow_metadata_only:
+                raise
+            self._enqueue_paragraph_vector_backfill(token, error=error_text)
+            return {
+                "success": True,
+                "vector_written": False,
+                "queued": True,
+                "warning": "vector_degraded_write",
+                "detail": f"{str(context or 'paragraph')} vector write failed: {error_text}",
+            }
+
+    def _paragraph_vector_backfill_counts(self) -> Dict[str, int]:
+        if self.metadata_store is None:
+            return {"pending": 0, "running": 0, "failed": 0, "done": 0}
+        try:
+            return self.metadata_store.get_paragraph_vector_backfill_status_counts()
+        except Exception as exc:
+            logger.warning(f"读取 paragraph 回填状态失败: {exc}")
+            return {"pending": 0, "running": 0, "failed": 0, "done": 0}
+
+    async def _run_paragraph_backfill_once(
+        self,
+        *,
+        limit: Optional[int] = None,
+        max_retry: Optional[int] = None,
+        trigger: str = "manual",
+    ) -> Dict[str, Any]:
+        if self.metadata_store is None or self.vector_store is None or self.embedding_manager is None:
+            return {"success": False, "processed": 0, "done": 0, "failed": 0, "trigger": trigger}
+        if self._is_embedding_degraded():
+            return {
+                "success": False,
+                "processed": 0,
+                "done": 0,
+                "failed": 0,
+                "trigger": trigger,
+                "detail": "embedding_degraded",
+            }
+
+        safe_limit = max(1, int(limit or self._paragraph_vector_backfill_batch_size()))
+        safe_retry = max(1, int(max_retry or self._paragraph_vector_backfill_max_retry()))
+        rows = self.metadata_store.fetch_paragraph_vector_backfill_batch(limit=safe_limit, max_retry=safe_retry)
+        if not rows:
+            return {"success": True, "processed": 0, "done": 0, "failed": 0, "trigger": trigger}
+
+        pending_hashes = [
+            str(row.get("paragraph_hash", "") or "").strip()
+            for row in rows
+            if str(row.get("paragraph_hash", "") or "").strip()
+        ]
+        if pending_hashes:
+            self.metadata_store.mark_paragraph_vector_backfill_running(pending_hashes)
+
+        done_hashes: List[str] = []
+        failed_count = 0
+        for row in rows:
+            paragraph_hash = str(row.get("paragraph_hash", "") or "").strip()
+            if not paragraph_hash:
+                continue
+            if paragraph_hash in self.vector_store:
+                done_hashes.append(paragraph_hash)
+                continue
+            paragraph = self.metadata_store.get_paragraph(paragraph_hash)
+            if paragraph is None:
+                done_hashes.append(paragraph_hash)
+                continue
+            content = str(paragraph.get("content", "") or "").strip()
+            if not content:
+                done_hashes.append(paragraph_hash)
+                continue
+            try:
+                embedding = await self.embedding_manager.encode(content)
+                if getattr(embedding, "ndim", 1) == 1:
+                    embedding = embedding.reshape(1, -1)
+                self.vector_store.add(vectors=embedding, ids=[paragraph_hash])
+                done_hashes.append(paragraph_hash)
+            except Exception as exc:
+                failed_count += 1
+                self.metadata_store.mark_paragraph_vector_backfill_failed(paragraph_hash, str(exc))
+                if self._embedding_fallback_enabled():
+                    self._set_embedding_degraded(active=True, reason=str(exc)[:500], checked_at=time.time())
+
+        if done_hashes:
+            self.metadata_store.mark_paragraph_vector_backfill_done(done_hashes)
+            self._persist()
+
+        return {
+            "success": failed_count == 0,
+            "processed": len(done_hashes) + failed_count,
+            "done": len(done_hashes),
+            "failed": failed_count,
+            "trigger": trigger,
+        }
+
+    async def _recover_embedding_once(self, *, sample_text: str = "A_Memorix runtime self check") -> Dict[str, Any]:
+        report = await self._refresh_runtime_self_check(sample_text=sample_text)
+        checked_at = float(report.get("checked_at") or time.time())
+        ok = bool(report.get("ok", False))
+        if ok:
+            self._set_embedding_degraded(active=False, checked_at=checked_at)
+            backfill_result: Dict[str, Any] = {}
+            if self._paragraph_vector_backfill_enabled():
+                backfill_result = await self._run_paragraph_backfill_once(
+                    limit=self._paragraph_vector_backfill_batch_size(),
+                    max_retry=self._paragraph_vector_backfill_max_retry(),
+                    trigger="embedding_recovered",
+                )
+            return {
+                "success": True,
+                "recovered": True,
+                "report": report,
+                "backfill": backfill_result,
+            }
+
+        reason = str(report.get("message", "runtime self-check failed") or "runtime self-check failed")
+        if self._embedding_fallback_enabled():
+            self._set_embedding_degraded(active=True, reason=reason, checked_at=checked_at)
+            return {
+                "success": False,
+                "recovered": False,
+                "report": report,
+                "detail": "still_degraded",
+            }
+        return {
+            "success": False,
+            "recovered": False,
+            "report": report,
+            "detail": "fallback_disabled",
+        }
+
     async def initialize(self) -> None:
         if self._initialized:
+            self._apply_runtime_sparse_mode()
             await self._start_background_tasks()
             return
 
@@ -358,6 +686,7 @@ class SDKMemoryKernel:
         self.retriever = self._runtime_bundle.retriever
         self.threshold_filter = self._runtime_bundle.threshold_filter
         self.sparse_index = self._runtime_bundle.sparse_index or self.sparse_index
+        self._apply_runtime_sparse_mode()
 
         runtime_config = self._build_runtime_config()
         self.episode_retriever = EpisodeRetrievalService(metadata_store=self.metadata_store, retriever=self.retriever)
@@ -390,16 +719,16 @@ class SDKMemoryKernel:
             import_write_blocked_provider=self.import_task_manager.is_write_blocked,
         )
 
-        report = await run_embedding_runtime_self_check(
-            config=runtime_config,
-            vector_store=self.vector_store,
-            embedding_manager=self.embedding_manager,
-            sample_text="A_Memorix runtime self check",
-        )
-        self._runtime_facade._runtime_self_check_report = dict(report)
+        report = await self._refresh_runtime_self_check(sample_text="A_Memorix runtime self check")
         if not bool(report.get("ok", False)):
             message = str(report.get("message", "runtime self-check failed") or "runtime self-check failed")
-            raise RuntimeError(f"{message}；请改回原 embedding 配置，或执行重嵌入/重建向量。")
+            checked_at = float(report.get("checked_at") or time.time())
+            if self._embedding_fallback_enabled():
+                self._set_embedding_degraded(active=True, reason=message, checked_at=checked_at)
+            else:
+                raise RuntimeError(f"{message}；请改回原 embedding 配置，或执行重嵌入/重建向量。")
+        else:
+            self._set_embedding_degraded(active=False, checked_at=float(report.get("checked_at") or time.time()))
 
         self._initialized = True
         await self._start_background_tasks()
@@ -429,6 +758,12 @@ class SDKMemoryKernel:
             self._runtime_facade._runtime_self_check_report = {}
             self._background_tasks.clear()
             self._active_person_timestamps.clear()
+            self._embedding_degraded = {
+                "active": False,
+                "reason": "",
+                "since": None,
+                "last_check": None,
+            }
 
     async def execute_request_with_dedup(
         self,
@@ -595,6 +930,7 @@ class SDKMemoryKernel:
                 "tags": self._tokens(tags),
             }
         )
+        warnings: List[str] = []
 
         paragraph_hash = self.metadata_store.add_paragraph(
             content=content,
@@ -603,8 +939,14 @@ class SDKMemoryKernel:
             knowledge_type=self._resolve_knowledge_type(source_type),
             time_meta=self._time_meta(timestamp, time_start, time_end),
         )
-        embedding = await self.embedding_manager.encode(content)
-        self.vector_store.add(vectors=embedding.reshape(1, -1), ids=[paragraph_hash])
+        vector_result = await self._write_paragraph_vector_or_enqueue(
+            paragraph_hash=paragraph_hash,
+            content=content,
+            context="ingest_text",
+        )
+        warning = str(vector_result.get("warning", "") or "").strip()
+        if warning:
+            warnings.append(warning)
 
         for name in entity_tokens:
             self.metadata_store.add_entity(name=name, source_paragraph=paragraph_hash)
@@ -643,7 +985,11 @@ class SDKMemoryKernel:
         for person_id in person_tokens:
             self._mark_person_active(person_id)
             await self.refresh_person_profile(person_id)
-        return {"stored_ids": [paragraph_hash, *stored_relations], "skipped_ids": []}
+        payload = {"stored_ids": [paragraph_hash, *stored_relations], "skipped_ids": []}
+        if warnings:
+            payload["warnings"] = warnings
+            payload["detail"] = "vector_degraded_write"
+        return payload
 
     async def process_episode_pending_batch(self, *, limit: int = 20, max_retry: int = 3) -> Dict[str, Any]:
         await self.initialize()
@@ -950,12 +1296,15 @@ class SDKMemoryKernel:
         pending = self.metadata_store.query(
             "SELECT COUNT(*) AS c FROM episode_pending_paragraphs WHERE status IN ('pending', 'running', 'failed')"
         )[0]["c"]
+        backfill = self._paragraph_vector_backfill_counts()
         return {
             "paragraphs": int(stats.get("paragraph_count", 0) or 0),
             "relations": int(stats.get("relation_count", 0) or 0),
             "episodes": int(episodes or 0),
             "profiles": int(profiles or 0),
             "episode_pending": int(pending or 0),
+            "paragraph_vector_backfill_pending": int(backfill.get("pending", 0) or 0),
+            "paragraph_vector_backfill_failed": int(backfill.get("failed", 0) or 0),
             "last_maintenance_at": self._last_maintenance_at,
         }
 
@@ -1268,6 +1617,8 @@ class SDKMemoryKernel:
             return {"success": True, "saved": True, "data_dir": str(self.data_dir)}
 
         if act == "get_config":
+            degraded = self._embedding_degraded_snapshot()
+            backfill_counts = self._paragraph_vector_backfill_counts()
             return {
                 "success": True,
                 "config": self.config,
@@ -1276,22 +1627,54 @@ class SDKMemoryKernel:
                 "auto_save": bool(self._cfg("advanced.enable_auto_save", True)),
                 "relation_vectors_enabled": bool(self.relation_vectors_enabled),
                 "runtime_ready": self.is_runtime_ready(),
+                "embedding_degraded": bool(degraded.get("active", False)),
+                "embedding_degraded_reason": str(degraded.get("reason", "") or ""),
+                "embedding_degraded_since": degraded.get("since"),
+                "embedding_last_check": degraded.get("last_check"),
+                "paragraph_vector_backfill_pending": int(backfill_counts.get("pending", 0) or 0),
+                "paragraph_vector_backfill_running": int(backfill_counts.get("running", 0) or 0),
+                "paragraph_vector_backfill_failed": int(backfill_counts.get("failed", 0) or 0),
+                "paragraph_vector_backfill_done": int(backfill_counts.get("done", 0) or 0),
             }
 
         if act in {"self_check", "refresh_self_check"}:
-            report = await run_embedding_runtime_self_check(
-                config=self._build_runtime_config(),
-                vector_store=self.vector_store,
-                embedding_manager=self.embedding_manager,
-                sample_text=str(kwargs.get("sample_text", "") or "A_Memorix runtime self check"),
+            report = await self._refresh_runtime_self_check(
+                sample_text=str(kwargs.get("sample_text", "") or "A_Memorix runtime self check")
             )
-            self._runtime_facade._runtime_self_check_report = dict(report)
+            checked_at = float(report.get("checked_at") or time.time())
+            if bool(report.get("ok", False)):
+                self._set_embedding_degraded(active=False, checked_at=checked_at)
+            elif self._embedding_fallback_enabled():
+                self._set_embedding_degraded(
+                    active=True,
+                    reason=str(report.get("message", "runtime self-check failed") or "runtime self-check failed"),
+                    checked_at=checked_at,
+                )
             return {"success": bool(report.get("ok", False)), "report": report}
 
         if act == "set_auto_save":
             enabled = bool(kwargs.get("enabled", False))
             self._set_cfg("advanced.enable_auto_save", enabled)
             return {"success": True, "auto_save": enabled}
+
+        if act == "recover_embedding":
+            result = await self._recover_embedding_once(
+                sample_text=str(kwargs.get("sample_text", "") or "A_Memorix runtime self check")
+            )
+            result["embedding_degraded"] = self._is_embedding_degraded()
+            result["embedding_state"] = self._embedding_degraded_snapshot()
+            result["backfill_counts"] = self._paragraph_vector_backfill_counts()
+            return result
+
+        if act == "paragraph_backfill_once":
+            result = await self._run_paragraph_backfill_once(
+                limit=self._optional_int(kwargs.get("limit")),
+                max_retry=self._optional_int(kwargs.get("max_retry")),
+                trigger="manual",
+            )
+            result["embedding_degraded"] = self._is_embedding_degraded()
+            result["backfill_counts"] = self._paragraph_vector_backfill_counts()
+            return result
 
         return {"success": False, "error": f"不支持的 runtime action: {act}"}
 
@@ -1598,6 +1981,8 @@ class SDKMemoryKernel:
             self._background_stopping = False
             self._ensure_background_task("auto_save", self._auto_save_loop)
             self._ensure_background_task("episode_pending", self._episode_pending_loop)
+            self._ensure_background_task("embedding_probe", self._embedding_probe_loop)
+            self._ensure_background_task("paragraph_vector_backfill", self._paragraph_vector_backfill_loop)
             self._ensure_background_task("memory_maintenance", self._memory_maintenance_loop)
             self._ensure_background_task("person_profile_refresh", self._person_profile_refresh_loop)
 
@@ -1654,6 +2039,45 @@ class SDKMemoryKernel:
             raise
         except Exception as exc:
             logger.warning(f"episode_pending loop 异常: {exc}")
+
+    async def _embedding_probe_loop(self) -> None:
+        try:
+            while not self._background_stopping:
+                await asyncio.sleep(self._embedding_probe_interval_seconds())
+                if self._background_stopping:
+                    break
+                if not self._embedding_fallback_enabled():
+                    continue
+                if not self._is_embedding_degraded():
+                    continue
+                try:
+                    await self._recover_embedding_once()
+                except Exception as exc:
+                    logger.warning(f"embedding 恢复探测失败: {exc}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(f"embedding_probe loop 异常: {exc}")
+
+    async def _paragraph_vector_backfill_loop(self) -> None:
+        try:
+            while not self._background_stopping:
+                await asyncio.sleep(self._paragraph_vector_backfill_interval_seconds())
+                if self._background_stopping:
+                    break
+                if not self._paragraph_vector_backfill_enabled():
+                    continue
+                if self._is_embedding_degraded():
+                    continue
+                await self._run_paragraph_backfill_once(
+                    limit=self._paragraph_vector_backfill_batch_size(),
+                    max_retry=self._paragraph_vector_backfill_max_retry(),
+                    trigger="loop",
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(f"paragraph_vector_backfill loop 异常: {exc}")
 
     async def _person_profile_refresh_loop(self) -> None:
         try:

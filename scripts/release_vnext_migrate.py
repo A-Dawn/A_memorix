@@ -293,6 +293,8 @@ def _preflight_impl(config_path: Path, data_dir: Path) -> Dict[str, Any]:
         try:
             has_schema_table = _sqlite_table_exists(conn, "schema_migrations")
             facts["schema_migrations_exists"] = has_schema_table
+            has_paragraph_backfill = _sqlite_table_exists(conn, "paragraph_vector_backfill")
+            facts["paragraph_vector_backfill_exists"] = has_paragraph_backfill
             if not has_schema_table:
                 checks.append(
                     CheckItem(
@@ -311,6 +313,14 @@ def _preflight_impl(config_path: Path, data_dir: Path) -> Dict[str, Any]:
                             "CP-08",
                             "error",
                             f"schema version mismatch: current={version}, expected={SCHEMA_VERSION}",
+                        )
+                    )
+                elif not has_paragraph_backfill:
+                    checks.append(
+                        CheckItem(
+                            "CP-14",
+                            "error",
+                            "paragraph_vector_backfill table missing under current schema version",
                         )
                     )
 
@@ -603,6 +613,16 @@ def _verify_impl(config_path: Path, data_dir: Path) -> Dict[str, Any]:
         if db_path.exists():
             conn = sqlite3.connect(str(db_path))
             try:
+                has_paragraph_backfill = _sqlite_table_exists(conn, "paragraph_vector_backfill")
+                facts["paragraph_vector_backfill_exists"] = bool(has_paragraph_backfill)
+                if not has_paragraph_backfill:
+                    checks.append(
+                        CheckItem(
+                            "CP-14",
+                            "error",
+                            "paragraph_vector_backfill table missing after migration",
+                        )
+                    )
                 conflicts = _collect_hash_alias_conflicts(conn)
                 invalid_knowledge_types = _collect_invalid_knowledge_types(conn)
             finally:

@@ -380,6 +380,78 @@ class ImportTaskManager:
     def _cfg_int(self, key: str, default: int) -> int:
         return _coerce_int(self._cfg(key, default), default)
 
+    def _allow_metadata_only_write(self) -> bool:
+        return bool(self._cfg("embedding.fallback.allow_metadata_only_write", True))
+
+    def _is_embedding_degraded(self) -> bool:
+        checker = getattr(self.plugin, "is_embedding_degraded", None)
+        if callable(checker):
+            try:
+                return bool(checker())
+            except Exception:
+                return False
+        return False
+
+    def _enqueue_paragraph_backfill(self, paragraph_hash: str, *, error: str = "") -> None:
+        if not paragraph_hash:
+            return
+        enqueue = getattr(self.plugin, "enqueue_paragraph_vector_backfill", None)
+        if callable(enqueue):
+            try:
+                enqueue(paragraph_hash, error=error)
+                return
+            except Exception as exc:
+                logger.warning(f"回填入队失败（runtime facade）: {exc}")
+        try:
+            self.plugin.metadata_store.enqueue_paragraph_vector_backfill(paragraph_hash, error=error)
+        except Exception as exc:
+            logger.warning(f"回填入队失败（metadata_store）: {exc}")
+
+    async def _write_paragraph_vector_or_enqueue(
+        self,
+        *,
+        paragraph_hash: str,
+        content: str,
+        context: str,
+    ) -> Dict[str, Any]:
+        writer = getattr(self.plugin, "write_paragraph_vector_or_enqueue", None)
+        if callable(writer):
+            return await writer(paragraph_hash=paragraph_hash, content=content, context=context)
+
+        if self._is_embedding_degraded():
+            if not self._allow_metadata_only_write():
+                raise RuntimeError("embedding 处于降级态且 metadata-only 写入被禁用")
+            self._enqueue_paragraph_backfill(paragraph_hash, error="embedding_degraded")
+            return {
+                "success": True,
+                "vector_written": False,
+                "queued": True,
+                "warning": "vector_degraded_write",
+                "detail": "embedding_degraded",
+            }
+
+        try:
+            emb = await self.plugin.embedding_manager.encode(content)
+            self.plugin.vector_store.add(emb.reshape(1, -1), [paragraph_hash])
+            return {
+                "success": True,
+                "vector_written": True,
+                "queued": False,
+                "warning": "",
+                "detail": "",
+            }
+        except Exception as exc:
+            if not self._allow_metadata_only_write():
+                raise
+            self._enqueue_paragraph_backfill(paragraph_hash, error=str(exc))
+            return {
+                "success": True,
+                "vector_written": False,
+                "queued": True,
+                "warning": "vector_degraded_write",
+                "detail": str(exc),
+            }
+
     def _is_enabled(self) -> bool:
         return bool(self._cfg("web.import.enabled", True))
 
@@ -2913,11 +2985,15 @@ class ImportTaskManager:
                             knowledge_type=k_type,
                             time_meta=unit.get("time_meta"),
                         )
-                        emb = await self.plugin.embedding_manager.encode(content)
-                        try:
-                            self.plugin.vector_store.add(emb.reshape(1, -1), [para_hash])
-                        except ValueError:
-                            pass
+                        vector_result = await self._write_paragraph_vector_or_enqueue(
+                            paragraph_hash=para_hash,
+                            content=content,
+                            context="web_import_json",
+                        )
+                        if str(vector_result.get("warning", "") or "").strip():
+                            logger.warning(
+                                f"web_import json paragraph 向量写入降级: hash={para_hash[:8]} detail={vector_result.get('detail')}"
+                            )
                         for name in unit.get("entities", []) or []:
                             n = str(name or "").strip()
                             if n:
@@ -2949,6 +3025,12 @@ class ImportTaskManager:
         report = await ensure_runtime_self_check(self.plugin)
         if bool(report.get("ok", False)):
             return
+        if self._allow_metadata_only_write():
+            logger.warning(
+                "web_import embedding runtime self-check 失败，进入 metadata-only 回退模式: "
+                f"{report.get('message', 'unknown')}"
+            )
+            return
         raise RuntimeError(
             "embedding runtime self-check failed: "
             f"{report.get('message', 'unknown')} "
@@ -2972,11 +3054,15 @@ class ImportTaskManager:
             time_meta=time_meta,
         )
 
-        emb = await self.plugin.embedding_manager.encode(content)
-        try:
-            self.plugin.vector_store.add(emb.reshape(1, -1), [para_hash])
-        except ValueError:
-            pass
+        vector_result = await self._write_paragraph_vector_or_enqueue(
+            paragraph_hash=para_hash,
+            content=content,
+            context="web_import_text",
+        )
+        if str(vector_result.get("warning", "") or "").strip():
+            logger.warning(
+                f"web_import text paragraph 向量写入降级: hash={para_hash[:8]} detail={vector_result.get('detail')}"
+            )
 
         data = processed.data or {}
         entities: List[str] = []
@@ -3015,11 +3101,15 @@ class ImportTaskManager:
         hash_value = self.plugin.metadata_store.add_entity(name=name, source_paragraph=source_paragraph)
         self.plugin.graph_store.add_nodes([name])
         if hash_value not in self.plugin.vector_store:
-            emb = await self.plugin.embedding_manager.encode(name)
             try:
+                if self._is_embedding_degraded():
+                    raise RuntimeError("embedding_degraded")
+                emb = await self.plugin.embedding_manager.encode(name)
                 self.plugin.vector_store.add(emb.reshape(1, -1), [hash_value])
-            except ValueError:
-                pass
+            except Exception as exc:
+                if not self._allow_metadata_only_write():
+                    raise
+                logger.warning(f"实体向量写入降级，保留 metadata/graph: entity={name} error={exc}")
         return hash_value
 
     async def _add_relation(self, subject: str, predicate: str, obj: str, source_paragraph: str = "") -> str:
