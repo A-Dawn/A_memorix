@@ -311,9 +311,47 @@ class PersonProfileService:
             )
         return edges
 
-    async def _collect_vector_evidence(self, aliases: List[str], top_k: int = 12) -> List[Dict[str, Any]]:
+    def _collect_person_fact_evidence(self, person_id: str, limit: int = 4) -> List[Dict[str, Any]]:
+        token = str(person_id or "").strip()
+        if not token:
+            return []
+
+        source = f"person_fact:{token}"
+        paragraphs = [
+            row
+            for row in self.metadata_store.get_paragraphs_by_source(source)
+            if not bool(row.get("is_deleted", 0))
+        ]
+        paragraphs.sort(
+            key=lambda item: float(item.get("updated_at") or item.get("created_at") or 0.0),
+            reverse=True,
+        )
+
+        evidence: List[Dict[str, Any]] = []
+        for row in paragraphs[: max(1, int(limit))]:
+            paragraph_hash = str(row.get("hash", "") or "")
+            content = str(row.get("content", "") or "").strip()
+            if not paragraph_hash or not content:
+                continue
+            evidence.append(
+                {
+                    "hash": paragraph_hash,
+                    "type": "paragraph",
+                    "score": 1.1,
+                    "content": content[:220],
+                    "metadata": {},
+                }
+            )
+        return evidence
+
+    async def _collect_vector_evidence(
+        self,
+        aliases: List[str],
+        top_k: int = 12,
+        person_id: str = "",
+    ) -> List[Dict[str, Any]]:
         alias_queries = [a for a in aliases if a]
-        if not alias_queries:
+        if not alias_queries and not person_id:
             return []
 
         if self.retriever is None:
@@ -340,6 +378,13 @@ class PersonProfileService:
         per_alias_top_k = max(2, int(top_k / max(1, len(alias_queries))))
         seen_hash = set()
         evidence: List[Dict[str, Any]] = []
+        for item in self._collect_person_fact_evidence(person_id, limit=max(2, min(4, top_k))):
+            h = str(item.get("hash", "") or "")
+            if not h or h in seen_hash:
+                continue
+            seen_hash.add(h)
+            evidence.append(item)
+
         for alias in alias_queries:
             try:
                 results = await self.retriever.retrieve(alias, top_k=per_alias_top_k)
@@ -493,7 +538,7 @@ class PersonProfileService:
             aliases = [person_keyword.strip()]
             primary_name = person_keyword.strip()
         relation_edges = self._collect_relation_evidence(aliases, limit=max(10, top_k * 2))
-        vector_evidence = await self._collect_vector_evidence(aliases, top_k=max(4, top_k))
+        vector_evidence = await self._collect_vector_evidence(aliases, top_k=max(4, top_k), person_id=pid)
 
         evidence_ids = [
             str(item.get("hash", ""))

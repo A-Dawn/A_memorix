@@ -23,6 +23,14 @@ from .knowledge_types import (
     validate_stored_knowledge_type,
 )
 
+try:
+    import jieba  # type: ignore
+
+    HAS_JIEBA = True
+except Exception:
+    jieba = None
+    HAS_JIEBA = False
+
 logger = get_logger("A_Memorix.MetadataStore")
 
 
@@ -5603,14 +5611,42 @@ class MetadataStore:
         if not normalized:
             return "", []
 
-        token_pattern = re.compile(r"[A-Za-z0-9_\u4e00-\u9fff]{2,}")
         tokens: List[str] = []
         seen = set()
-        for token in token_pattern.findall(normalized):
-            if token in seen:
+
+        def _push(token: str) -> None:
+            clean = str(token or "").strip().lower()
+            if len(clean) < 2 or clean in seen:
+                return
+            seen.add(clean)
+            tokens.append(clean)
+
+        for span in re.findall(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]+", normalized):
+            if re.fullmatch(r"[A-Za-z0-9_]+", span):
+                _push(span)
                 continue
-            seen.add(token)
-            tokens.append(token)
+
+            segmented: List[str] = []
+            if HAS_JIEBA:
+                try:
+                    segmented = [
+                        str(item).strip().lower()
+                        for item in jieba.cut_for_search(span)  # type: ignore[union-attr]
+                        if len(str(item).strip()) >= 2
+                    ]
+                except Exception:
+                    segmented = []
+
+            if not segmented:
+                compact = span.strip()
+                if len(compact) <= 3:
+                    segmented = [compact]
+                else:
+                    for n in range(2, min(4, len(compact)) + 1):
+                        segmented.extend(compact[i : i + n] for i in range(0, len(compact) - n + 1))
+
+            for token in segmented:
+                _push(token)
 
         if not tokens and len(normalized) >= 2:
             tokens = [normalized]
