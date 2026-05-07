@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Coroutine, cast
 
 from src.common.logger import get_logger
 
+from ...paths import default_data_dir, resolve_repo_path
 from ..embedding import create_embedding_api_adapter
 from ..retrieval import SparseBM25Config, SparseBM25Index
 from ..storage import (
@@ -41,7 +42,7 @@ async def ensure_initialized(plugin: Any) -> None:
             logger.error(
                 "A_Memorix runtime self-check failed: "
                 f"{report.get('message', 'unknown')}; "
-                "建议执行 python plugins/A_memorix/scripts/runtime_self_check.py --json"
+                "建议执行 python src/A_memorix/scripts/runtime_self_check.py --json"
             )
 
         if plugin.graph_store and plugin.metadata_store:
@@ -105,7 +106,8 @@ def start_background_tasks(plugin: Any) -> None:
         and bool(plugin.get_config("episode.generation_enabled", True))
         and (episode_task is None or episode_task.done())
     ):
-        plugin._episode_generation_task = asyncio.create_task(episode_loop())
+        episode_loop_fn = cast(Callable[[], Coroutine[Any, Any, Any]], episode_loop)
+        plugin._episode_generation_task = asyncio.create_task(episode_loop_fn())
 
 
 async def cancel_background_tasks(plugin: Any) -> None:
@@ -143,11 +145,7 @@ async def cancel_background_tasks(plugin: Any) -> None:
 async def initialize_storage_async(plugin: Any) -> None:
     """Initialize storage components asynchronously."""
     data_dir_str = plugin.get_config("storage.data_dir", "./data")
-    if data_dir_str.startswith("."):
-        plugin_dir = Path(__file__).resolve().parents[2]
-        data_dir = (plugin_dir / data_dir_str).resolve()
-    else:
-        data_dir = Path(data_dir_str)
+    data_dir = resolve_repo_path(data_dir_str, fallback=default_data_dir())
 
     logger.info(f"A_Memorix 数据存储路径: {data_dir}")
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -163,7 +161,7 @@ async def initialize_storage_async(plugin: Any) -> None:
 
     try:
         detected_dimension = await plugin.embedding_manager._detect_dimension()
-        logger.info(f"嵌入维度检测成功: {detected_dimension}")
+        logger.info(f"嵌入维度: {detected_dimension}")
     except Exception as e:
         logger.warning(f"嵌入维度检测失败: {e}，使用默认值")
         detected_dimension = plugin.embedding_manager.default_dimension
@@ -196,11 +194,11 @@ async def initialize_storage_async(plugin: Any) -> None:
         matrix_format=matrix_format,
         data_dir=data_dir / "graph",
     )
-    logger.info("图存储初始化完成")
+    logger.debug("图存储初始化完成")
 
     plugin.metadata_store = MetadataStore(data_dir=data_dir / "metadata")
     plugin.metadata_store.connect()
-    logger.info("元数据存储初始化完成")
+    logger.debug("元数据存储初始化完成")
 
     plugin.relation_write_service = RelationWriteService(
         metadata_store=plugin.metadata_store,
@@ -235,7 +233,7 @@ async def initialize_storage_async(plugin: Any) -> None:
     if plugin.vector_store.has_data():
         try:
             plugin.vector_store.load()
-            logger.info(f"向量数据已加载，共 {plugin.vector_store.num_vectors} 个向量")
+            logger.debug(f"向量数据已加载，共 {plugin.vector_store.num_vectors} 个向量")
         except Exception as e:
             logger.warning(f"加载向量数据失败: {e}")
 
@@ -261,7 +259,7 @@ async def initialize_storage_async(plugin: Any) -> None:
     if plugin.graph_store.has_data():
         try:
             plugin.graph_store.load()
-            logger.info(f"图数据已加载，共 {plugin.graph_store.num_nodes} 个节点")
+            logger.debug(f"图数据已加载，共 {plugin.graph_store.num_nodes} 个节点")
         except Exception as e:
             logger.warning(f"加载图数据失败: {e}")
 

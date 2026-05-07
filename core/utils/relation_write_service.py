@@ -128,7 +128,7 @@ class RelationWriteService:
         predicate: str,
         obj: str,
         confidence: float = 1.0,
-        source_paragraph: str = "",
+        source_paragraph: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         *,
         write_vector: bool = True,

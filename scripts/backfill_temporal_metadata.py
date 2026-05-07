@@ -11,16 +11,9 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
-import sys
 
-
-CURRENT_DIR = Path(__file__).resolve().parent
-PLUGIN_ROOT = CURRENT_DIR.parent
-PROJECT_ROOT = PLUGIN_ROOT.parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
-
-from plugins.A_memorix.core.storage import MetadataStore  # noqa: E402
+from _bootstrap import DEFAULT_DATA_DIR, resolve_repo_path
+from A_memorix.core.storage import MetadataStore  # noqa: E402
 
 
 def backfill(
@@ -49,7 +42,7 @@ def backfill(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Backfill temporal metadata for A_Memorix paragraphs")
-    parser.add_argument("--data-dir", default=str(PLUGIN_ROOT / "data"), help="数据目录")
+    parser.add_argument("--data-dir", default=str(DEFAULT_DATA_DIR), help="数据目录")
     parser.add_argument("--dry-run", action="store_true", help="仅统计，不写入")
     parser.add_argument("--limit", type=int, default=100000, help="最大处理条数")
     parser.add_argument(
@@ -60,7 +53,7 @@ def main() -> int:
     args = parser.parse_args()
 
     backfill(
-        data_dir=Path(args.data_dir),
+        data_dir=resolve_repo_path(args.data_dir, fallback=DEFAULT_DATA_DIR),
         dry_run=args.dry_run,
         limit=max(1, int(args.limit)),
         no_created_fallback=args.no_created_fallback,
@@ -70,4 +63,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

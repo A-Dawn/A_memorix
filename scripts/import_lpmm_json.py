@@ -23,14 +23,7 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeEl
 
 console = Console()
 
-CURRENT_DIR = Path(__file__).resolve().parent
-PLUGIN_ROOT = CURRENT_DIR.parent
-WORKSPACE_ROOT = PLUGIN_ROOT.parent
-MAIBOT_ROOT = WORKSPACE_ROOT / "MaiBot"
-for path in (CURRENT_DIR, WORKSPACE_ROOT, MAIBOT_ROOT, PLUGIN_ROOT):
-    path_str = str(path)
-    if path_str not in sys.path:
-        sys.path.insert(0, path_str)
+import _bootstrap  # noqa: F401
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:

@@ -92,9 +92,9 @@ class SearchExecutionService:
                 return plugin_instance
 
         try:
-            from ...plugin import AMemorixPlugin
+            from ...runtime_registry import get_runtime_kernel
 
-            return getattr(AMemorixPlugin, "get_global_instance", lambda: None)()
+            return get_runtime_kernel()
         except Exception:
             return None
 

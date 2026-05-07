@@ -21,19 +21,14 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import tomlkit
 
-
-CURRENT_DIR = Path(__file__).resolve().parent
-PLUGIN_ROOT = CURRENT_DIR.parent
-PROJECT_ROOT = PLUGIN_ROOT.parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(PLUGIN_ROOT))
+from _bootstrap import DEFAULT_CONFIG_PATH, DEFAULT_DATA_DIR, resolve_repo_path
 
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="A_Memorix vNext release migration tool")
     parser.add_argument(
         "--config",
-        default=str(PLUGIN_ROOT / "config.toml"),
-        help="config.toml path (default: plugins/A_memorix/config.toml)",
+        default=str(DEFAULT_CONFIG_PATH),
+        help="config.toml path (default: config/a_memorix.toml)",
     )
     parser.add_argument(
         "--data-dir",
@@ -66,8 +61,11 @@ if any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
     raise SystemExit(0)
 
 try:
-    from core.storage import GraphStore, KnowledgeType, MetadataStore, QuantizationType, VectorStore
-    from core.storage.metadata_store import SCHEMA_VERSION
+    from A_memorix.core.storage import GraphStore, KnowledgeType, MetadataStore, QuantizationType, VectorStore
+    from A_memorix.core.storage.metadata_store import (
+        RUNTIME_AUTO_MIGRATION_MIN_SCHEMA_VERSION,
+        SCHEMA_VERSION,
+    )
 except Exception as e:  # pragma: no cover
     print(f"❌ failed to import storage modules: {e}")
     raise SystemExit(2)
@@ -117,11 +115,9 @@ def _ensure_table(obj: Dict[str, Any], key: str) -> Dict[str, Any]:
 
 def _resolve_data_dir(config_doc: Dict[str, Any], explicit_data_dir: Optional[str]) -> Path:
     if explicit_data_dir:
-        return Path(explicit_data_dir).expanduser().resolve()
+        return resolve_repo_path(explicit_data_dir, fallback=DEFAULT_DATA_DIR)
     raw = str(_get_nested(config_doc, ("storage", "data_dir"), "./data") or "./data").strip()
-    if raw.startswith("."):
-        return (PLUGIN_ROOT / raw).resolve()
-    return Path(raw).expanduser().resolve()
+    return resolve_repo_path(raw, fallback=DEFAULT_DATA_DIR)
 
 
 def _sqlite_table_exists(conn: sqlite3.Connection, table: str) -> bool:
@@ -130,6 +126,14 @@ def _sqlite_table_exists(conn: sqlite3.Connection, table: str) -> bool:
         (table,),
     ).fetchone()
     return row is not None
+
+
+def _sqlite_column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    try:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    except Exception:
+        return False
+    return any(str(row[1] or "") == str(column or "") for row in rows)
 
 
 def _collect_hash_alias_conflicts(conn: sqlite3.Connection) -> Dict[str, List[str]]:
@@ -158,6 +162,8 @@ def _collect_hash_alias_conflicts(conn: sqlite3.Connection) -> Dict[str, List[st
 
 def _collect_invalid_knowledge_types(conn: sqlite3.Connection) -> List[str]:
     if not _sqlite_table_exists(conn, "paragraphs"):
+        return []
+    if not _sqlite_column_exists(conn, "paragraphs", "knowledge_type"):
         return []
 
     allowed = {item.value for item in KnowledgeType}
@@ -295,6 +301,14 @@ def _preflight_impl(config_path: Path, data_dir: Path) -> Dict[str, Any]:
             facts["schema_migrations_exists"] = has_schema_table
             has_paragraph_backfill = _sqlite_table_exists(conn, "paragraph_vector_backfill")
             facts["paragraph_vector_backfill_exists"] = has_paragraph_backfill
+            has_stale_marks = _sqlite_table_exists(conn, "paragraph_stale_relation_marks")
+            facts["paragraph_stale_relation_marks_exists"] = has_stale_marks
+            has_profile_refresh_queue = _sqlite_table_exists(conn, "person_profile_refresh_queue")
+            facts["person_profile_refresh_queue_exists"] = has_profile_refresh_queue
+            has_feedback_rollback_status = _sqlite_column_exists(conn, "memory_feedback_tasks", "rollback_status")
+            facts["memory_feedback_tasks_rollback_status_exists"] = has_feedback_rollback_status
+            has_feedback_rollback_plan = _sqlite_column_exists(conn, "memory_feedback_tasks", "rollback_plan_json")
+            facts["memory_feedback_tasks_rollback_plan_exists"] = has_feedback_rollback_plan
             if not has_schema_table:
                 checks.append(
                     CheckItem(
@@ -307,20 +321,58 @@ def _preflight_impl(config_path: Path, data_dir: Path) -> Dict[str, Any]:
                 row = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()
                 version = int(row[0]) if row and row[0] is not None else 0
                 facts["schema_version"] = version
+                runtime_auto_migratable = (
+                    version < SCHEMA_VERSION
+                    and version >= RUNTIME_AUTO_MIGRATION_MIN_SCHEMA_VERSION
+                )
+                facts["schema_runtime_auto_migratable"] = runtime_auto_migratable
                 if version != SCHEMA_VERSION:
-                    checks.append(
-                        CheckItem(
-                            "CP-08",
-                            "error",
-                            f"schema version mismatch: current={version}, expected={SCHEMA_VERSION}",
+                    if runtime_auto_migratable:
+                        checks.append(
+                            CheckItem(
+                                "CP-18",
+                                "warning",
+                                f"schema version behind runtime target: current={version}, expected={SCHEMA_VERSION}; runtime auto migration will handle this update",
+                            )
                         )
-                    )
+                    else:
+                        checks.append(
+                            CheckItem(
+                                "CP-08",
+                                "error",
+                                f"schema version mismatch: current={version}, expected={SCHEMA_VERSION}",
+                            )
+                        )
                 elif not has_paragraph_backfill:
                     checks.append(
                         CheckItem(
                             "CP-14",
                             "error",
                             "paragraph_vector_backfill table missing under current schema version",
+                        )
+                    )
+                elif not has_stale_marks:
+                    checks.append(
+                        CheckItem(
+                            "CP-15",
+                            "error",
+                            "paragraph_stale_relation_marks table missing under current schema version",
+                        )
+                    )
+                elif not has_profile_refresh_queue:
+                    checks.append(
+                        CheckItem(
+                            "CP-16",
+                            "error",
+                            "person_profile_refresh_queue table missing under current schema version",
+                        )
+                    )
+                elif not has_feedback_rollback_status or not has_feedback_rollback_plan:
+                    checks.append(
+                        CheckItem(
+                            "CP-17",
+                            "error",
+                            "memory_feedback_tasks rollback columns missing under current schema version",
                         )
                     )
 
@@ -420,7 +472,11 @@ def _migrate_config(config_doc: Dict[str, Any]) -> Dict[str, Any]:
 
     summary = _ensure_table(config_doc, "summarization")
     summary_model = summary.get("model_name", ["auto"])
-    if isinstance(summary_model, str):
+    if "model_name" not in summary:
+        normalized = ["auto"]
+        summary["model_name"] = normalized
+        changes["summarization.model_name"] = {"old": "<missing>", "new": normalized}
+    elif isinstance(summary_model, str):
         normalized = [summary_model.strip() or "auto"]
         summary["model_name"] = normalized
         changes["summarization.model_name"] = {"old": summary_model, "new": normalized}
@@ -623,6 +679,46 @@ def _verify_impl(config_path: Path, data_dir: Path) -> Dict[str, Any]:
                             "paragraph_vector_backfill table missing after migration",
                         )
                     )
+                has_feedback_tasks = _sqlite_table_exists(conn, "memory_feedback_tasks")
+                facts["memory_feedback_tasks_exists"] = bool(has_feedback_tasks)
+                if not has_feedback_tasks:
+                    checks.append(
+                        CheckItem(
+                            "CP-15",
+                            "error",
+                            "memory_feedback_tasks table missing after migration",
+                        )
+                    )
+                has_feedback_logs = _sqlite_table_exists(conn, "memory_feedback_action_logs")
+                facts["memory_feedback_action_logs_exists"] = bool(has_feedback_logs)
+                if not has_feedback_logs:
+                    checks.append(
+                        CheckItem(
+                            "CP-16",
+                            "error",
+                            "memory_feedback_action_logs table missing after migration",
+                        )
+                    )
+                has_feedback_rollback_status = _sqlite_column_exists(conn, "memory_feedback_tasks", "rollback_status")
+                facts["memory_feedback_tasks_rollback_status_exists"] = bool(has_feedback_rollback_status)
+                if not has_feedback_rollback_status:
+                    checks.append(
+                        CheckItem(
+                            "CP-17",
+                            "error",
+                            "memory_feedback_tasks.rollback_status missing after migration",
+                        )
+                    )
+                has_feedback_rollback_plan = _sqlite_column_exists(conn, "memory_feedback_tasks", "rollback_plan_json")
+                facts["memory_feedback_tasks_rollback_plan_exists"] = bool(has_feedback_rollback_plan)
+                if not has_feedback_rollback_plan:
+                    checks.append(
+                        CheckItem(
+                            "CP-18",
+                            "error",
+                            "memory_feedback_tasks.rollback_plan_json missing after migration",
+                        )
+                    )
                 conflicts = _collect_hash_alias_conflicts(conn)
                 invalid_knowledge_types = _collect_invalid_knowledge_types(conn)
             finally:
@@ -701,7 +797,7 @@ def _write_json_if_needed(path: str, payload: Dict[str, Any]) -> None:
 def main() -> int:
     parser = _build_arg_parser()
     args = parser.parse_args()
-    config_path = Path(args.config).expanduser().resolve()
+    config_path = resolve_repo_path(args.config, fallback=DEFAULT_CONFIG_PATH)
     if not config_path.exists():
         print(f"❌ config not found: {config_path}")
         return 2

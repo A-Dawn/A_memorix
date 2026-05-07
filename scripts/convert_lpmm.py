@@ -21,11 +21,7 @@ from typing import Dict, Any, List, Tuple
 import numpy as np
 import tomlkit
 
-# 设置路径
-current_dir = Path(__file__).resolve().parent
-plugin_root = current_dir.parent
-project_root = plugin_root.parent.parent
-sys.path.insert(0, str(project_root))
+from _bootstrap import DEFAULT_CONFIG_PATH, resolve_repo_path
 
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="将 LPMM 数据转换为 A_memorix 格式")
@@ -65,18 +61,12 @@ except ImportError as e:
     sys.exit(1)
 
 try:
-    # 优先采取相对导入 (将插件根目录加入路径)
-    # 这样可以避免硬编码插件名称 (plugins.A_memorix)
-    if str(plugin_root) not in sys.path:
-        sys.path.insert(0, str(plugin_root))
-    
-    from core.storage.vector_store import VectorStore
-    from core.storage.graph_store import GraphStore
-    from core.storage.metadata_store import MetadataStore
-    from core.storage import QuantizationType, SparseMatrixFormat
-    from core.embedding import create_embedding_api_adapter
-    from core.utils.relation_write_service import RelationWriteService
-    
+    from A_memorix.core.storage.vector_store import VectorStore
+    from A_memorix.core.storage.graph_store import GraphStore
+    from A_memorix.core.storage.metadata_store import MetadataStore
+    from A_memorix.core.storage import QuantizationType, SparseMatrixFormat
+    from A_memorix.core.embedding import create_embedding_api_adapter
+    from A_memorix.core.utils.relation_write_service import RelationWriteService
 except ImportError as e:
     logger.error(f"无法导入 A_memorix 核心模块: {e}")
     logger.error("请确保在正确的环境中运行，且已安装所有依赖。")
@@ -162,7 +152,7 @@ class LPMMConverter:
             self._init_relation_vector_service()
 
     def _load_plugin_config(self) -> Dict[str, Any]:
-        config_path = plugin_root / "config.toml"
+        config_path = DEFAULT_CONFIG_PATH
         if not config_path.exists():
             return {}
         try:
@@ -520,8 +510,8 @@ def main():
     parser = _build_arg_parser()
     args = parser.parse_args()
     
-    input_path = Path(args.input)
-    output_path = Path(args.output)
+    input_path = resolve_repo_path(args.input)
+    output_path = resolve_repo_path(args.output)
     
     if not input_path.exists():
         logger.error(f"输入目录不存在: {input_path}")

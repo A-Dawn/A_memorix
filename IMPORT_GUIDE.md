@@ -10,7 +10,7 @@
 建议先执行：
 
 ```bash
-python plugins/A_memorix/scripts/runtime_self_check.py --json
+python src/A_memorix/scripts/runtime_self_check.py --json
 ```
 
 再确认：
@@ -26,50 +26,55 @@ python plugins/A_memorix/scripts/runtime_self_check.py --json
 将 `.txt` 文件放入：
 
 ```text
-plugins/A_memorix/data/raw/
+data/plugins/a-dawn.a-memorix/raw/
 ```
+
+说明：
+
+- `process_knowledge.py` 当前默认扫描上述目录。
+- 若你的运行配置使用 `storage.data_dir = "data/a-memorix"`，请在执行脚本前统一目录，避免脚本导入目录与运行目录不一致。
 
 执行：
 
 ```bash
-python plugins/A_memorix/scripts/process_knowledge.py
+python src/A_memorix/scripts/process_knowledge.py
 ```
 
 常用参数：
 
 ```bash
-python plugins/A_memorix/scripts/process_knowledge.py --force
-python plugins/A_memorix/scripts/process_knowledge.py --chat-log
-python plugins/A_memorix/scripts/process_knowledge.py --chat-log --chat-reference-time "2026/02/12 10:30"
+python src/A_memorix/scripts/process_knowledge.py --force
+python src/A_memorix/scripts/process_knowledge.py --chat-log
+python src/A_memorix/scripts/process_knowledge.py --chat-log --chat-reference-time "2026/02/12 10:30"
 ```
 
 ## 2.2 OpenIE JSON 导入
 
 ```bash
-python plugins/A_memorix/scripts/import_lpmm_json.py <json文件或目录>
+python src/A_memorix/scripts/import_lpmm_json.py <json文件或目录>
 ```
 
 ## 2.3 LPMM 数据转换
 
 ```bash
-python plugins/A_memorix/scripts/convert_lpmm.py -i <lpmm数据目录> -o plugins/A_memorix/data
+python src/A_memorix/scripts/convert_lpmm.py -i <lpmm数据目录> -o data/a-memorix
 ```
 
 ## 2.4 历史数据迁移
 
 ```bash
-python plugins/A_memorix/scripts/migrate_chat_history.py --help
-python plugins/A_memorix/scripts/migrate_maibot_memory.py --help
-python plugins/A_memorix/scripts/migrate_person_memory_points.py --help
+python src/A_memorix/scripts/migrate_chat_history.py --help
+python src/A_memorix/scripts/migrate_maibot_memory.py --help
+python src/A_memorix/scripts/migrate_person_memory_points.py --help
 ```
 
 ## 2.5 导入后修复与重建
 
 ```bash
-python plugins/A_memorix/scripts/backfill_temporal_metadata.py --dry-run
-python plugins/A_memorix/scripts/backfill_relation_vectors.py --limit 1000
-python plugins/A_memorix/scripts/rebuild_episodes.py --all --wait
-python plugins/A_memorix/scripts/audit_vector_consistency.py --json
+python src/A_memorix/scripts/backfill_temporal_metadata.py --dry-run
+python src/A_memorix/scripts/backfill_relation_vectors.py --limit 1000
+python src/A_memorix/scripts/rebuild_episodes.py --all --wait
+python src/A_memorix/scripts/audit_vector_consistency.py --json
 ```
 
 ## 3. 方式 B：`memory_import_admin` 任务导入
@@ -115,7 +120,7 @@ python plugins/A_memorix/scripts/audit_vector_consistency.py --json
   "arguments": {
     "action": "create_paste",
     "content": "今天完成了检索调优回归。",
-    "input_mode": "plain_text",
+    "input_mode": "text",
     "source": "manual:worklog"
   }
 }
@@ -157,6 +162,34 @@ python plugins/A_memorix/scripts/audit_vector_consistency.py --json
   }
 }
 ```
+
+### 3.3 JSON 导入字段约束（`input_mode="json"`）
+
+`create_paste/create_upload/create_raw_scan` 在 `input_mode="json"` 下，导入内容必须是语义文本，不接受 hash 形态字段作为正文或实体名。
+
+- 段落 `paragraphs[*]`
+  - 允许字符串（视为 `content`）或对象（必须包含 `content`）。
+  - `content` 若为空，或为“整串 hex 且长度 32/40/64”的疑似 hash，会被跳过并记为 warning。
+- 实体 `entities[*]`
+  - 允许字符串，或对象（仅提取 `name/label/entity` 作为实体名）。
+  - 无法提取名称、名称为空、名称为疑似 hash 的实体会被跳过。
+- 关系 `relations[*]`
+  - 仅接受对象，且必须包含 `subject/predicate/object`。
+  - 任一字段为空或为疑似 hash 时，该关系会被跳过。
+
+说明：
+
+- “跳过”不会导致任务失败，任务会继续处理其余有效项。
+- 仅阻断未来导入；历史库中的旧数据不会自动清理。
+
+### 3.4 任务告警字段
+
+`memory_import_admin` 的 `list/get/chunks` 返回中，`task.files[*]` 提供：
+
+- `warning_count`: 文件累计告警数
+- `warnings`: 告警明细（仅保留最近若干条）
+
+这两个字段用于区分“导入成功但有跳过项”与“导入失败”，不要把 warning 当作 error 处理。
 
 ## 4. 直接写入 Tool（非任务化）
 
@@ -257,7 +290,7 @@ A_Memorix 导入链路仍然遵循策略模式（Strategy-Aware）。`process_kn
 
 以下样例可直接复制保存为文件测试，或作为 LLM few-shot 示例。
 
-### 11.1 叙事文本 (`plugins/A_memorix/data/raw/story_demo.txt`)
+### 11.1 叙事文本 (`data/plugins/a-dawn.a-memorix/raw/story_demo.txt`)
 
 ```text
 # 第一章：星之子
@@ -276,7 +309,7 @@ A_Memorix 导入链路仍然遵循策略模式（Strategy-Aware）。`process_kn
 “我必须来，”艾瑞克握紧了拳头，“为了解开星盘的秘密，也为了你。”
 ```
 
-### 11.2 事实文本 (`plugins/A_memorix/data/raw/rules_demo.txt`)
+### 11.2 事实文本 (`data/plugins/a-dawn.a-memorix/raw/rules_demo.txt`)
 
 ```text
 # 联邦安全协议 v2.0
@@ -290,7 +323,7 @@ A_Memorix 导入链路仍然遵循策略模式（Strategy-Aware）。`process_kn
 - **黑色障壁**：用于隔离高危 AI 的物理防火墙设施。
 ```
 
-### 11.3 引用文本 (`plugins/A_memorix/data/raw/poem_demo.txt`)
+### 11.3 引用文本 (`data/plugins/a-dawn.a-memorix/raw/poem_demo.txt`)
 
 ```text
 致橡树

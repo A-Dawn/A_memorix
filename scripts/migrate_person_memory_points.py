@@ -5,21 +5,9 @@ import argparse
 import asyncio
 import json
 import sqlite3
-import sys
-from pathlib import Path
 from typing import Any, Dict, List
 
-
-CURRENT_DIR = Path(__file__).resolve().parent
-PLUGIN_ROOT = CURRENT_DIR.parent
-WORKSPACE_ROOT = PLUGIN_ROOT.parent
-MAIBOT_ROOT = WORKSPACE_ROOT / "MaiBot"
-DEFAULT_DB_PATH = MAIBOT_ROOT / "data" / "MaiBot.db"
-
-if str(WORKSPACE_ROOT) not in sys.path:
-    sys.path.insert(0, str(WORKSPACE_ROOT))
-if str(MAIBOT_ROOT) not in sys.path:
-    sys.path.insert(0, str(MAIBOT_ROOT))
+from _bootstrap import DEFAULT_DATA_DIR, DEFAULT_DB_PATH, PLUGIN_ROOT, resolve_repo_path
 
 from A_memorix.core.runtime.sdk_memory_kernel import SDKMemoryKernel  # noqa: E402
 
@@ -27,7 +15,7 @@ from A_memorix.core.runtime.sdk_memory_kernel import SDKMemoryKernel  # noqa: E4
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="迁移 MaiBot person_info.memory_points 到 A_Memorix")
     parser.add_argument("--db-path", default=str(DEFAULT_DB_PATH), help="MaiBot SQLite 路径")
-    parser.add_argument("--data-dir", default="./data", help="A_Memorix 数据目录")
+    parser.add_argument("--data-dir", default=str(DEFAULT_DATA_DIR), help="A_Memorix 数据目录")
     parser.add_argument("--limit", type=int, default=0, help="限制迁移人数，0 表示全部")
     parser.add_argument("--dry-run", action="store_true", help="仅预览，不写入")
     return parser.parse_args()
@@ -59,7 +47,7 @@ def _parse_memory_points(raw_value: Any) -> List[Dict[str, Any]]:
 
 async def _main() -> int:
     args = _parse_args()
-    db_path = Path(args.db_path).resolve()
+    db_path = resolve_repo_path(args.db_path, fallback=DEFAULT_DB_PATH)
     if not db_path.exists():
         print(f"数据库不存在: {db_path}")
         return 1
@@ -86,7 +74,8 @@ async def _main() -> int:
             print(f"- person_id={row['person_id']} person_name={row['person_name'] or row['user_nickname']}")
         return 0
 
-    kernel = SDKMemoryKernel(plugin_root=PLUGIN_ROOT, config={"storage": {"data_dir": args.data_dir}})
+    data_dir = resolve_repo_path(args.data_dir, fallback=DEFAULT_DATA_DIR)
+    kernel = SDKMemoryKernel(plugin_root=PLUGIN_ROOT, config={"storage": {"data_dir": str(data_dir)}})
     await kernel.initialize()
     migrated = 0
     skipped = 0

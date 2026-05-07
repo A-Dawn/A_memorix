@@ -18,19 +18,14 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Set
 
-
-CURRENT_DIR = Path(__file__).resolve().parent
-PLUGIN_ROOT = CURRENT_DIR.parent
-PROJECT_ROOT = PLUGIN_ROOT.parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(PLUGIN_ROOT))
+from _bootstrap import DEFAULT_DATA_DIR, resolve_repo_path
 
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="审计 A_Memorix 向量一致性")
     parser.add_argument(
         "--data-dir",
-        default=str(PLUGIN_ROOT / "data"),
-        help="A_Memorix 数据目录（默认: plugins/A_memorix/data）",
+        default=str(DEFAULT_DATA_DIR),
+        help="A_Memorix 数据目录（默认: data/plugins/a-dawn.a-memorix）",
     )
     parser.add_argument("--json-out", default="", help="可选：输出 JSON 文件路径")
     parser.add_argument(
@@ -47,9 +42,9 @@ if any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
     sys.exit(0)
 
 try:
-    from core.storage.vector_store import VectorStore
-    from core.storage.metadata_store import MetadataStore
-    from core.storage import QuantizationType
+    from A_memorix.core.storage.vector_store import VectorStore
+    from A_memorix.core.storage.metadata_store import MetadataStore
+    from A_memorix.core.storage import QuantizationType
 except Exception as e:  # pragma: no cover
     print(f"❌ 导入核心模块失败: {e}")
     sys.exit(1)
@@ -161,7 +156,7 @@ def main() -> int:
     parser = _build_arg_parser()
     args = parser.parse_args()
 
-    data_dir = Path(args.data_dir).resolve()
+    data_dir = resolve_repo_path(args.data_dir, fallback=DEFAULT_DATA_DIR)
     if not data_dir.exists():
         print(f"❌ 数据目录不存在: {data_dir}")
         return 2

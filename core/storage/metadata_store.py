@@ -11,7 +11,7 @@ import uuid
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Union, List, Dict, Any, Tuple
+from typing import Optional, Union, List, Dict, Any, Tuple, Sequence
 
 from src.common.logger import get_logger
 from ..utils.hash import compute_hash, normalize_text
@@ -34,7 +34,8 @@ except Exception:
 logger = get_logger("A_Memorix.MetadataStore")
 
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 12
+RUNTIME_AUTO_MIGRATION_MIN_SCHEMA_VERSION = 9
 
 
 class MetadataStore:
@@ -71,7 +72,7 @@ class MetadataStore:
         self._is_initialized = False
         self._db_path: Optional[Path] = None
 
-        logger.info(f"MetadataStore 初始化: db={db_name}")
+        logger.debug(f"元数据存储初始化: db={db_name}")
 
     def connect(
         self,
@@ -113,7 +114,7 @@ class MetadataStore:
         self._conn.execute("PRAGMA temp_store=MEMORY")
         self._conn.execute("PRAGMA foreign_keys = ON") # 开启外键约束支持级联删除
 
-        logger.info(f"连接到数据库: {db_path}")
+        logger.info(f"数据库已连接: {db_path}")
 
         # 初始化或校验 schema
         if not self._is_initialized:
@@ -130,7 +131,7 @@ class MetadataStore:
             logger.warning(f"初始化 FTS schema 失败，将跳过 BM25 检索: {e}")
 
     def _assert_schema_compatible(self, db_existed: bool) -> None:
-        """vNext 运行时只做 schema 版本校验，不做隐式迁移。"""
+        """运行时执行 post-1.0 自动迁移；legacy/vNext 仍要求离线迁移。"""
         cursor = self._conn.cursor()
         cursor.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
@@ -147,11 +148,56 @@ class MetadataStore:
         cursor.execute("SELECT MAX(version) FROM schema_migrations")
         row = cursor.fetchone()
         version = int(row[0]) if row and row[0] is not None else 0
+        if version < SCHEMA_VERSION and version >= RUNTIME_AUTO_MIGRATION_MIN_SCHEMA_VERSION:
+            self._run_runtime_auto_migration(current_version=version)
+            cursor.execute("SELECT MAX(version) FROM schema_migrations")
+            row = cursor.fetchone()
+            version = int(row[0]) if row and row[0] is not None else 0
         if version != SCHEMA_VERSION:
             raise RuntimeError(
                 f"metadata schema 版本不匹配: current={version}, expected={SCHEMA_VERSION}。"
                 " 请执行 scripts/release_vnext_migrate.py migrate。"
             )
+
+    def _run_runtime_auto_migration(self, *, current_version: int) -> None:
+        """对 1.0 之后的已版本化库执行轻量自动迁移。"""
+        logger.info(
+            "检测到 metadata schema 需要运行时自动迁移: current=%s, target=%s",
+            current_version,
+            SCHEMA_VERSION,
+        )
+        self._migrate_schema()
+        alias_result = self.rebuild_relation_hash_aliases()
+        knowledge_type_result = self.normalize_paragraph_knowledge_types()
+        self.set_schema_version(SCHEMA_VERSION)
+        logger.info(
+            "metadata schema 运行时自动迁移完成: %s -> %s, alias_inserted=%s, knowledge_normalized=%s",
+            current_version,
+            SCHEMA_VERSION,
+            int(alias_result.get("inserted", 0) or 0),
+            int(knowledge_type_result.get("normalized", 0) or 0),
+        )
+
+    def _ensure_memory_feedback_task_columns(self, cursor: sqlite3.Cursor) -> None:
+        """补齐 memory_feedback_tasks 历史库缺失的 rollback_* 列。"""
+        cursor.execute("PRAGMA table_info(memory_feedback_tasks)")
+        feedback_task_columns = {row[1] for row in cursor.fetchall()}
+        feedback_task_migrations = {
+            "rollback_status": "ALTER TABLE memory_feedback_tasks ADD COLUMN rollback_status TEXT DEFAULT 'none'",
+            "rollback_plan_json": "ALTER TABLE memory_feedback_tasks ADD COLUMN rollback_plan_json TEXT",
+            "rollback_result_json": "ALTER TABLE memory_feedback_tasks ADD COLUMN rollback_result_json TEXT",
+            "rollback_error": "ALTER TABLE memory_feedback_tasks ADD COLUMN rollback_error TEXT",
+            "rollback_requested_by": "ALTER TABLE memory_feedback_tasks ADD COLUMN rollback_requested_by TEXT",
+            "rollback_reason": "ALTER TABLE memory_feedback_tasks ADD COLUMN rollback_reason TEXT",
+            "rollback_requested_at": "ALTER TABLE memory_feedback_tasks ADD COLUMN rollback_requested_at REAL",
+            "rolled_back_at": "ALTER TABLE memory_feedback_tasks ADD COLUMN rolled_back_at REAL",
+        }
+        for col, sql in feedback_task_migrations.items():
+            if col not in feedback_task_columns:
+                try:
+                    cursor.execute(sql)
+                except sqlite3.OperationalError as e:
+                    logger.warning(f"Schema迁移失败 (memory_feedback_tasks.{col}): {e}")
 
     def close(self) -> None:
         """关闭数据库连接"""
@@ -512,6 +558,112 @@ class MetadataStore:
             ON paragraph_vector_backfill(status, updated_at)
         """)
         cursor.execute("""
+            CREATE TABLE IF NOT EXISTS memory_feedback_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                query_tool_id TEXT NOT NULL UNIQUE,
+                session_id TEXT NOT NULL,
+                query_timestamp REAL NOT NULL,
+                due_at REAL NOT NULL,
+                status TEXT DEFAULT 'pending',
+                attempt_count INTEGER DEFAULT 0,
+                query_snapshot_json TEXT,
+                decision_json TEXT,
+                last_error TEXT,
+                rollback_status TEXT DEFAULT 'none',
+                rollback_plan_json TEXT,
+                rollback_result_json TEXT,
+                rollback_error TEXT,
+                rollback_requested_by TEXT,
+                rollback_reason TEXT,
+                rollback_requested_at REAL,
+                rolled_back_at REAL,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_memory_feedback_tasks_status_due
+            ON memory_feedback_tasks(status, due_at, updated_at)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_memory_feedback_tasks_session_query
+            ON memory_feedback_tasks(session_id, query_timestamp DESC)
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS memory_feedback_action_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER NOT NULL,
+                query_tool_id TEXT NOT NULL,
+                action_type TEXT NOT NULL,
+                target_hash TEXT,
+                before_json TEXT,
+                after_json TEXT,
+                reason TEXT,
+                created_at REAL NOT NULL,
+                FOREIGN KEY (task_id) REFERENCES memory_feedback_tasks(id) ON DELETE CASCADE
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_memory_feedback_action_logs_task
+            ON memory_feedback_action_logs(task_id, created_at ASC)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_memory_feedback_action_logs_query
+            ON memory_feedback_action_logs(query_tool_id, created_at DESC)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_memory_feedback_action_logs_target
+            ON memory_feedback_action_logs(target_hash)
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS paragraph_stale_relation_marks (
+                paragraph_hash TEXT NOT NULL,
+                relation_hash TEXT NOT NULL,
+                query_tool_id TEXT,
+                task_id INTEGER,
+                reason TEXT,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY (paragraph_hash, relation_hash),
+                FOREIGN KEY (paragraph_hash) REFERENCES paragraphs(hash) ON DELETE CASCADE,
+                FOREIGN KEY (relation_hash) REFERENCES relations(hash) ON DELETE CASCADE,
+                FOREIGN KEY (task_id) REFERENCES memory_feedback_tasks(id) ON DELETE SET NULL
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_paragraph_stale_relation_marks_paragraph
+            ON paragraph_stale_relation_marks(paragraph_hash, updated_at DESC)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_paragraph_stale_relation_marks_relation
+            ON paragraph_stale_relation_marks(relation_hash, updated_at DESC)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_paragraph_stale_relation_marks_updated
+            ON paragraph_stale_relation_marks(updated_at DESC)
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS person_profile_refresh_queue (
+                person_id TEXT PRIMARY KEY,
+                status TEXT DEFAULT 'pending',
+                reason TEXT,
+                source_query_tool_id TEXT,
+                retry_count INTEGER DEFAULT 0,
+                last_error TEXT,
+                requested_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_person_profile_refresh_queue_status_updated
+            ON person_profile_refresh_queue(status, updated_at)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_person_profile_refresh_queue_requested
+            ON person_profile_refresh_queue(requested_at DESC)
+        """)
+        self._ensure_memory_feedback_task_columns(cursor)
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS external_memory_refs (
                 external_id TEXT PRIMARY KEY,
                 paragraph_hash TEXT NOT NULL,
@@ -700,6 +852,112 @@ class MetadataStore:
             CREATE INDEX IF NOT EXISTS idx_paragraph_vector_backfill_status_updated
             ON paragraph_vector_backfill(status, updated_at)
         """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS memory_feedback_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                query_tool_id TEXT NOT NULL UNIQUE,
+                session_id TEXT NOT NULL,
+                query_timestamp REAL NOT NULL,
+                due_at REAL NOT NULL,
+                status TEXT DEFAULT 'pending',
+                attempt_count INTEGER DEFAULT 0,
+                query_snapshot_json TEXT,
+                decision_json TEXT,
+                last_error TEXT,
+                rollback_status TEXT DEFAULT 'none',
+                rollback_plan_json TEXT,
+                rollback_result_json TEXT,
+                rollback_error TEXT,
+                rollback_requested_by TEXT,
+                rollback_reason TEXT,
+                rollback_requested_at REAL,
+                rolled_back_at REAL,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_memory_feedback_tasks_status_due
+            ON memory_feedback_tasks(status, due_at, updated_at)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_memory_feedback_tasks_session_query
+            ON memory_feedback_tasks(session_id, query_timestamp DESC)
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS memory_feedback_action_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER NOT NULL,
+                query_tool_id TEXT NOT NULL,
+                action_type TEXT NOT NULL,
+                target_hash TEXT,
+                before_json TEXT,
+                after_json TEXT,
+                reason TEXT,
+                created_at REAL NOT NULL,
+                FOREIGN KEY (task_id) REFERENCES memory_feedback_tasks(id) ON DELETE CASCADE
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_memory_feedback_action_logs_task
+            ON memory_feedback_action_logs(task_id, created_at ASC)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_memory_feedback_action_logs_query
+            ON memory_feedback_action_logs(query_tool_id, created_at DESC)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_memory_feedback_action_logs_target
+            ON memory_feedback_action_logs(target_hash)
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS paragraph_stale_relation_marks (
+                paragraph_hash TEXT NOT NULL,
+                relation_hash TEXT NOT NULL,
+                query_tool_id TEXT,
+                task_id INTEGER,
+                reason TEXT,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY (paragraph_hash, relation_hash),
+                FOREIGN KEY (paragraph_hash) REFERENCES paragraphs(hash) ON DELETE CASCADE,
+                FOREIGN KEY (relation_hash) REFERENCES relations(hash) ON DELETE CASCADE,
+                FOREIGN KEY (task_id) REFERENCES memory_feedback_tasks(id) ON DELETE SET NULL
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_paragraph_stale_relation_marks_paragraph
+            ON paragraph_stale_relation_marks(paragraph_hash, updated_at DESC)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_paragraph_stale_relation_marks_relation
+            ON paragraph_stale_relation_marks(relation_hash, updated_at DESC)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_paragraph_stale_relation_marks_updated
+            ON paragraph_stale_relation_marks(updated_at DESC)
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS person_profile_refresh_queue (
+                person_id TEXT PRIMARY KEY,
+                status TEXT DEFAULT 'pending',
+                reason TEXT,
+                source_query_tool_id TEXT,
+                retry_count INTEGER DEFAULT 0,
+                last_error TEXT,
+                requested_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_person_profile_refresh_queue_status_updated
+            ON person_profile_refresh_queue(status, updated_at)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_person_profile_refresh_queue_requested
+            ON person_profile_refresh_queue(requested_at DESC)
+        """)
+        self._ensure_memory_feedback_task_columns(cursor)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS external_memory_refs (
                 external_id TEXT PRIMARY KEY,
@@ -1464,6 +1722,7 @@ class MetadataStore:
         match_query: str,
         limit: int = 20,
         max_doc_len: int = 512,
+        include_inactive: bool = True,
         conn: Optional[sqlite3.Connection] = None,
     ) -> List[Dict[str, Any]]:
         """使用 FTS5 + bm25 执行关系全文检索。"""
@@ -1472,9 +1731,10 @@ class MetadataStore:
 
         c = self._resolve_conn(conn)
         cur = c.cursor()
+        active_clause = "" if include_inactive else " AND (r.is_inactive IS NULL OR r.is_inactive = 0)"
         try:
             cur.execute(
-                """
+                f"""
                 SELECT
                     r.hash,
                     r.subject,
@@ -1484,6 +1744,7 @@ class MetadataStore:
                 FROM relations_fts
                 JOIN relations r ON r.hash = relations_fts.relation_hash
                 WHERE relations_fts MATCH ?
+                {active_clause}
                 ORDER BY bm25_score ASC
                 LIMIT ?
                 """,
@@ -1852,18 +2113,7 @@ class MetadataStore:
         Returns:
             关系哈希值
         """
-        # 1. 规范化输入
-        s_canon = self._canonicalize_name(subject)
-        p_canon = self._canonicalize_name(predicate)
-        o_canon = self._canonicalize_name(obj)
-        
-        if not all([s_canon, p_canon, o_canon]):
-             raise ValueError("Relation components cannot be empty")
-
-        # 2. 计算组合哈希
-        # 公式: md5(s|p|o)
-        relation_key = f"{s_canon}|{p_canon}|{o_canon}"
-        hash_value = compute_hash(relation_key)
+        hash_value = self.compute_relation_hash(subject, predicate, obj)
 
         now = datetime.now().timestamp()
         
@@ -1905,6 +2155,23 @@ class MetadataStore:
         except sqlite3.IntegrityError as e:
             logger.warning(f"添加关系异常: {e}")
             return hash_value
+
+    def compute_relation_hash(self, subject: str, predicate: str, obj: str) -> str:
+        """
+        计算 relation 的稳定 hash，不执行写入。
+        """
+        # 1. 规范化输入
+        s_canon = self._canonicalize_name(subject)
+        p_canon = self._canonicalize_name(predicate)
+        o_canon = self._canonicalize_name(obj)
+        
+        if not all([s_canon, p_canon, o_canon]):
+             raise ValueError("Relation components cannot be empty")
+
+        # 2. 计算组合哈希
+        # 公式: md5(s|p|o)
+        relation_key = f"{s_canon}|{p_canon}|{o_canon}"
+        return compute_hash(relation_key)
 
     def link_paragraph_relation(
         self,
@@ -2125,7 +2392,7 @@ class MetadataStore:
             return self._row_to_dict(row, "entity")
         return None
 
-    def get_relation(self, hash_value: str) -> Optional[Dict[str, Any]]:
+    def get_relation(self, hash_value: str, include_inactive: bool = True) -> Optional[Dict[str, Any]]:
         """
         获取关系
 
@@ -2136,9 +2403,22 @@ class MetadataStore:
             关系信息字典，不存在则返回None
         """
         cursor = self._conn.cursor()
-        cursor.execute("""
-            SELECT * FROM relations WHERE hash = ?
-        """, (hash_value,))
+        if include_inactive:
+            cursor.execute(
+                """
+                SELECT * FROM relations WHERE hash = ?
+                """,
+                (hash_value,),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT * FROM relations
+                WHERE hash = ?
+                  AND (is_inactive IS NULL OR is_inactive = 0)
+                """,
+                (hash_value,),
+            )
         row = cursor.fetchone()
 
         if row:
@@ -2163,6 +2443,44 @@ class MetadataStore:
         """, (paragraph_hash,))
 
         return [self._row_to_dict(row, "relation") for row in cursor.fetchall()]
+
+    def get_paragraph_hashes_by_relation_hashes(
+        self,
+        relation_hashes: List[str],
+    ) -> Dict[str, List[str]]:
+        normalized: List[str] = []
+        seen = set()
+        for item in relation_hashes or []:
+            token = str(item or "").strip()
+            if not token or token in seen:
+                continue
+            seen.add(token)
+            normalized.append(token)
+        if not normalized:
+            return {}
+
+        placeholders = ",".join(["?"] * len(normalized))
+        cursor = self._conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT pr.relation_hash, pr.paragraph_hash
+            FROM paragraph_relations pr
+            JOIN paragraphs p ON p.hash = pr.paragraph_hash
+            WHERE pr.relation_hash IN ({placeholders})
+              AND (p.is_deleted IS NULL OR p.is_deleted = 0)
+            ORDER BY pr.relation_hash ASC, p.updated_at DESC, p.created_at DESC, pr.paragraph_hash ASC
+            """,
+            tuple(normalized),
+        )
+        grouped: Dict[str, List[str]] = {token: [] for token in normalized}
+        for row in cursor.fetchall():
+            relation_hash = str(row["relation_hash"] or "").strip()
+            paragraph_hash = str(row["paragraph_hash"] or "").strip()
+            if not relation_hash or not paragraph_hash:
+                continue
+            if paragraph_hash not in grouped.setdefault(relation_hash, []):
+                grouped[relation_hash].append(paragraph_hash)
+        return grouped
 
     def get_paragraph_entities(self, paragraph_hash: str) -> List[Dict[str, Any]]:
         """
@@ -2217,6 +2535,7 @@ class MetadataStore:
         subject: Optional[str] = None,
         predicate: Optional[str] = None,
         object: Optional[str] = None,
+        include_inactive: bool = True,
     ) -> List[Dict[str, Any]]:
         """
         查询关系（大小写不敏感）
@@ -2242,6 +2561,8 @@ class MetadataStore:
         if object:
             conditions.append("LOWER(object) = ?")
             params.append(self._canonicalize_name(object))
+        if not include_inactive:
+            conditions.append("(is_inactive IS NULL OR is_inactive = 0)")
             
         sql = "SELECT * FROM relations"
         if conditions:
@@ -2306,6 +2627,7 @@ class MetadataStore:
             SELECT source, COUNT(*) as count, MAX(created_at) as last_updated 
             FROM paragraphs 
             WHERE source IS NOT NULL AND source != ''
+              AND (is_deleted IS NULL OR is_deleted = 0)
             GROUP BY source
             ORDER BY last_updated DESC
         """)
@@ -3092,6 +3414,19 @@ class MetadataStore:
         cursor.execute("SELECT COUNT(*) FROM relations")
         stats["relation_count"] = cursor.fetchone()[0]
 
+        cursor.execute("SELECT COUNT(*) FROM paragraph_stale_relation_marks")
+        stats["stale_paragraph_mark_count"] = cursor.fetchone()[0]
+
+        cursor.execute(
+            "SELECT COUNT(*) FROM person_profile_refresh_queue WHERE status IN ('pending', 'running', 'failed')"
+        )
+        stats["person_profile_refresh_pending_count"] = cursor.fetchone()[0]
+
+        cursor.execute(
+            "SELECT COUNT(*) FROM person_profile_refresh_queue WHERE status = 'failed'"
+        )
+        stats["person_profile_refresh_failed_count"] = cursor.fetchone()[0]
+
         # 总词数
         cursor.execute("SELECT SUM(word_count) FROM paragraphs")
         result = cursor.fetchone()[0]
@@ -3616,6 +3951,8 @@ class MetadataStore:
             "episodes", "episode_paragraphs",
             "episode_rebuild_sources", "episode_pending_paragraphs",
             "paragraph_vector_backfill",
+            "memory_feedback_tasks", "memory_feedback_action_logs",
+            "paragraph_stale_relation_marks", "person_profile_refresh_queue",
         ]
         for table in tables:
             cursor.execute(f"DELETE FROM {table}")
@@ -3860,6 +4197,46 @@ class MetadataStore:
     def restore_relation(self, hash_value: str) -> Optional[Dict[str, Any]]:
         """兼容旧调用名：恢复关系。"""
         return self.restore_relation_metadata(hash_value)
+
+    def restore_relation_status_from_snapshot(
+        self,
+        hash_value: str,
+        snapshot: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        token = str(hash_value or "").strip()
+        if not token or not isinstance(snapshot, dict):
+            return None
+
+        current = self.get_relation_status_batch([token]).get(token)
+        if current is None:
+            restored = self.restore_relation(token)
+            if restored is None:
+                return None
+
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            UPDATE relations
+            SET is_inactive = ?,
+                confidence = ?,
+                is_pinned = ?,
+                protected_until = ?,
+                last_reinforced = ?,
+                inactive_since = ?
+            WHERE hash = ?
+            """,
+            (
+                1 if bool(snapshot.get("is_inactive")) else 0,
+                float(snapshot.get("weight", 0.0) or 0.0),
+                1 if bool(snapshot.get("is_pinned")) else 0,
+                self._as_optional_float(snapshot.get("protected_until")),
+                self._as_optional_float(snapshot.get("last_reinforced")),
+                self._as_optional_float(snapshot.get("inactive_since")),
+                token,
+            ),
+        )
+        self._conn.commit()
+        return self.get_relation_status_batch([token]).get(token)
             
     def get_protected_relations_hashes(self) -> List[str]:
         """获取所有受保护关系的哈希 (Pinned 或 Protected Until > Now)"""
@@ -4864,7 +5241,7 @@ class MetadataStore:
             "failed": failed,
         }
 
-    def get_live_paragraphs_by_source(self, source: str) -> List[Dict[str, Any]]:
+    def get_live_paragraphs_by_source(self, source: str, *, exclude_stale: bool = False) -> List[Dict[str, Any]]:
         """获取指定 source 下所有 live paragraphs。"""
         token = self._normalize_episode_source(source)
         if not token:
@@ -4880,7 +5257,35 @@ class MetadataStore:
             """,
             (token,),
         )
-        return [self._row_to_dict(row, "paragraph") for row in cursor.fetchall()]
+        rows = [self._row_to_dict(row, "paragraph") for row in cursor.fetchall()]
+        if not exclude_stale:
+            return rows
+        paragraph_hashes = [str(row.get("hash", "") or "").strip() for row in rows if str(row.get("hash", "") or "").strip()]
+        marks_by_paragraph = self.get_paragraph_stale_relation_marks_batch(paragraph_hashes) if paragraph_hashes else {}
+        relation_hashes: List[str] = []
+        seen = set()
+        for marks in marks_by_paragraph.values():
+            for mark in marks:
+                relation_hash = str(mark.get("relation_hash", "") or "").strip()
+                if not relation_hash or relation_hash in seen:
+                    continue
+                seen.add(relation_hash)
+                relation_hashes.append(relation_hash)
+        status_map = self.get_relation_status_batch(relation_hashes) if relation_hashes else {}
+
+        filtered: List[Dict[str, Any]] = []
+        for row in rows:
+            paragraph_hash = str(row.get("hash", "") or "").strip()
+            marks = marks_by_paragraph.get(paragraph_hash, [])
+            if any(
+                status_map.get(str(mark.get("relation_hash", "") or "").strip()) is None
+                or bool((status_map.get(str(mark.get("relation_hash", "") or "").strip()) or {}).get("is_inactive"))
+                for mark in marks
+                if str(mark.get("relation_hash", "") or "").strip()
+            ):
+                continue
+            filtered.append(row)
+        return filtered
 
     def list_episode_sources_for_rebuild(self) -> List[str]:
         """列出全量重建涉及的 source（live paragraphs + stale episodes）。"""
@@ -5353,6 +5758,838 @@ class MetadataStore:
             if status in counts:
                 counts[status] = int(row["count"] or 0)
         return counts
+
+    def _feedback_task_row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
+        data = dict(row)
+        data["query_snapshot"] = self._json_loads(data.pop("query_snapshot_json", None), {})
+        data["decision_payload"] = self._json_loads(data.get("decision_json"), {})
+        data["rollback_status"] = str(data.get("rollback_status", "") or "none").strip().lower() or "none"
+        data["rollback_plan"] = self._json_loads(data.pop("rollback_plan_json", None), {})
+        data["rollback_result"] = self._json_loads(data.pop("rollback_result_json", None), {})
+        data["rollback_error"] = str(data.get("rollback_error", "") or "").strip()
+        data["rollback_requested_by"] = str(data.get("rollback_requested_by", "") or "").strip()
+        data["rollback_reason"] = str(data.get("rollback_reason", "") or "").strip()
+        return data
+
+    def _feedback_action_log_row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
+        data = dict(row)
+        data["id"] = int(data.get("id", 0) or 0)
+        data["task_id"] = int(data.get("task_id", 0) or 0)
+        data["query_tool_id"] = str(data.get("query_tool_id", "") or "").strip()
+        data["action_type"] = str(data.get("action_type", "") or "").strip()
+        data["target_hash"] = str(data.get("target_hash", "") or "").strip()
+        data["reason"] = str(data.get("reason", "") or "").strip()
+        data["before_payload"] = self._json_loads(data.pop("before_json", None), {})
+        data["after_payload"] = self._json_loads(data.pop("after_json", None), {})
+        return data
+
+    def get_feedback_task(self, query_tool_id: str) -> Optional[Dict[str, Any]]:
+        token = str(query_tool_id or "").strip()
+        if not token:
+            return None
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            SELECT *
+            FROM memory_feedback_tasks
+            WHERE query_tool_id = ?
+            LIMIT 1
+            """,
+            (token,),
+        )
+        row = cursor.fetchone()
+        return self._feedback_task_row_to_dict(row) if row is not None else None
+
+    def get_feedback_task_by_id(self, task_id: int) -> Optional[Dict[str, Any]]:
+        if int(task_id or 0) <= 0:
+            return None
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            SELECT *
+            FROM memory_feedback_tasks
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (int(task_id),),
+        )
+        row = cursor.fetchone()
+        return self._feedback_task_row_to_dict(row) if row is not None else None
+
+    def list_feedback_tasks(
+        self,
+        *,
+        limit: int = 50,
+        statuses: Optional[List[str]] = None,
+        rollback_statuses: Optional[List[str]] = None,
+        query: str = "",
+    ) -> List[Dict[str, Any]]:
+        safe_limit = max(1, int(limit or 50))
+        params: List[Any] = []
+        conditions: List[str] = []
+
+        normalized_statuses = [
+            str(item or "").strip().lower()
+            for item in (statuses or [])
+            if str(item or "").strip().lower() in {"pending", "running", "applied", "skipped", "error"}
+        ]
+        if normalized_statuses:
+            placeholders = ",".join(["?"] * len(normalized_statuses))
+            conditions.append(f"LOWER(COALESCE(status, '')) IN ({placeholders})")
+            params.extend(normalized_statuses)
+
+        normalized_rollback_statuses = [
+            str(item or "").strip().lower()
+            for item in (rollback_statuses or [])
+            if str(item or "").strip().lower() in {"none", "running", "rolled_back", "error"}
+        ]
+        if normalized_rollback_statuses:
+            placeholders = ",".join(["?"] * len(normalized_rollback_statuses))
+            conditions.append(f"LOWER(COALESCE(rollback_status, 'none')) IN ({placeholders})")
+            params.extend(normalized_rollback_statuses)
+
+        query_token = str(query or "").strip().lower()
+        if query_token:
+            like_value = f"%{query_token}%"
+            conditions.append(
+                """
+                (
+                    LOWER(COALESCE(query_tool_id, '')) LIKE ?
+                    OR LOWER(COALESCE(session_id, '')) LIKE ?
+                    OR LOWER(COALESCE(query_snapshot_json, '')) LIKE ?
+                    OR LOWER(COALESCE(decision_json, '')) LIKE ?
+                    OR LOWER(COALESCE(last_error, '')) LIKE ?
+                    OR LOWER(COALESCE(rollback_reason, '')) LIKE ?
+                    OR LOWER(COALESCE(rollback_error, '')) LIKE ?
+                )
+                """
+            )
+            params.extend([like_value] * 7)
+
+        where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        params.append(safe_limit)
+        cursor = self._conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT *
+            FROM memory_feedback_tasks
+            {where_sql}
+            ORDER BY query_timestamp DESC, id DESC
+            LIMIT ?
+            """,
+            tuple(params),
+        )
+        return [self._feedback_task_row_to_dict(row) for row in cursor.fetchall()]
+
+    def enqueue_feedback_task(
+        self,
+        *,
+        query_tool_id: str,
+        session_id: str,
+        query_timestamp: float,
+        due_at: float,
+        query_snapshot: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        tool_token = str(query_tool_id or "").strip()
+        session_token = str(session_id or "").strip()
+        if not tool_token or not session_token:
+            return None
+
+        now = datetime.now().timestamp()
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            INSERT OR IGNORE INTO memory_feedback_tasks (
+                query_tool_id, session_id, query_timestamp, due_at, status, attempt_count,
+                query_snapshot_json, decision_json, last_error, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, 'pending', 0, ?, NULL, NULL, ?, ?)
+            """,
+            (
+                tool_token,
+                session_token,
+                float(query_timestamp),
+                float(due_at),
+                self._json_dumps(query_snapshot or {}),
+                now,
+                now,
+            ),
+        )
+        self._conn.commit()
+        return self.get_feedback_task(tool_token)
+
+    def update_feedback_task_rollback_plan(
+        self,
+        *,
+        task_id: int,
+        rollback_plan: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if int(task_id or 0) <= 0:
+            return None
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            UPDATE memory_feedback_tasks
+            SET rollback_plan_json = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                self._json_dumps(rollback_plan or {}),
+                datetime.now().timestamp(),
+                int(task_id),
+            ),
+        )
+        self._conn.commit()
+        return self.get_feedback_task_by_id(int(task_id))
+
+    def fetch_due_feedback_tasks(
+        self,
+        *,
+        limit: int = 20,
+        now: Optional[float] = None,
+    ) -> List[Dict[str, Any]]:
+        safe_limit = max(1, int(limit))
+        now_ts = self._as_optional_float(now)
+        if now_ts is None:
+            now_ts = datetime.now().timestamp()
+
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            SELECT *
+            FROM memory_feedback_tasks
+            WHERE due_at <= ?
+              AND status IN ('pending', 'running')
+            ORDER BY due_at ASC, id ASC
+            LIMIT ?
+            """,
+            (now_ts, safe_limit),
+        )
+        return [self._feedback_task_row_to_dict(row) for row in cursor.fetchall()]
+
+    def mark_feedback_task_running(self, task_id: int) -> Optional[Dict[str, Any]]:
+        if int(task_id or 0) <= 0:
+            return None
+        now = datetime.now().timestamp()
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            UPDATE memory_feedback_tasks
+            SET status = 'running',
+                attempt_count = COALESCE(attempt_count, 0) + 1,
+                updated_at = ?
+            WHERE id = ?
+              AND status IN ('pending', 'running')
+            """,
+            (now, int(task_id)),
+        )
+        self._conn.commit()
+        cursor.execute(
+            """
+            SELECT *
+            FROM memory_feedback_tasks
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (int(task_id),),
+        )
+        row = cursor.fetchone()
+        return self._feedback_task_row_to_dict(row) if row is not None else None
+
+    def finalize_feedback_task(
+        self,
+        *,
+        task_id: int,
+        status: str,
+        decision_payload: Optional[Dict[str, Any]] = None,
+        last_error: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        final_status = str(status or "").strip().lower()
+        if final_status not in {"applied", "skipped", "error"}:
+            raise ValueError(f"不支持的反馈任务结束状态: {status}")
+        if int(task_id or 0) <= 0:
+            return None
+
+        now = datetime.now().timestamp()
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            UPDATE memory_feedback_tasks
+            SET status = ?,
+                decision_json = ?,
+                last_error = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                final_status,
+                self._json_dumps(decision_payload or {}),
+                str(last_error or "").strip() or None,
+                now,
+                int(task_id),
+            ),
+        )
+        self._conn.commit()
+        cursor.execute(
+            """
+            SELECT *
+            FROM memory_feedback_tasks
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (int(task_id),),
+        )
+        row = cursor.fetchone()
+        return self._feedback_task_row_to_dict(row) if row is not None else None
+
+    def mark_feedback_task_rollback_running(
+        self,
+        *,
+        task_id: int,
+        requested_by: str = "",
+        reason: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        if int(task_id or 0) <= 0:
+            return None
+        now = datetime.now().timestamp()
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            UPDATE memory_feedback_tasks
+            SET rollback_status = 'running',
+                rollback_requested_by = ?,
+                rollback_reason = ?,
+                rollback_error = NULL,
+                rollback_requested_at = ?,
+                updated_at = ?
+            WHERE id = ?
+              AND LOWER(COALESCE(status, '')) = 'applied'
+              AND LOWER(COALESCE(rollback_status, 'none')) IN ('none', 'error')
+            """,
+            (
+                str(requested_by or "").strip() or None,
+                str(reason or "").strip() or None,
+                now,
+                now,
+                int(task_id),
+            ),
+        )
+        self._conn.commit()
+        if int(cursor.rowcount or 0) <= 0:
+            return None
+        return self.get_feedback_task_by_id(int(task_id))
+
+    def finalize_feedback_task_rollback(
+        self,
+        *,
+        task_id: int,
+        rollback_status: str,
+        rollback_result: Optional[Dict[str, Any]] = None,
+        rollback_error: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        if int(task_id or 0) <= 0:
+            return None
+        final_status = str(rollback_status or "").strip().lower()
+        if final_status not in {"none", "rolled_back", "error"}:
+            raise ValueError(f"不支持的反馈任务回退状态: {rollback_status}")
+        now = datetime.now().timestamp()
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            UPDATE memory_feedback_tasks
+            SET rollback_status = ?,
+                rollback_result_json = ?,
+                rollback_error = ?,
+                rolled_back_at = CASE WHEN ? = 'rolled_back' THEN ? ELSE rolled_back_at END,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                final_status,
+                self._json_dumps(rollback_result or {}),
+                str(rollback_error or "").strip() or None,
+                final_status,
+                now,
+                now,
+                int(task_id),
+            ),
+        )
+        self._conn.commit()
+        return self.get_feedback_task_by_id(int(task_id))
+
+    def append_feedback_action_log(
+        self,
+        *,
+        task_id: int,
+        query_tool_id: str,
+        action_type: str,
+        target_hash: str = "",
+        before_payload: Optional[Dict[str, Any]] = None,
+        after_payload: Optional[Dict[str, Any]] = None,
+        reason: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        if int(task_id or 0) <= 0:
+            return None
+        query_token = str(query_tool_id or "").strip()
+        if not query_token:
+            return None
+
+        now = datetime.now().timestamp()
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO memory_feedback_action_logs (
+                task_id, query_tool_id, action_type, target_hash,
+                before_json, after_json, reason, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(task_id),
+                query_token,
+                str(action_type or "").strip() or "unknown",
+                str(target_hash or "").strip() or None,
+                self._json_dumps(before_payload) if isinstance(before_payload, dict) else None,
+                self._json_dumps(after_payload) if isinstance(after_payload, dict) else None,
+                str(reason or "").strip() or None,
+                now,
+            ),
+        )
+        self._conn.commit()
+        return {
+            "id": int(cursor.lastrowid or 0),
+            "task_id": int(task_id),
+            "query_tool_id": query_token,
+            "action_type": str(action_type or "").strip() or "unknown",
+            "target_hash": str(target_hash or "").strip(),
+            "before_json": self._json_dumps(before_payload) if isinstance(before_payload, dict) else None,
+            "after_json": self._json_dumps(after_payload) if isinstance(after_payload, dict) else None,
+            "reason": str(reason or "").strip(),
+            "created_at": now,
+        }
+
+    def list_feedback_action_logs(self, task_id: int) -> List[Dict[str, Any]]:
+        if int(task_id or 0) <= 0:
+            return []
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, task_id, query_tool_id, action_type, target_hash, before_json, after_json, reason, created_at
+            FROM memory_feedback_action_logs
+            WHERE task_id = ?
+            ORDER BY id ASC
+            """,
+            (int(task_id),),
+        )
+        return [self._feedback_action_log_row_to_dict(row) for row in cursor.fetchall()]
+
+    def upsert_paragraph_stale_relation_mark(
+        self,
+        *,
+        paragraph_hash: str,
+        relation_hash: str,
+        query_tool_id: str = "",
+        task_id: Optional[int] = None,
+        reason: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        paragraph_token = str(paragraph_hash or "").strip()
+        relation_token = str(relation_hash or "").strip()
+        if not paragraph_token or not relation_token:
+            return None
+
+        now = datetime.now().timestamp()
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO paragraph_stale_relation_marks (
+                paragraph_hash, relation_hash, query_tool_id, task_id, reason, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(paragraph_hash, relation_hash) DO UPDATE SET
+                query_tool_id = excluded.query_tool_id,
+                task_id = excluded.task_id,
+                reason = excluded.reason,
+                updated_at = excluded.updated_at
+            """,
+            (
+                paragraph_token,
+                relation_token,
+                str(query_tool_id or "").strip() or None,
+                int(task_id) if int(task_id or 0) > 0 else None,
+                str(reason or "").strip() or None,
+                now,
+                now,
+            ),
+        )
+        self._conn.commit()
+        return {
+            "paragraph_hash": paragraph_token,
+            "relation_hash": relation_token,
+            "query_tool_id": str(query_tool_id or "").strip(),
+            "task_id": int(task_id or 0) if int(task_id or 0) > 0 else None,
+            "reason": str(reason or "").strip(),
+            "updated_at": now,
+        }
+
+    def get_paragraph_stale_relation_marks_batch(
+        self,
+        paragraph_hashes: Sequence[str],
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        normalized: List[str] = []
+        seen = set()
+        for item in paragraph_hashes or []:
+            token = str(item or "").strip()
+            if not token or token in seen:
+                continue
+            seen.add(token)
+            normalized.append(token)
+        if not normalized:
+            return {}
+
+        placeholders = ",".join(["?"] * len(normalized))
+        cursor = self._conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT paragraph_hash, relation_hash, query_tool_id, task_id, reason, created_at, updated_at
+            FROM paragraph_stale_relation_marks
+            WHERE paragraph_hash IN ({placeholders})
+            ORDER BY updated_at DESC, paragraph_hash ASC, relation_hash ASC
+            """,
+            tuple(normalized),
+        )
+        grouped: Dict[str, List[Dict[str, Any]]] = {token: [] for token in normalized}
+        for row in cursor.fetchall():
+            payload = {
+                "paragraph_hash": str(row["paragraph_hash"] or "").strip(),
+                "relation_hash": str(row["relation_hash"] or "").strip(),
+                "query_tool_id": str(row["query_tool_id"] or "").strip(),
+                "task_id": int(row["task_id"] or 0) if row["task_id"] is not None else None,
+                "reason": str(row["reason"] or "").strip(),
+                "created_at": self._as_optional_float(row["created_at"]),
+                "updated_at": self._as_optional_float(row["updated_at"]),
+            }
+            grouped.setdefault(payload["paragraph_hash"], []).append(payload)
+        return grouped
+
+    def count_paragraph_stale_relation_marks(self) -> int:
+        cursor = self._conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM paragraph_stale_relation_marks")
+        row = cursor.fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+
+    def delete_paragraph_stale_relation_marks(
+        self,
+        marks: Sequence[Tuple[str, str]],
+    ) -> int:
+        normalized: List[Tuple[str, str]] = []
+        seen: set[Tuple[str, str]] = set()
+        for paragraph_hash, relation_hash in marks or []:
+            paragraph_token = str(paragraph_hash or "").strip()
+            relation_token = str(relation_hash or "").strip()
+            if not paragraph_token or not relation_token:
+                continue
+            key = (paragraph_token, relation_token)
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(key)
+        if not normalized:
+            return 0
+
+        cursor = self._conn.cursor()
+        deleted = 0
+        for paragraph_hash, relation_hash in normalized:
+            cursor.execute(
+                """
+                DELETE FROM paragraph_stale_relation_marks
+                WHERE paragraph_hash = ? AND relation_hash = ?
+                """,
+                (paragraph_hash, relation_hash),
+            )
+            deleted += int(cursor.rowcount or 0)
+        self._conn.commit()
+        return deleted
+
+    @staticmethod
+    def _person_profile_refresh_row_to_dict(row: Optional[sqlite3.Row]) -> Optional[Dict[str, Any]]:
+        if row is None:
+            return None
+        payload = dict(row)
+        payload["person_id"] = str(payload.get("person_id", "") or "").strip()
+        payload["status"] = str(payload.get("status", "") or "").strip().lower() or "pending"
+        payload["reason"] = str(payload.get("reason", "") or "").strip()
+        payload["source_query_tool_id"] = str(payload.get("source_query_tool_id", "") or "").strip()
+        payload["retry_count"] = int(payload.get("retry_count", 0) or 0)
+        payload["last_error"] = str(payload.get("last_error", "") or "").strip()
+        payload["requested_at"] = MetadataStore._as_optional_float(payload.get("requested_at"))
+        payload["updated_at"] = MetadataStore._as_optional_float(payload.get("updated_at"))
+        return payload
+
+    def get_person_profile_refresh_request(self, person_id: str) -> Optional[Dict[str, Any]]:
+        token = str(person_id or "").strip()
+        if not token:
+            return None
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            SELECT person_id, status, reason, source_query_tool_id, retry_count, last_error, requested_at, updated_at
+            FROM person_profile_refresh_queue
+            WHERE person_id = ?
+            LIMIT 1
+            """,
+            (token,),
+        )
+        return self._person_profile_refresh_row_to_dict(cursor.fetchone())
+
+    def enqueue_person_profile_refresh(
+        self,
+        *,
+        person_id: str,
+        reason: str = "",
+        source_query_tool_id: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        token = str(person_id or "").strip()
+        if not token:
+            return None
+
+        now = datetime.now().timestamp()
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO person_profile_refresh_queue (
+                person_id, status, reason, source_query_tool_id, retry_count, last_error, requested_at, updated_at
+            ) VALUES (?, 'pending', ?, ?, 0, NULL, ?, ?)
+            ON CONFLICT(person_id) DO UPDATE SET
+                status = 'pending',
+                reason = excluded.reason,
+                source_query_tool_id = excluded.source_query_tool_id,
+                last_error = NULL,
+                requested_at = excluded.requested_at,
+                updated_at = excluded.updated_at
+            """,
+            (
+                token,
+                str(reason or "").strip() or None,
+                str(source_query_tool_id or "").strip() or None,
+                now,
+                now,
+            ),
+        )
+        self._conn.commit()
+        return self.get_person_profile_refresh_request(token)
+
+    def fetch_person_profile_refresh_batch(
+        self,
+        *,
+        limit: int = 20,
+        max_retry: int = 3,
+    ) -> List[Dict[str, Any]]:
+        safe_limit = max(1, int(limit))
+        safe_retry = max(0, int(max_retry))
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            SELECT person_id, status, reason, source_query_tool_id, retry_count, last_error, requested_at, updated_at
+            FROM person_profile_refresh_queue
+            WHERE status = 'pending'
+               OR (status = 'failed' AND retry_count < ?)
+            ORDER BY requested_at ASC, updated_at ASC
+            LIMIT ?
+            """,
+            (safe_retry, safe_limit),
+        )
+        return [
+            item
+            for item in (
+                self._person_profile_refresh_row_to_dict(row)
+                for row in cursor.fetchall()
+            )
+            if item is not None
+        ]
+
+    def mark_person_profile_refresh_running(
+        self,
+        person_id: str,
+        *,
+        requested_at: Optional[float] = None,
+    ) -> bool:
+        token = str(person_id or "").strip()
+        if not token:
+            return False
+
+        now = datetime.now().timestamp()
+        params: List[Any] = [now, token]
+        sql = """
+            UPDATE person_profile_refresh_queue
+            SET status = 'running',
+                updated_at = ?
+            WHERE person_id = ?
+              AND status IN ('pending', 'failed')
+        """
+        if requested_at is not None:
+            sql += " AND requested_at = ?"
+            params.append(float(requested_at))
+        cursor = self._conn.cursor()
+        cursor.execute(sql, tuple(params))
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def mark_person_profile_refresh_done(
+        self,
+        person_id: str,
+        *,
+        requested_at: Optional[float] = None,
+    ) -> bool:
+        token = str(person_id or "").strip()
+        if not token:
+            return False
+
+        now = datetime.now().timestamp()
+        cursor = self._conn.cursor()
+        if requested_at is None:
+            cursor.execute(
+                """
+                UPDATE person_profile_refresh_queue
+                SET status = 'done',
+                    last_error = NULL,
+                    updated_at = ?
+                WHERE person_id = ?
+                """,
+                (now, token),
+            )
+        else:
+            req_ts = float(requested_at)
+            cursor.execute(
+                """
+                UPDATE person_profile_refresh_queue
+                SET status = CASE
+                        WHEN requested_at > ? THEN 'pending'
+                        ELSE 'done'
+                    END,
+                    last_error = NULL,
+                    updated_at = ?
+                WHERE person_id = ?
+                """,
+                (req_ts, now, token),
+            )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def mark_person_profile_refresh_failed(
+        self,
+        person_id: str,
+        error: str = "",
+        *,
+        requested_at: Optional[float] = None,
+    ) -> bool:
+        token = str(person_id or "").strip()
+        if not token:
+            return False
+
+        err_text = str(error or "").strip()[:500]
+        now = datetime.now().timestamp()
+        cursor = self._conn.cursor()
+        if requested_at is None:
+            cursor.execute(
+                """
+                UPDATE person_profile_refresh_queue
+                SET status = 'failed',
+                    retry_count = COALESCE(retry_count, 0) + 1,
+                    last_error = ?,
+                    updated_at = ?
+                WHERE person_id = ?
+                """,
+                (err_text, now, token),
+            )
+        else:
+            req_ts = float(requested_at)
+            cursor.execute(
+                """
+                UPDATE person_profile_refresh_queue
+                SET status = CASE
+                        WHEN requested_at > ? THEN 'pending'
+                        ELSE 'failed'
+                    END,
+                    retry_count = CASE
+                        WHEN requested_at > ? THEN COALESCE(retry_count, 0)
+                        ELSE COALESCE(retry_count, 0) + 1
+                    END,
+                    last_error = CASE
+                        WHEN requested_at > ? THEN NULL
+                        ELSE ?
+                    END,
+                    updated_at = ?
+                WHERE person_id = ?
+                """,
+                (req_ts, req_ts, req_ts, err_text, now, token),
+            )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def list_person_profile_refresh_requests(
+        self,
+        *,
+        statuses: Optional[List[str]] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        safe_limit = max(1, int(limit))
+        params: List[Any] = []
+        conditions: List[str] = []
+        normalized_statuses = [
+            str(item or "").strip().lower()
+            for item in (statuses or [])
+            if str(item or "").strip().lower() in {"pending", "running", "done", "failed"}
+        ]
+        if normalized_statuses:
+            placeholders = ",".join(["?"] * len(normalized_statuses))
+            conditions.append(f"status IN ({placeholders})")
+            params.extend(normalized_statuses)
+
+        where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        params.append(safe_limit)
+        cursor = self._conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT person_id, status, reason, source_query_tool_id, retry_count, last_error, requested_at, updated_at
+            FROM person_profile_refresh_queue
+            {where_sql}
+            ORDER BY updated_at DESC, person_id ASC
+            LIMIT ?
+            """,
+            tuple(params),
+        )
+        return [
+            item
+            for item in (
+                self._person_profile_refresh_row_to_dict(row)
+                for row in cursor.fetchall()
+            )
+            if item is not None
+        ]
+
+    def get_person_profile_refresh_summary(self, failed_limit: int = 20) -> Dict[str, Any]:
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            SELECT status, COUNT(*) AS cnt
+            FROM person_profile_refresh_queue
+            GROUP BY status
+            """
+        )
+        counts = {"pending": 0, "running": 0, "done": 0, "failed": 0, "total": 0}
+        for row in cursor.fetchall():
+            status = str(row["status"] or "").strip().lower()
+            cnt = int(row["cnt"] or 0)
+            counts[status] = counts.get(status, 0) + cnt
+            counts["total"] += cnt
+        running = self.list_person_profile_refresh_requests(statuses=["running"], limit=20)
+        failed = self.list_person_profile_refresh_requests(
+            statuses=["failed"],
+            limit=max(1, int(failed_limit)),
+        )
+        return {
+            "counts": counts,
+            "running": running,
+            "failed": failed,
+        }
 
     def _episode_row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
         data = dict(row)

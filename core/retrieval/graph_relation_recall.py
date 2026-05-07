@@ -255,7 +255,7 @@ class GraphRelationRecallService:
         graph_hops: int,
         graph_seed_entities: Sequence[str],
     ) -> Optional[GraphRelationCandidate]:
-        relation = self.metadata_store.get_relation(relation_hash)
+        relation = self.metadata_store.get_relation(relation_hash, include_inactive=False)
         if relation is None:
             return None
         supporting_paragraphs = self.metadata_store.get_paragraphs_by_relation(relation_hash)

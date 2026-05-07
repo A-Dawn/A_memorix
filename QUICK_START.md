@@ -1,11 +1,11 @@
 # A_Memorix Quick Start (v2.0.0)
 
-本文档面向当前 `2.0.0` 架构（SDK Tool 接口）。
+本文档面向当前 `2.0.0` 架构（源码内长期记忆子系统 + SDK Tool 接口）。
 
 ## 0. 版本与接口变更
 
-- 当前插件版本：`2.0.0`
-- 接口形态：`memory_provider` + Tool 调用
+- 当前版本：`2.0.0`
+- 接入形态：MaiBot 内置长期记忆子系统 + Tool 调用
 - 旧版 slash 命令（如 `/query`、`/memory`、`/visualize`）不再作为本分支主文档入口
 
 ## 1. 环境准备
@@ -17,42 +17,138 @@
 安装依赖：
 
 ```bash
-pip install -r plugins/A_memorix/requirements.txt --upgrade
+pip install -r src/A_memorix/requirements.txt --upgrade
 ```
 
-如果当前目录就是插件目录，也可以：
+如果当前目录就是 `src/A_memorix`，也可以：
 
 ```bash
 pip install -r requirements.txt --upgrade
 ```
 
-## 2. 启用插件
+## 2. 配置子系统
 
-在主程序插件配置中启用 `A_Memorix`。
+当前分支固定使用 `config/a_memorix.toml` 作为 A_Memorix 配置文件。
 
-若你使用 `plugins/A_memorix/config.toml` 方式，最小示例：
+推荐的配置入口有两种：
+
+- 长期记忆控制台：适合修改常用高频项，适合日常运维与调优。
+- 原始 TOML：适合批量复制配置或编辑长尾高级项。
+
+常用完整示例：
 
 ```toml
 [plugin]
 enabled = true
 
 [storage]
-data_dir = "./data"
+data_dir = "data/a-memorix"
 
 [embedding]
 model_name = "auto"
 dimension = 1024
 batch_size = 32
 max_concurrent = 5
+enable_cache = false
 quantization_type = "int8"
+
+[embedding.fallback]
+enabled = true
+probe_interval_seconds = 180
+allow_metadata_only_write = true
+
+[embedding.paragraph_vector_backfill]
+enabled = true
+interval_seconds = 60
+batch_size = 64
+max_retry = 5
+
+[retrieval]
+top_k_paragraphs = 20
+top_k_relations = 10
+top_k_final = 10
+alpha = 0.5
+enable_ppr = true
+ppr_alpha = 0.85
+ppr_timeout_seconds = 1.5
+ppr_concurrency_limit = 4
+enable_parallel = true
+
+[retrieval.sparse]
+enabled = true
+backend = "fts5"
+mode = "auto"
+tokenizer_mode = "jieba"
+candidate_k = 80
+relation_candidate_k = 60
+
+[threshold]
+min_threshold = 0.3
+max_threshold = 0.95
+percentile = 75.0
+min_results = 3
+enable_auto_adjust = true
+
+[filter]
+enabled = true
+mode = "blacklist"
+chats = []
+
+[episode]
+enabled = true
+generation_enabled = true
+pending_batch_size = 20
+pending_max_retry = 3
+max_paragraphs_per_call = 20
+max_chars_per_call = 6000
+source_time_window_hours = 24
+segmentation_model = "auto"
+
+[person_profile]
+enabled = true
+refresh_interval_minutes = 30
+active_window_hours = 72
+max_refresh_per_cycle = 50
+top_k_evidence = 12
+
+[memory]
+enabled = true
+half_life_hours = 24.0
+prune_threshold = 0.1
+freeze_duration_hours = 24.0
+
+[advanced]
+enable_auto_save = true
+auto_save_interval_minutes = 5
+debug = false
+
+[web.import]
+enabled = true
+max_queue_size = 20
+max_files_per_task = 200
+max_file_size_mb = 20
+max_paste_chars = 200000
+default_file_concurrency = 2
+default_chunk_concurrency = 4
+
+[web.tuning]
+enabled = true
+max_queue_size = 8
+poll_interval_ms = 1200
+default_intensity = "standard"
+default_objective = "precision_priority"
+default_top_k_eval = 20
+default_sample_size = 24
 ```
+
+未出现在可视化配置页中的高级项，继续通过原始 TOML 维护，详见 [CONFIG_REFERENCE.md](CONFIG_REFERENCE.md)。
 
 ## 3. 运行时自检（强烈建议）
 
 先确认 embedding 实际输出维度与向量库兼容：
 
 ```bash
-python plugins/A_memorix/scripts/runtime_self_check.py --json
+python src/A_memorix/scripts/runtime_self_check.py --json
 ```
 
 如果结果 `ok=false`，先修复 embedding 配置或向量库，再继续导入。
@@ -61,34 +157,36 @@ python plugins/A_memorix/scripts/runtime_self_check.py --json
 
 ### 4.1 文本批量导入
 
-把文本放到：
+`process_knowledge.py` 当前默认扫描目录为：
 
 ```text
-plugins/A_memorix/data/raw/
+data/plugins/a-dawn.a-memorix/raw/
 ```
+
+若你当前运行目录使用 `storage.data_dir = "data/a-memorix"`，建议先把文本同步到脚本默认目录再执行，避免导入目录与运行目录不一致。
 
 执行：
 
 ```bash
-python plugins/A_memorix/scripts/process_knowledge.py
+python src/A_memorix/scripts/process_knowledge.py
 ```
 
 常用参数：
 
 ```bash
-python plugins/A_memorix/scripts/process_knowledge.py --force
-python plugins/A_memorix/scripts/process_knowledge.py --chat-log
-python plugins/A_memorix/scripts/process_knowledge.py --chat-log --chat-reference-time "2026/02/12 10:30"
+python src/A_memorix/scripts/process_knowledge.py --force
+python src/A_memorix/scripts/process_knowledge.py --chat-log
+python src/A_memorix/scripts/process_knowledge.py --chat-log --chat-reference-time "2026/02/12 10:30"
 ```
 
 ### 4.2 其他导入脚本
 
 ```bash
-python plugins/A_memorix/scripts/import_lpmm_json.py <json文件或目录>
-python plugins/A_memorix/scripts/convert_lpmm.py -i <lpmm数据目录> -o plugins/A_memorix/data
-python plugins/A_memorix/scripts/migrate_chat_history.py --help
-python plugins/A_memorix/scripts/migrate_maibot_memory.py --help
-python plugins/A_memorix/scripts/migrate_person_memory_points.py --help
+python src/A_memorix/scripts/import_lpmm_json.py <json文件或目录>
+python src/A_memorix/scripts/convert_lpmm.py -i <lpmm数据目录> -o data/a-memorix
+python src/A_memorix/scripts/migrate_chat_history.py --help
+python src/A_memorix/scripts/migrate_maibot_memory.py --help
+python src/A_memorix/scripts/migrate_person_memory_points.py --help
 ```
 
 ## 5. 核心 Tool 调用
@@ -206,8 +304,9 @@ python plugins/A_memorix/scripts/migrate_person_memory_points.py --help
 
 本分支不内置独立 `server.py`。
 
-- `web/index.html`、`web/import.html`、`web/tuning.html` 由宿主侧路由/API 集成暴露
-- 请检查宿主是否已映射对应静态页与 `/api/*` 接口
+- 常用配置项可直接通过主程序长期记忆控制台编辑。
+- `web/index.html`、`web/import.html`、`web/tuning.html` 仅作为页面结构与行为参考。
+- 正式入口由宿主侧 React 页面和 `/api/webui/memory/*` 接口承接。
 
 ## 8. 下一步
 

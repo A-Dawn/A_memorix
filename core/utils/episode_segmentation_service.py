@@ -277,6 +277,7 @@ class EpisodeSegmentationService:
         model_config, model_label = self._resolve_model_config()
         if model_config is None:
             raise RuntimeError("episode segmentation model unavailable")
+        task_name = llm_api.resolve_task_name_from_model_config(model_config, preferred_task_name=model_label)
 
         prompt = self._build_prompt(
             source=source,
@@ -284,11 +285,17 @@ class EpisodeSegmentationService:
             window_end=window_end,
             paragraphs=paragraphs,
         )
-        success, response, _, _ = await llm_api.generate_with_model(
-            prompt=prompt,
-            model_config=model_config,
-            request_type="A_Memorix.EpisodeSegmentation",
+        result = await llm_api.generate(
+            llm_api.LLMServiceRequest(
+                task_name=task_name,
+                request_type="A_Memorix.EpisodeSegmentation",
+                prompt=prompt,
+                temperature=getattr(model_config, "temperature", None),
+                max_tokens=getattr(model_config, "max_tokens", None),
+            )
         )
+        success = bool(result.success)
+        response = str(result.completion.response or "")
         if not success or not response:
             raise RuntimeError("llm_generate_failed")
 
