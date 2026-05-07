@@ -4,15 +4,21 @@ import asyncio
 import json
 import pickle
 import time
-import uuid
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Callable, Coroutine, Dict, Iterable, List, Optional, Sequence
+
+from json_repair import repair_json
 
 from src.common.logger import get_logger
+from src.config.config import global_config
+from src.services import message_service as message_api
+from src.services.llm_service import LLMServiceClient
 
+from ...paths import default_data_dir, resolve_repo_path
 from ..embedding import create_embedding_api_adapter
-from ..retrieval import RetrievalResult, SparseBM25Config, SparseBM25Index, TemporalQueryOptions
+from ..retrieval import RetrievalResult, SparseBM25Config, SparseBM25Index
 from ..storage import GraphStore, MetadataStore, QuantizationType, SparseMatrixFormat, VectorStore
 from ..utils.aggregate_query_service import AggregateQueryService
 from ..utils.episode_retrieval_service import EpisodeRetrievalService
@@ -82,7 +88,7 @@ class _KernelRuntimeFacade:
     async def execute_request_with_dedup(
         self,
         request_key: str,
-        executor: Callable[[], Awaitable[Dict[str, Any]]],
+        executor: Callable[[], Coroutine[Any, Any, Dict[str, Any]]],
     ) -> tuple[bool, Dict[str, Any]]:
         return await self._kernel.execute_request_with_dedup(request_key, executor)
 
@@ -144,7 +150,7 @@ class SDKMemoryKernel:
         self.config = config or {}
         storage_cfg = self._cfg("storage", {}) or {}
         data_dir = str(storage_cfg.get("data_dir", "./data") or "./data")
-        self.data_dir = (self.plugin_root / data_dir).resolve() if data_dir.startswith(".") else Path(data_dir)
+        self.data_dir = resolve_repo_path(data_dir, fallback=default_data_dir())
         self.embedding_dimension = max(1, int(self._cfg("embedding.dimension", 1024)))
         self.relation_vectors_enabled = bool(self._cfg("retrieval.relation_vectorization.enabled", False))
 
@@ -179,6 +185,7 @@ class SDKMemoryKernel:
             "since": None,
             "last_check": None,
         }
+        self._feedback_classifier: Optional[LLMServiceClient] = None
 
     def _cfg(self, key: str, default: Any = None) -> Any:
         current: Any = self.config
@@ -626,23 +633,18 @@ class SDKMemoryKernel:
             model_name=str(self._cfg("embedding.model_name", "auto") or "auto"),
             retry_config=self._cfg("embedding.retry", {}) or {},
         )
-        detected_dimension = int(await self.embedding_manager._detect_dimension())
-        self.embedding_dimension = detected_dimension
-
+        dimension_detection_task = asyncio.create_task(
+            asyncio.to_thread(lambda: asyncio.run(self.embedding_manager._detect_dimension()))
+        )
+        await asyncio.sleep(0)
         stored_dimension = self._stored_vector_dimension()
-        if stored_dimension is not None and stored_dimension != detected_dimension:
-            raise RuntimeError(
-                self._vector_mismatch_error(
-                    stored_dimension=stored_dimension,
-                    detected_dimension=detected_dimension,
-                )
-            )
+        provisional_dimension = stored_dimension or self.embedding_dimension
 
         matrix_format = str(self._cfg("graph.sparse_matrix_format", "csr") or "csr").strip().lower()
         graph_format = SparseMatrixFormat.CSC if matrix_format == "csc" else SparseMatrixFormat.CSR
 
         self.vector_store = VectorStore(
-            dimension=detected_dimension,
+            dimension=provisional_dimension,
             quantization_type=QuantizationType.INT8,
             data_dir=self.data_dir / "vectors",
         )
@@ -650,9 +652,11 @@ class SDKMemoryKernel:
         self.metadata_store = MetadataStore(data_dir=self.data_dir / "metadata")
         self.metadata_store.connect()
 
-        if self.vector_store.has_data():
+        vector_store_loaded = False
+        if stored_dimension is not None and self.vector_store.has_data():
             self.vector_store.load()
             self.vector_store.warmup_index(force_train=True)
+            vector_store_loaded = True
         if self.graph_store.has_data():
             self.graph_store.load()
 
@@ -665,6 +669,33 @@ class SDKMemoryKernel:
         self.sparse_index = SparseBM25Index(metadata_store=self.metadata_store, config=sparse_cfg)
         if getattr(self.sparse_index.config, "enabled", False):
             self.sparse_index.ensure_loaded()
+
+        try:
+            detected_dimension = int(await dimension_detection_task)
+        except Exception:
+            if not dimension_detection_task.done():
+                dimension_detection_task.cancel()
+            raise
+        self.embedding_dimension = detected_dimension
+
+        if stored_dimension is not None and stored_dimension != detected_dimension:
+            raise RuntimeError(
+                self._vector_mismatch_error(
+                    stored_dimension=stored_dimension,
+                    detected_dimension=detected_dimension,
+                )
+            )
+
+        if self.vector_store.dimension != detected_dimension:
+            self.vector_store = VectorStore(
+                dimension=detected_dimension,
+                quantization_type=QuantizationType.INT8,
+                data_dir=self.data_dir / "vectors",
+            )
+
+        if not vector_store_loaded and self.vector_store.has_data():
+            self.vector_store.load()
+            self.vector_store.warmup_index(force_train=True)
 
         self.relation_write_service = RelationWriteService(
             metadata_store=self.metadata_store,
@@ -768,7 +799,7 @@ class SDKMemoryKernel:
     async def execute_request_with_dedup(
         self,
         request_key: str,
-        executor: Callable[[], Awaitable[Dict[str, Any]]],
+        executor: Callable[[], Coroutine[Any, Any, Dict[str, Any]]],
     ) -> tuple[bool, Dict[str, Any]]:
         token = str(request_key or "").strip()
         if not token:
@@ -794,6 +825,8 @@ class SDKMemoryKernel:
         chat_id: str,
         context_length: Optional[int] = None,
         include_personality: Optional[bool] = None,
+        time_end: Optional[float] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         await self.initialize()
         assert self.summary_importer
@@ -801,6 +834,8 @@ class SDKMemoryKernel:
             stream_id=str(chat_id or "").strip(),
             context_length=context_length,
             include_personality=include_personality,
+            time_end=time_end,
+            metadata=metadata,
         )
         if success:
             await self.rebuild_episodes_for_sources([self._build_source("chat_summary", chat_id, [])])
@@ -843,6 +878,13 @@ class SDKMemoryKernel:
                 chat_id=chat_id,
                 context_length=self._optional_int(summary_meta.get("context_length")),
                 include_personality=summary_meta.get("include_personality"),
+                time_end=time_end,
+                metadata={
+                    **summary_meta,
+                    "external_id": external_token,
+                    "chat_id": str(chat_id or "").strip(),
+                    "source_type": "chat_summary",
+                },
             )
             result.setdefault("external_id", external_id)
             result.setdefault("chat_id", chat_id)
@@ -1095,7 +1137,7 @@ class SDKMemoryKernel:
                 person=request.person_id or None,
                 source=self._chat_source(request.chat_id),
             )
-            hits = [self._episode_hit(row) for row in rows]
+            hits = self._filter_episode_hits([self._episode_hit(row) for row in rows])
             return {"summary": self._summary(hits), "hits": hits}
 
         if mode == "aggregate":
@@ -1114,6 +1156,7 @@ class SDKMemoryKernel:
             for item in hits:
                 item.setdefault("metadata", {})
             filtered = self._filter_hits(hits, request.person_id)
+            filtered = self._filter_user_visible_hits(filtered)
             return {"summary": self._summary(filtered), "hits": filtered}
 
         query_type = mode
@@ -1147,24 +1190,80 @@ class SDKMemoryKernel:
 
         hits = [self._retrieval_result_hit(item) for item in result.results]
         filtered = self._filter_hits(hits, request.person_id)
+        filtered = self._filter_user_visible_hits(filtered)
         return {"summary": self._summary(filtered), "hits": filtered}
 
-    async def get_person_profile(self, *, person_id: str, chat_id: str = "", limit: int = 10) -> Dict[str, Any]:
-        del chat_id
-        await self.initialize()
+    @staticmethod
+    def _empty_person_profile_response(*, person_id: str = "", person_name: str = "") -> Dict[str, Any]:
+        return {
+            "summary": "",
+            "traits": [],
+            "evidence": [],
+            "person_id": str(person_id or "").strip(),
+            "person_name": str(person_name or "").strip(),
+            "profile_source": "",
+            "has_manual_override": False,
+        }
+
+    async def _query_person_profile_with_feedback_refresh(
+        self,
+        *,
+        person_id: str = "",
+        person_keyword: str = "",
+        limit: int = 10,
+        force_refresh: bool = False,
+        source_note: str,
+    ) -> Dict[str, Any]:
         assert self.metadata_store is not None
         assert self.person_profile_service is not None
-        self._mark_person_active(person_id)
-        profile = await self.person_profile_service.query_person_profile(
-            person_id=person_id,
-            top_k=max(4, int(limit or 10)),
-            source_note="sdk_memory_kernel.get_person_profile",
-        )
-        if not profile.get("success"):
-            return {"summary": "", "traits": [], "evidence": []}
 
-        evidence = []
-        for hash_value in profile.get("evidence_ids", [])[: max(1, int(limit))]:
+        pid = str(person_id or "").strip()
+        if not pid and person_keyword:
+            pid = self.person_profile_service.resolve_person_id(str(person_keyword or "").strip())
+
+        dirty_request = self.metadata_store.get_person_profile_refresh_request(pid) if pid else None
+        should_force_refresh = bool(force_refresh)
+        if (
+            pid
+            and self._feedback_cfg_profile_refresh_enabled()
+            and self._feedback_cfg_profile_force_refresh_on_read()
+            and isinstance(dirty_request, dict)
+            and str(dirty_request.get("status", "") or "").strip().lower() in {"pending", "running", "failed"}
+        ):
+            should_force_refresh = True
+
+        profile = await self.person_profile_service.query_person_profile(
+            person_id=pid,
+            person_keyword=str(person_keyword or "").strip(),
+            top_k=max(1, int(limit or 10)),
+            force_refresh=should_force_refresh,
+            source_note=source_note,
+        )
+        payload = profile if isinstance(profile, dict) else {"success": False, "error": "invalid profile payload"}
+        if dirty_request:
+            payload["feedback_refresh_request"] = dirty_request
+        if should_force_refresh and dirty_request and not bool(payload.get("success")):
+            payload.setdefault("error", "feedback_refresh_failed")
+            payload["feedback_refresh_failed"] = True
+        return payload
+
+    def _build_person_profile_response(
+        self,
+        profile: Dict[str, Any],
+        *,
+        requested_person_id: str,
+        limit: int,
+    ) -> Dict[str, Any]:
+        assert self.metadata_store is not None
+        if not bool(profile.get("success")):
+            return self._empty_person_profile_response(
+                person_id=str(profile.get("person_id", "") or requested_person_id),
+                person_name=str(profile.get("person_name", "") or ""),
+            )
+
+        evidence: List[Dict[str, Any]] = []
+        evidence_limit = max(1, int(limit or 10))
+        for hash_value in profile.get("evidence_ids", [])[:evidence_limit]:
             paragraph = self.metadata_store.get_paragraph(hash_value)
             if paragraph is not None:
                 evidence.append(
@@ -1197,17 +1296,31 @@ class SDKMemoryKernel:
                     }
                 )
 
+        evidence = self._filter_user_visible_hits(evidence)
         text = str(profile.get("profile_text", "") or "").strip()
         traits = [line.strip("- ").strip() for line in text.splitlines() if line.strip()][:8]
         return {
             "summary": text,
             "traits": traits,
             "evidence": evidence,
-            "person_id": str(profile.get("person_id", "") or person_id),
+            "person_id": str(profile.get("person_id", "") or requested_person_id),
             "person_name": str(profile.get("person_name", "") or ""),
             "profile_source": str(profile.get("profile_source", "") or "auto_snapshot"),
             "has_manual_override": bool(profile.get("has_manual_override", False)),
         }
+
+    async def get_person_profile(self, *, person_id: str, chat_id: str = "", limit: int = 10) -> Dict[str, Any]:
+        del chat_id
+        await self.initialize()
+        assert self.metadata_store is not None
+        assert self.person_profile_service is not None
+        self._mark_person_active(person_id)
+        profile = await self._query_person_profile_with_feedback_refresh(
+            person_id=person_id,
+            limit=max(4, int(limit or 10)),
+            source_note="sdk_memory_kernel.get_person_profile",
+        )
+        return self._build_person_profile_response(profile, requested_person_id=person_id, limit=limit)
 
     async def refresh_person_profile(self, person_id: str, limit: int = 10, *, mark_active: bool = True) -> Dict[str, Any]:
         await self.initialize()
@@ -1297,12 +1410,22 @@ class SDKMemoryKernel:
             "SELECT COUNT(*) AS c FROM episode_pending_paragraphs WHERE status IN ('pending', 'running', 'failed')"
         )[0]["c"]
         backfill = self._paragraph_vector_backfill_counts()
+        episode_rebuild_summary = self.metadata_store.get_episode_source_rebuild_summary()
+        episode_rebuild_counts = episode_rebuild_summary.get("counts", {}) if isinstance(episode_rebuild_summary, dict) else {}
         return {
             "paragraphs": int(stats.get("paragraph_count", 0) or 0),
             "relations": int(stats.get("relation_count", 0) or 0),
             "episodes": int(episodes or 0),
             "profiles": int(profiles or 0),
             "episode_pending": int(pending or 0),
+            "stale_paragraph_marks": int(stats.get("stale_paragraph_mark_count", 0) or 0),
+            "profile_refresh_pending": int(stats.get("person_profile_refresh_pending_count", 0) or 0),
+            "profile_refresh_failed": int(stats.get("person_profile_refresh_failed_count", 0) or 0),
+            "episode_rebuild_pending": int(
+                (episode_rebuild_counts.get("pending", 0) or 0)
+                + (episode_rebuild_counts.get("running", 0) or 0)
+                + (episode_rebuild_counts.get("failed", 0) or 0)
+            ),
             "paragraph_vector_backfill_pending": int(backfill.get("pending", 0) or 0),
             "paragraph_vector_backfill_failed": int(backfill.get("failed", 0) or 0),
             "last_maintenance_at": self._last_maintenance_at,
@@ -1316,6 +1439,27 @@ class SDKMemoryKernel:
         act = str(action or "").strip().lower()
         if act == "get_graph":
             return {"success": True, **self._serialize_graph(limit=max(1, int(kwargs.get("limit", 200) or 200)))}
+        if act == "search":
+            return self._search_graph(
+                query=str(kwargs.get("query", "") or "").strip(),
+                limit=max(1, min(200, int(kwargs.get("limit", 50) or 50))),
+            )
+        if act == "node_detail":
+            detail = self._build_graph_node_detail(
+                node_id=str(kwargs.get("node_id", "") or kwargs.get("node", "") or "").strip(),
+                relation_limit=max(1, int(kwargs.get("relation_limit", 20) or 20)),
+                paragraph_limit=max(1, int(kwargs.get("paragraph_limit", 20) or 20)),
+                evidence_node_limit=max(12, int(kwargs.get("evidence_node_limit", 80) or 80)),
+            )
+            return detail
+        if act == "edge_detail":
+            detail = self._build_graph_edge_detail(
+                source=str(kwargs.get("source", "") or "").strip(),
+                target=str(kwargs.get("target", "") or kwargs.get("object", "") or "").strip(),
+                paragraph_limit=max(1, int(kwargs.get("paragraph_limit", 20) or 20)),
+                evidence_node_limit=max(12, int(kwargs.get("evidence_node_limit", 80) or 80)),
+            )
+            return detail
 
         if act == "create_node":
             name = str(kwargs.get("name", "") or kwargs.get("node", "") or "").strip()
@@ -1337,12 +1481,9 @@ class SDKMemoryKernel:
                 reason=str(kwargs.get("reason", "") or "graph_delete_node"),
             )
             return {
-                "success": bool(result.get("success", False)),
-                "deleted": bool(result.get("deleted_count", 0)),
+                **result,
+                "deleted": bool(result.get("deleted_entity_count", 0) or result.get("deleted_count", 0)),
                 "node": name,
-                "operation_id": result.get("operation_id", ""),
-                "counts": result.get("counts", {}),
-                "error": result.get("error", ""),
             }
 
         if act == "rename_node":
@@ -1399,12 +1540,9 @@ class SDKMemoryKernel:
                     reason=str(kwargs.get("reason", "") or "graph_delete_edge"),
                 )
                 return {
-                    "success": bool(result.get("success", False)),
-                    "deleted": int(result.get("deleted_count", 0)),
+                    **result,
+                    "deleted": int(result.get("deleted_relation_count", 0) or result.get("deleted_count", 0)),
                     "hash": relation_hash,
-                    "operation_id": result.get("operation_id", ""),
-                    "counts": result.get("counts", {}),
-                    "error": result.get("error", ""),
                 }
 
             subject = str(kwargs.get("subject", "") or kwargs.get("source", "") or "").strip()
@@ -1421,13 +1559,10 @@ class SDKMemoryKernel:
                 reason=str(kwargs.get("reason", "") or "graph_delete_edge"),
             )
             return {
-                "success": bool(result.get("success", False)),
-                "deleted": int(result.get("deleted_count", 0)),
+                **result,
+                "deleted": int(result.get("deleted_relation_count", 0) or result.get("deleted_count", 0)),
                 "subject": subject,
                 "object": obj,
-                "operation_id": result.get("operation_id", ""),
-                "counts": result.get("counts", {}),
-                "error": result.get("error", ""),
             }
 
         if act == "update_edge_weight":
@@ -1546,14 +1681,26 @@ class SDKMemoryKernel:
 
         act = str(action or "").strip().lower()
         if act == "query":
-            profile = await self.person_profile_service.query_person_profile(
+            profile = await self._query_person_profile_with_feedback_refresh(
                 person_id=str(kwargs.get("person_id", "") or "").strip(),
                 person_keyword=str(kwargs.get("person_keyword", "") or kwargs.get("keyword", "") or "").strip(),
-                top_k=max(1, int(kwargs.get("limit", kwargs.get("top_k", 12)) or 12)),
+                limit=max(1, int(kwargs.get("limit", kwargs.get("top_k", 12)) or 12)),
                 force_refresh=bool(kwargs.get("force_refresh", False)),
                 source_note="sdk_memory_kernel.memory_profile_admin.query",
             )
             return profile if isinstance(profile, dict) else {"success": False, "error": "invalid profile payload"}
+
+        if act == "status":
+            summary = self.metadata_store.get_person_profile_refresh_summary(
+                failed_limit=max(1, int(kwargs.get("limit", 20) or 20))
+            )
+            return {"success": True, **summary}
+
+        if act == "process_pending":
+            result = await self._process_feedback_profile_refresh_batch(
+                limit=max(1, int(kwargs.get("limit", self._feedback_cfg_reconcile_batch_size()) or self._feedback_cfg_reconcile_batch_size()))
+            )
+            return {"success": True, **result}
 
         if act == "list":
             limit = max(1, int(kwargs.get("limit", 50) or 50))
@@ -1607,6 +1754,39 @@ class SDKMemoryKernel:
             return {"success": bool(deleted), "deleted": bool(deleted), "person_id": person_id}
 
         return {"success": False, "error": f"不支持的 profile action: {act}"}
+
+    async def memory_feedback_admin(self, *, action: str, **kwargs) -> Dict[str, Any]:
+        await self.initialize()
+        assert self.metadata_store is not None
+
+        act = str(action or "").strip().lower()
+        if act == "list":
+            items = self.metadata_store.list_feedback_tasks(
+                limit=max(1, int(kwargs.get("limit", 50) or 50)),
+                statuses=self._tokens(kwargs.get("status") or kwargs.get("statuses")),
+                rollback_statuses=self._tokens(kwargs.get("rollback_status") or kwargs.get("rollback_statuses")),
+                query=str(kwargs.get("query", "") or "").strip(),
+            )
+            return {
+                "success": True,
+                "items": [self._build_feedback_task_summary(task) for task in items],
+                "count": len(items),
+            }
+
+        if act == "get":
+            task = self.metadata_store.get_feedback_task_by_id(int(kwargs.get("task_id", 0) or 0))
+            if task is None:
+                return {"success": False, "error": "反馈纠错任务不存在"}
+            return {"success": True, "task": self._build_feedback_task_detail(task)}
+
+        if act == "rollback":
+            return await self._rollback_feedback_task(
+                task_id=int(kwargs.get("task_id", 0) or 0),
+                requested_by=str(kwargs.get("requested_by", "") or "").strip(),
+                reason=str(kwargs.get("reason", "") or "").strip(),
+            )
+
+        return {"success": False, "error": f"不支持的 feedback action: {act}"}
 
     async def memory_runtime_admin(self, *, action: str, **kwargs) -> Dict[str, Any]:
         await self.initialize()
@@ -1748,8 +1928,22 @@ class SDKMemoryKernel:
             profile = manager.get_profile_snapshot()
             return {"success": True, "profile": profile, "toml": manager.export_toml_snippet(profile)}
         if act == "apply_profile":
-            profile = kwargs.get("profile") if isinstance(kwargs.get("profile"), dict) else kwargs
-            return {"success": True, **await manager.apply_profile(profile, reason=str(kwargs.get("reason", "manual") or "manual"))}
+            profile_raw = kwargs.get("profile")
+            if isinstance(profile_raw, dict):
+                profile_payload: Dict[str, Any] = dict(profile_raw)
+            else:
+                profile_payload = {
+                    key: value
+                    for key, value in kwargs.items()
+                    if key not in {"reason", "profile"}
+                }
+            return {
+                "success": True,
+                **await manager.apply_profile(
+                    profile_payload,
+                    reason=str(kwargs.get("reason", "manual") or "manual"),
+                ),
+            }
         if act == "rollback_profile":
             return {"success": True, **await manager.rollback_profile()}
         if act == "export_profile":
@@ -1965,7 +2159,7 @@ class SDKMemoryKernel:
             person=request.person_id or None,
             source=self._chat_source(request.chat_id),
         )
-        hits = [self._episode_hit(row) for row in rows]
+        hits = self._filter_episode_hits([self._episode_hit(row) for row in rows])
         return {"success": True, "results": hits, "count": len(hits), "query_type": "episode"}
 
     def _persist(self) -> None:
@@ -1985,8 +2179,14 @@ class SDKMemoryKernel:
             self._ensure_background_task("paragraph_vector_backfill", self._paragraph_vector_backfill_loop)
             self._ensure_background_task("memory_maintenance", self._memory_maintenance_loop)
             self._ensure_background_task("person_profile_refresh", self._person_profile_refresh_loop)
+            self._ensure_background_task("feedback_correction", self._feedback_correction_loop)
+            self._ensure_background_task("feedback_correction_reconcile", self._feedback_correction_reconcile_loop)
 
-    def _ensure_background_task(self, name: str, factory: Callable[[], Awaitable[None]]) -> None:
+    def _ensure_background_task(
+        self,
+        name: str,
+        factory: Callable[[], Coroutine[Any, Any, None]],
+    ) -> None:
         task = self._background_tasks.get(name)
         if task is not None and not task.done():
             return
@@ -2109,6 +2309,1622 @@ class SDKMemoryKernel:
             raise
         except Exception as exc:
             logger.warning(f"person_profile_refresh loop 异常: {exc}")
+
+    @staticmethod
+    def _relation_status_is_inactive(status: Optional[Dict[str, Any]]) -> bool:
+        if status is None:
+            return True
+        return bool(status.get("is_inactive"))
+
+    def _load_paragraph_stale_marks(
+        self,
+        paragraph_hashes: Sequence[str],
+    ) -> tuple[Dict[str, List[Dict[str, Any]]], Dict[str, Dict[str, Any]]]:
+        if self.metadata_store is None:
+            return {}, {}
+        normalized = self._tokens(paragraph_hashes)
+        if not normalized:
+            return {}, {}
+        marks_by_paragraph = self.metadata_store.get_paragraph_stale_relation_marks_batch(normalized)
+        relation_hashes = self._tokens(
+            mark.get("relation_hash", "")
+            for marks in marks_by_paragraph.values()
+            for mark in marks
+            if isinstance(mark, dict)
+        )
+        status_map = self.metadata_store.get_relation_status_batch(relation_hashes) if relation_hashes else {}
+        return marks_by_paragraph, status_map
+
+    def _paragraph_hidden_by_stale_marks(
+        self,
+        paragraph_hash: str,
+        *,
+        marks_by_paragraph: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+        relation_status_map: Optional[Dict[str, Dict[str, Any]]] = None,
+    ) -> bool:
+        token = str(paragraph_hash or "").strip()
+        if not token or self.metadata_store is None or not self._feedback_cfg_paragraph_hard_filter_enabled():
+            return False
+
+        marks_map = marks_by_paragraph if isinstance(marks_by_paragraph, dict) else {}
+        status_map = relation_status_map if isinstance(relation_status_map, dict) else {}
+        if not marks_map:
+            marks_map, status_map = self._load_paragraph_stale_marks([token])
+        elif not status_map:
+            relation_hashes = self._tokens(
+                mark.get("relation_hash", "")
+                for mark in marks_map.get(token, [])
+                if isinstance(mark, dict)
+            )
+            status_map = self.metadata_store.get_relation_status_batch(relation_hashes) if relation_hashes else {}
+
+        for mark in marks_map.get(token, []):
+            relation_hash = str((mark or {}).get("relation_hash", "") or "").strip()
+            if not relation_hash:
+                continue
+            if self._relation_status_is_inactive(status_map.get(relation_hash)):
+                return True
+        return False
+
+    def _filter_episode_hits(self, hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if self.metadata_store is None or not self._feedback_cfg_episode_query_block_enabled():
+            return hits
+        filtered: List[Dict[str, Any]] = []
+        for item in hits:
+            if str(item.get("type", "") or "").strip() != "episode":
+                filtered.append(item)
+                continue
+            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            source = str(metadata.get("source", "") or item.get("source", "") or "").strip()
+            if source and self.metadata_store.is_episode_source_query_blocked(source):
+                continue
+            filtered.append(item)
+        return filtered
+
+    def _filter_user_visible_hits(self, hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return self._filter_active_relation_hits(self._filter_episode_hits(hits))
+
+    def _resolve_feedback_related_person_ids(
+        self,
+        *,
+        old_relation_rows: Sequence[Dict[str, Any]],
+        corrected_relations: Sequence[Dict[str, Any]],
+    ) -> List[str]:
+        candidates = self._tokens(
+            value
+            for row in list(old_relation_rows) + list(corrected_relations)
+            if isinstance(row, dict)
+            for value in (row.get("subject"), row.get("object"))
+        )
+        resolved: List[str] = []
+        seen = set()
+        for candidate in candidates:
+            person_id = PersonProfileService.resolve_person_id(candidate)
+            if not person_id or person_id in seen:
+                continue
+            seen.add(person_id)
+            resolved.append(person_id)
+        return resolved
+
+    def _mark_feedback_stale_paragraphs(
+        self,
+        *,
+        task_id: int,
+        query_tool_id: str,
+        relation_hashes: Sequence[str],
+        reason: str,
+    ) -> Dict[str, List[str]]:
+        if self.metadata_store is None or not self._feedback_cfg_paragraph_mark_enabled():
+            return {}
+
+        relation_tokens = self._tokens(relation_hashes)
+        paragraph_map = self.metadata_store.get_paragraph_hashes_by_relation_hashes(relation_tokens)
+        for relation_hash, paragraph_hashes in paragraph_map.items():
+            for paragraph_hash in paragraph_hashes:
+                self.metadata_store.upsert_paragraph_stale_relation_mark(
+                    paragraph_hash=paragraph_hash,
+                    relation_hash=relation_hash,
+                    query_tool_id=query_tool_id,
+                    task_id=task_id,
+                    reason=reason,
+                )
+        return paragraph_map
+
+    def _enqueue_feedback_episode_rebuilds(
+        self,
+        *,
+        paragraph_hashes: Sequence[str],
+        session_id: str,
+        include_correction_source: bool,
+    ) -> List[str]:
+        if self.metadata_store is None or not self._feedback_cfg_episode_rebuild_enabled():
+            return []
+
+        sources = self._tokens(
+            row.get("source", "")
+            for row in self._load_paragraph_rows(paragraph_hashes)
+            if isinstance(row, dict)
+        )
+        correction_source = self._chat_source(session_id)
+        if include_correction_source and correction_source:
+            sources = self._merge_tokens(sources, [correction_source])
+
+        queued: List[str] = []
+        for source in sources:
+            if self.metadata_store.enqueue_episode_source_rebuild(source, reason="feedback_correction"):
+                queued.append(source)
+        return queued
+
+    def _enqueue_feedback_profile_refreshes(
+        self,
+        *,
+        person_ids: Sequence[str],
+        query_tool_id: str,
+    ) -> List[str]:
+        if self.metadata_store is None or not self._feedback_cfg_profile_refresh_enabled():
+            return []
+        queued: List[str] = []
+        for person_id in self._tokens(person_ids):
+            payload = self.metadata_store.enqueue_person_profile_refresh(
+                person_id=person_id,
+                reason="feedback_correction",
+                source_query_tool_id=query_tool_id,
+            )
+            if isinstance(payload, dict):
+                queued.append(person_id)
+        return queued
+
+    @staticmethod
+    def _feedback_affected_counts(task: Dict[str, Any]) -> Dict[str, int]:
+        decision_payload = task.get("decision_payload") if isinstance(task.get("decision_payload"), dict) else {}
+        apply_result = decision_payload.get("apply_result") if isinstance(decision_payload.get("apply_result"), dict) else {}
+        rollback_plan = task.get("rollback_plan") if isinstance(task.get("rollback_plan"), dict) else {}
+        corrected_write = rollback_plan.get("corrected_write") if isinstance(rollback_plan.get("corrected_write"), dict) else {}
+        return {
+            "relations": len(list(apply_result.get("relation_hashes") or rollback_plan.get("forgotten_relations") or [])),
+            "stale_paragraphs": len(list(apply_result.get("stale_paragraph_hashes") or rollback_plan.get("stale_marks") or [])),
+            "episode_sources": len(list(apply_result.get("episode_rebuild_sources") or rollback_plan.get("episode_sources") or [])),
+            "profile_person_ids": len(list(apply_result.get("profile_refresh_person_ids") or rollback_plan.get("profile_person_ids") or [])),
+            "correction_paragraphs": len(list(corrected_write.get("paragraph_hashes") or [])),
+            "corrected_relations": len(list(corrected_write.get("corrected_relations") or [])),
+        }
+
+    def _build_feedback_rollback_plan_summary(self, rollback_plan: Dict[str, Any]) -> Dict[str, Any]:
+        corrected_write = rollback_plan.get("corrected_write") if isinstance(rollback_plan.get("corrected_write"), dict) else {}
+        return {
+            "forgotten_relations": list(rollback_plan.get("forgotten_relations") or []),
+            "corrected_write": corrected_write,
+            "stale_marks": list(rollback_plan.get("stale_marks") or []),
+            "episode_sources": self._tokens(rollback_plan.get("episode_sources")),
+            "profile_person_ids": self._tokens(rollback_plan.get("profile_person_ids")),
+            "affected_counts": {
+                "forgotten_relations": len(list(rollback_plan.get("forgotten_relations") or [])),
+                "corrected_relations": len(list(corrected_write.get("corrected_relations") or [])),
+                "correction_paragraphs": len(list(corrected_write.get("paragraph_hashes") or [])),
+                "stale_marks": len(list(rollback_plan.get("stale_marks") or [])),
+                "episode_sources": len(self._tokens(rollback_plan.get("episode_sources"))),
+                "profile_person_ids": len(self._tokens(rollback_plan.get("profile_person_ids"))),
+            },
+        }
+
+    def _build_feedback_task_summary(self, task: Dict[str, Any]) -> Dict[str, Any]:
+        query_snapshot = task.get("query_snapshot") if isinstance(task.get("query_snapshot"), dict) else {}
+        decision_payload = task.get("decision_payload") if isinstance(task.get("decision_payload"), dict) else {}
+        return {
+            "task_id": int(task.get("id", 0) or 0),
+            "query_tool_id": str(task.get("query_tool_id", "") or "").strip(),
+            "session_id": str(task.get("session_id", "") or "").strip(),
+            "query_text": str(query_snapshot.get("query", "") or "").strip(),
+            "query_timestamp": task.get("query_timestamp"),
+            "task_status": str(task.get("status", "") or "").strip().lower(),
+            "decision": str(decision_payload.get("decision", "") or "").strip().lower(),
+            "decision_confidence": float(decision_payload.get("confidence", 0.0) or 0.0),
+            "feedback_message_count": int(decision_payload.get("feedback_message_count", 0) or 0),
+            "rollback_status": str(task.get("rollback_status", "") or "none").strip().lower() or "none",
+            "affected_counts": self._feedback_affected_counts(task),
+            "created_at": task.get("created_at"),
+            "updated_at": task.get("updated_at"),
+        }
+
+    def _build_feedback_task_detail(self, task: Dict[str, Any]) -> Dict[str, Any]:
+        detail = self._build_feedback_task_summary(task)
+        detail.update(
+            {
+                "query_snapshot": task.get("query_snapshot") if isinstance(task.get("query_snapshot"), dict) else {},
+                "decision_payload": task.get("decision_payload") if isinstance(task.get("decision_payload"), dict) else {},
+                "rollback_plan_summary": self._build_feedback_rollback_plan_summary(
+                    task.get("rollback_plan") if isinstance(task.get("rollback_plan"), dict) else {}
+                ),
+                "rollback_result": task.get("rollback_result") if isinstance(task.get("rollback_result"), dict) else {},
+                "rollback_error": str(task.get("rollback_error", "") or "").strip(),
+                "rollback_requested_by": str(task.get("rollback_requested_by", "") or "").strip(),
+                "rollback_reason": str(task.get("rollback_reason", "") or "").strip(),
+                "rollback_requested_at": task.get("rollback_requested_at"),
+                "rolled_back_at": task.get("rolled_back_at"),
+                "action_logs": self.metadata_store.list_feedback_action_logs(int(task.get("id", 0) or 0))
+                if self.metadata_store is not None
+                else [],
+            }
+        )
+        return detail
+
+    def _soft_delete_feedback_correction_paragraphs(self, paragraph_hashes: Sequence[str]) -> Dict[str, Any]:
+        assert self.metadata_store is not None
+        hashes = self._tokens(paragraph_hashes)
+        if not hashes:
+            return {"deleted_hashes": [], "deleted_external_refs": []}
+
+        paragraph_rows = {hash_value: self.metadata_store.get_paragraph(hash_value) for hash_value in hashes}
+        self.metadata_store.mark_as_deleted(hashes, "paragraph")
+        conn = self.metadata_store.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            f"DELETE FROM paragraph_entities WHERE paragraph_hash IN ({','.join(['?'] * len(hashes))})",
+            tuple(hashes),
+        )
+        cursor.execute(
+            f"DELETE FROM paragraph_relations WHERE paragraph_hash IN ({','.join(['?'] * len(hashes))})",
+            tuple(hashes),
+        )
+        conn.commit()
+        deleted_external_refs = self.metadata_store.delete_external_memory_refs_by_paragraphs(hashes)
+        return {
+            "deleted_hashes": hashes,
+            "paragraph_rows": paragraph_rows,
+            "deleted_external_refs": deleted_external_refs,
+        }
+
+    async def _rollback_feedback_task(
+        self,
+        *,
+        task_id: int,
+        requested_by: str,
+        reason: str,
+    ) -> Dict[str, Any]:
+        await self.initialize()
+        assert self.metadata_store is not None
+
+        task = self.metadata_store.get_feedback_task_by_id(task_id)
+        if task is None:
+            return {"success": False, "error": "反馈纠错任务不存在"}
+        if str(task.get("status", "") or "").strip().lower() != "applied":
+            return {"success": False, "error": "仅 applied 的反馈纠错任务允许回退"}
+        rollback_status = str(task.get("rollback_status", "") or "none").strip().lower()
+        if rollback_status == "rolled_back":
+            return {
+                "success": True,
+                "already_rolled_back": True,
+                "task": self._build_feedback_task_detail(task),
+                "result": task.get("rollback_result") if isinstance(task.get("rollback_result"), dict) else {},
+            }
+        if rollback_status == "running":
+            return {"success": False, "error": "该反馈纠错任务正在回退中", "task": self._build_feedback_task_detail(task)}
+
+        query_tool_id = str(task.get("query_tool_id", "") or "").strip()
+        rollback_plan = task.get("rollback_plan") if isinstance(task.get("rollback_plan"), dict) else {}
+        if not rollback_plan:
+            running_task = self.metadata_store.mark_feedback_task_rollback_running(
+                task_id=task_id,
+                requested_by=requested_by,
+                reason=reason,
+            )
+            if running_task is None:
+                latest_task = self.metadata_store.get_feedback_task_by_id(task_id)
+                latest_status = str((latest_task or {}).get("rollback_status", "") or "none").strip().lower()
+                if latest_status == "running":
+                    return {
+                        "success": False,
+                        "error": "该反馈纠错任务正在回退中",
+                        "task": self._build_feedback_task_detail(latest_task) if isinstance(latest_task, dict) else None,
+                    }
+                if latest_status == "rolled_back":
+                    return {
+                        "success": True,
+                        "already_rolled_back": True,
+                        "task": self._build_feedback_task_detail(latest_task) if isinstance(latest_task, dict) else None,
+                        "result": (latest_task or {}).get("rollback_result") if isinstance((latest_task or {}).get("rollback_result"), dict) else {},
+                    }
+                return {
+                    "success": False,
+                    "error": "无法进入回退状态",
+                    "task": self._build_feedback_task_detail(latest_task) if isinstance(latest_task, dict) else None,
+                }
+            self.metadata_store.append_feedback_action_log(
+                task_id=task_id,
+                query_tool_id=query_tool_id,
+                action_type="rollback_error",
+                reason="rollback_plan_missing",
+            )
+            failed = self.metadata_store.finalize_feedback_task_rollback(
+                task_id=task_id,
+                rollback_status="error",
+                rollback_error="rollback_plan_missing",
+            )
+            return {"success": False, "error": "缺少 rollback_plan，无法回退", "task": failed}
+
+        running_task = self.metadata_store.mark_feedback_task_rollback_running(
+            task_id=task_id,
+            requested_by=requested_by,
+            reason=reason,
+        )
+        if running_task is None:
+            latest_task = self.metadata_store.get_feedback_task_by_id(task_id)
+            latest_status = str((latest_task or {}).get("rollback_status", "") or "none").strip().lower()
+            if latest_status == "running":
+                return {
+                    "success": False,
+                    "error": "该反馈纠错任务正在回退中",
+                    "task": self._build_feedback_task_detail(latest_task) if isinstance(latest_task, dict) else None,
+                }
+            if latest_status == "rolled_back":
+                return {
+                    "success": True,
+                    "already_rolled_back": True,
+                    "task": self._build_feedback_task_detail(latest_task) if isinstance(latest_task, dict) else None,
+                    "result": (latest_task or {}).get("rollback_result") if isinstance((latest_task or {}).get("rollback_result"), dict) else {},
+                }
+            return {
+                "success": False,
+                "error": "无法进入回退状态",
+                "task": self._build_feedback_task_detail(latest_task) if isinstance(latest_task, dict) else None,
+            }
+
+        result: Dict[str, Any] = {
+            "task_id": task_id,
+            "query_tool_id": query_tool_id,
+            "restored_relation_hashes": [],
+            "reverted_corrected_relation_hashes": [],
+            "deleted_correction_paragraph_hashes": [],
+            "cleared_stale_mark_count": 0,
+            "episode_sources_queued": [],
+            "profile_person_ids_queued": [],
+            "warnings": [],
+        }
+        try:
+            forgotten_relations = rollback_plan.get("forgotten_relations") if isinstance(rollback_plan.get("forgotten_relations"), list) else []
+            for item in forgotten_relations:
+                if not isinstance(item, dict):
+                    continue
+                relation_hash = str(item.get("hash", "") or "").strip()
+                snapshot = item.get("before_status") if isinstance(item.get("before_status"), dict) else {}
+                if not relation_hash or not snapshot:
+                    continue
+                before_status = self.metadata_store.get_relation_status_batch([relation_hash]).get(relation_hash, {})
+                after_status = self.metadata_store.restore_relation_status_from_snapshot(relation_hash, snapshot)
+                if after_status is None:
+                    result["warnings"].append(f"restore_old_relation_failed:{relation_hash}")
+                    continue
+                result["restored_relation_hashes"].append(relation_hash)
+                self.metadata_store.append_feedback_action_log(
+                    task_id=task_id,
+                    query_tool_id=query_tool_id,
+                    action_type="rollback_restore_relation",
+                    target_hash=relation_hash,
+                    before_payload=before_status,
+                    after_payload=after_status,
+                    reason=reason,
+                )
+
+            corrected_write = rollback_plan.get("corrected_write") if isinstance(rollback_plan.get("corrected_write"), dict) else {}
+            correction_paragraph_hashes = self._tokens(corrected_write.get("paragraph_hashes"))
+            deleted_paragraphs = self._soft_delete_feedback_correction_paragraphs(correction_paragraph_hashes)
+            result["deleted_correction_paragraph_hashes"] = deleted_paragraphs.get("deleted_hashes", [])
+            paragraph_rows = deleted_paragraphs.get("paragraph_rows") if isinstance(deleted_paragraphs.get("paragraph_rows"), dict) else {}
+            deleted_external_refs = deleted_paragraphs.get("deleted_external_refs") if isinstance(deleted_paragraphs.get("deleted_external_refs"), list) else []
+            deleted_ref_map: Dict[str, List[Dict[str, Any]]] = {}
+            for ref in deleted_external_refs:
+                if not isinstance(ref, dict):
+                    continue
+                paragraph_hash = str(ref.get("paragraph_hash", "") or "").strip()
+                if not paragraph_hash:
+                    continue
+                deleted_ref_map.setdefault(paragraph_hash, []).append(ref)
+            for paragraph_hash in result["deleted_correction_paragraph_hashes"]:
+                self.metadata_store.append_feedback_action_log(
+                    task_id=task_id,
+                    query_tool_id=query_tool_id,
+                    action_type="rollback_delete_correction_paragraph",
+                    target_hash=paragraph_hash,
+                    before_payload={
+                        "paragraph": paragraph_rows.get(paragraph_hash) if isinstance(paragraph_rows.get(paragraph_hash), dict) else {},
+                        "external_refs": deleted_ref_map.get(paragraph_hash, []),
+                    },
+                    reason=reason,
+                )
+
+            corrected_relations = corrected_write.get("corrected_relations") if isinstance(corrected_write.get("corrected_relations"), list) else []
+            for item in corrected_relations:
+                if not isinstance(item, dict):
+                    continue
+                relation_hash = str(item.get("hash", "") or "").strip()
+                if not relation_hash:
+                    continue
+                before_status = self.metadata_store.get_relation_status_batch([relation_hash]).get(relation_hash, {})
+                if bool(item.get("existed_before")):
+                    snapshot = item.get("before_status") if isinstance(item.get("before_status"), dict) else {}
+                    after_status = self.metadata_store.restore_relation_status_from_snapshot(relation_hash, snapshot)
+                else:
+                    self.metadata_store.update_relations_protection([relation_hash], protected_until=0.0, is_pinned=False)
+                    self.metadata_store.mark_relations_inactive([relation_hash], inactive_since=time.time())
+                    after_status = self.metadata_store.get_relation_status_batch([relation_hash]).get(relation_hash)
+                if after_status is None:
+                    result["warnings"].append(f"revert_corrected_relation_failed:{relation_hash}")
+                    continue
+                result["reverted_corrected_relation_hashes"].append(relation_hash)
+                self.metadata_store.append_feedback_action_log(
+                    task_id=task_id,
+                    query_tool_id=query_tool_id,
+                    action_type="rollback_revert_corrected_relation",
+                    target_hash=relation_hash,
+                    before_payload=before_status,
+                    after_payload=after_status,
+                    reason=reason,
+                )
+
+            stale_marks_raw = rollback_plan.get("stale_marks") if isinstance(rollback_plan.get("stale_marks"), list) else []
+            stale_marks: List[tuple[str, str]] = []
+            for item in stale_marks_raw:
+                if not isinstance(item, dict):
+                    continue
+                paragraph_hash = str(item.get("paragraph_hash", "") or "").strip()
+                relation_hash = str(item.get("relation_hash", "") or "").strip()
+                if not paragraph_hash or not relation_hash:
+                    continue
+                stale_marks.append((paragraph_hash, relation_hash))
+            result["cleared_stale_mark_count"] = self.metadata_store.delete_paragraph_stale_relation_marks(stale_marks)
+            for paragraph_hash, relation_hash in stale_marks:
+                self.metadata_store.append_feedback_action_log(
+                    task_id=task_id,
+                    query_tool_id=query_tool_id,
+                    action_type="rollback_clear_stale_mark",
+                    target_hash=paragraph_hash,
+                    after_payload={"relation_hash": relation_hash},
+                    reason=reason,
+                )
+
+            for source in self._tokens(rollback_plan.get("episode_sources")):
+                if self.metadata_store.enqueue_episode_source_rebuild(source, reason="feedback_correction_rollback"):
+                    result["episode_sources_queued"].append(source)
+                    self.metadata_store.append_feedback_action_log(
+                        task_id=task_id,
+                        query_tool_id=query_tool_id,
+                        action_type="rollback_enqueue_episode_rebuild",
+                        target_hash=source,
+                        reason=reason,
+                    )
+
+            for person_id in self._tokens(rollback_plan.get("profile_person_ids")):
+                payload = self.metadata_store.enqueue_person_profile_refresh(
+                    person_id=person_id,
+                    reason="feedback_correction_rollback",
+                    source_query_tool_id=query_tool_id,
+                )
+                if not isinstance(payload, dict):
+                    continue
+                result["profile_person_ids_queued"].append(person_id)
+                self.metadata_store.append_feedback_action_log(
+                    task_id=task_id,
+                    query_tool_id=query_tool_id,
+                    action_type="rollback_enqueue_profile_refresh",
+                    target_hash=person_id,
+                    reason=reason,
+                )
+
+            self._rebuild_graph_from_metadata()
+            self._persist()
+            final_task = self.metadata_store.finalize_feedback_task_rollback(
+                task_id=task_id,
+                rollback_status="rolled_back",
+                rollback_result=result,
+            )
+            return {"success": True, "result": result, "task": self._build_feedback_task_detail(final_task or running_task)}
+        except Exception as exc:
+            logger.warning(f"反馈纠错回退失败: task_id={task_id} err={exc}", exc_info=True)
+            self.metadata_store.append_feedback_action_log(
+                task_id=task_id,
+                query_tool_id=query_tool_id,
+                action_type="rollback_error",
+                reason=str(exc),
+                after_payload=result if result else None,
+            )
+            final_task = self.metadata_store.finalize_feedback_task_rollback(
+                task_id=task_id,
+                rollback_status="error",
+                rollback_result=result if result else None,
+                rollback_error=str(exc),
+            )
+            return {
+                "success": False,
+                "error": str(exc),
+                "result": result,
+                "task": self._build_feedback_task_detail(final_task or running_task),
+            }
+
+    async def _process_feedback_profile_refresh_batch(self, *, limit: int) -> Dict[str, Any]:
+        if self.metadata_store is None or self.person_profile_service is None:
+            return {"processed": 0, "refreshed": 0, "failed": 0, "items": [], "failures": []}
+
+        rows = self.metadata_store.fetch_person_profile_refresh_batch(
+            limit=max(1, int(limit or 1)),
+            max_retry=max(1, int(self._cfg("person_profile.max_retry", 3) or 3)),
+        )
+        items: List[Dict[str, Any]] = []
+        failures: List[Dict[str, Any]] = []
+        for row in rows:
+            person_id = str(row.get("person_id", "") or "").strip()
+            requested_at = row.get("requested_at")
+            if not person_id:
+                continue
+            if not self.metadata_store.mark_person_profile_refresh_running(person_id, requested_at=requested_at):
+                continue
+            try:
+                profile = await self.refresh_person_profile(
+                    person_id,
+                    limit=max(4, int(self._cfg("person_profile.top_k_evidence", 12) or 12)),
+                    mark_active=False,
+                )
+                if isinstance(profile, dict) and bool(profile.get("success")):
+                    self.metadata_store.mark_person_profile_refresh_done(person_id, requested_at=requested_at)
+                    items.append(
+                        {
+                            "person_id": person_id,
+                            "profile_version": int(profile.get("profile_version", 0) or 0),
+                            "profile_source": str(profile.get("profile_source", "") or ""),
+                        }
+                    )
+                else:
+                    error = str((profile or {}).get("error", "") or "person profile refresh failed")
+                    self.metadata_store.mark_person_profile_refresh_failed(person_id, error, requested_at=requested_at)
+                    failures.append({"person_id": person_id, "error": error})
+            except Exception as exc:
+                error = str(exc)[:500]
+                self.metadata_store.mark_person_profile_refresh_failed(person_id, error, requested_at=requested_at)
+                failures.append({"person_id": person_id, "error": error})
+        return {
+            "processed": len(items) + len(failures),
+            "refreshed": len(items),
+            "failed": len(failures),
+            "items": items,
+            "failures": failures,
+        }
+
+    async def _process_feedback_episode_rebuild_batch(self, *, limit: int) -> Dict[str, Any]:
+        if self.metadata_store is None or self.episode_service is None:
+            return {"processed": 0, "rebuilt": 0, "failed": 0, "items": [], "failures": []}
+
+        rows = self.metadata_store.fetch_episode_source_rebuild_batch(
+            limit=max(1, int(limit or 1)),
+            max_retry=max(1, int(self._cfg("episode.pending_max_retry", 3) or 3)),
+        )
+        items: List[Dict[str, Any]] = []
+        failures: List[Dict[str, Any]] = []
+        for row in rows:
+            source = str(row.get("source", "") or "").strip()
+            requested_at = row.get("requested_at")
+            if not source:
+                continue
+            if not self.metadata_store.mark_episode_source_running(source, requested_at=requested_at):
+                continue
+            try:
+                result = await self.episode_service.rebuild_source(source)
+                self.metadata_store.mark_episode_source_done(source, requested_at=requested_at)
+                items.append(result if isinstance(result, dict) else {"source": source})
+            except Exception as exc:
+                error = str(exc)[:500]
+                self.metadata_store.mark_episode_source_failed(source, error, requested_at=requested_at)
+                failures.append({"source": source, "error": error})
+        if items or failures:
+            self._persist()
+        return {
+            "processed": len(items) + len(failures),
+            "rebuilt": len(items),
+            "failed": len(failures),
+            "items": items,
+            "failures": failures,
+        }
+
+    async def _feedback_correction_reconcile_loop(self) -> None:
+        try:
+            while not self._background_stopping:
+                await asyncio.sleep(self._feedback_cfg_reconcile_interval_seconds())
+                if self._background_stopping:
+                    break
+                if self.metadata_store is None or not self._feedback_cfg_enabled():
+                    continue
+                batch_size = self._feedback_cfg_reconcile_batch_size()
+                if self._feedback_cfg_profile_refresh_enabled():
+                    await self._process_feedback_profile_refresh_batch(limit=batch_size)
+                if self._feedback_cfg_episode_rebuild_enabled():
+                    await self._process_feedback_episode_rebuild_batch(limit=batch_size)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(f"feedback_correction_reconcile loop 异常: {exc}")
+
+    @staticmethod
+    def _coerce_datetime(value: Any) -> Optional[datetime]:
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, (int, float)):
+            try:
+                return datetime.fromtimestamp(float(value))
+            except Exception:
+                return None
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            return datetime.fromisoformat(text)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _feedback_signal_tokens() -> tuple[str, ...]:
+        return (
+            "不对",
+            "错了",
+            "你记错",
+            "记错了",
+            "不是",
+            "并不是",
+            "纠正",
+            "更正",
+            "改成",
+            "应该是",
+            "实际是",
+            "说反了",
+        )
+
+    @classmethod
+    def _feedback_contains_signal(cls, text: str) -> bool:
+        content = str(text or "").strip().lower()
+        if not content:
+            return False
+        return any(token in content for token in cls._feedback_signal_tokens())
+
+    @staticmethod
+    def _feedback_noise(text: str) -> bool:
+        content = str(text or "").strip()
+        if not content:
+            return True
+        if SDKMemoryKernel._feedback_contains_signal(content):
+            return False
+        if len(content) <= 2:
+            return True
+        markers = (
+            "哈哈",
+            "好的",
+            "收到",
+            "谢谢",
+            "嗯嗯",
+            "晚安",
+            "早安",
+            "拜拜",
+            "在吗",
+        )
+        return len(content) <= 8 and any(marker in content for marker in markers)
+
+    @staticmethod
+    def _safe_json_loads(raw: Any) -> Dict[str, Any]:
+        if isinstance(raw, dict):
+            return raw
+        text = str(raw or "").strip()
+        if not text:
+            return {}
+        try:
+            repaired = repair_json(text)
+            payload = json.loads(repaired) if isinstance(repaired, str) else repaired
+        except Exception:
+            payload = None
+        return payload if isinstance(payload, dict) else {}
+
+    @staticmethod
+    def _feedback_cfg_enabled() -> bool:
+        memory_cfg = global_config.a_memorix.integration
+        return bool(getattr(memory_cfg, "feedback_correction_enabled", False))
+
+    @staticmethod
+    def _feedback_cfg_window_hours() -> float:
+        memory_cfg = global_config.a_memorix.integration
+        return max(0.1, float(getattr(memory_cfg, "feedback_correction_window_hours", 12.0) or 12.0))
+
+    @staticmethod
+    def _feedback_cfg_check_interval_seconds() -> float:
+        memory_cfg = global_config.a_memorix.integration
+        minutes = max(1, int(getattr(memory_cfg, "feedback_correction_check_interval_minutes", 30) or 30))
+        return float(minutes) * 60.0
+
+    @staticmethod
+    def _feedback_cfg_batch_size() -> int:
+        memory_cfg = global_config.a_memorix.integration
+        return max(1, int(getattr(memory_cfg, "feedback_correction_batch_size", 20) or 20))
+
+    @staticmethod
+    def _feedback_cfg_auto_apply_threshold() -> float:
+        memory_cfg = global_config.a_memorix.integration
+        value = float(getattr(memory_cfg, "feedback_correction_auto_apply_threshold", 0.85) or 0.85)
+        return min(1.0, max(0.0, value))
+
+    @staticmethod
+    def _feedback_cfg_max_messages() -> int:
+        memory_cfg = global_config.a_memorix.integration
+        return max(1, int(getattr(memory_cfg, "feedback_correction_max_feedback_messages", 30) or 30))
+
+    @staticmethod
+    def _feedback_cfg_prefilter_enabled() -> bool:
+        memory_cfg = global_config.a_memorix.integration
+        return bool(getattr(memory_cfg, "feedback_correction_prefilter_enabled", True))
+
+    @staticmethod
+    def _feedback_cfg_paragraph_mark_enabled() -> bool:
+        memory_cfg = global_config.a_memorix.integration
+        return bool(getattr(memory_cfg, "feedback_correction_paragraph_mark_enabled", True))
+
+    @staticmethod
+    def _feedback_cfg_paragraph_hard_filter_enabled() -> bool:
+        memory_cfg = global_config.a_memorix.integration
+        return bool(getattr(memory_cfg, "feedback_correction_paragraph_hard_filter_enabled", True))
+
+    @staticmethod
+    def _feedback_cfg_profile_refresh_enabled() -> bool:
+        memory_cfg = global_config.a_memorix.integration
+        return bool(getattr(memory_cfg, "feedback_correction_profile_refresh_enabled", True))
+
+    @staticmethod
+    def _feedback_cfg_profile_force_refresh_on_read() -> bool:
+        memory_cfg = global_config.a_memorix.integration
+        return bool(getattr(memory_cfg, "feedback_correction_profile_force_refresh_on_read", True))
+
+    @staticmethod
+    def _feedback_cfg_episode_rebuild_enabled() -> bool:
+        memory_cfg = global_config.a_memorix.integration
+        return bool(getattr(memory_cfg, "feedback_correction_episode_rebuild_enabled", True))
+
+    @staticmethod
+    def _feedback_cfg_episode_query_block_enabled() -> bool:
+        memory_cfg = global_config.a_memorix.integration
+        return bool(getattr(memory_cfg, "feedback_correction_episode_query_block_enabled", True))
+
+    @staticmethod
+    def _feedback_cfg_reconcile_interval_seconds() -> float:
+        memory_cfg = global_config.a_memorix.integration
+        minutes = max(1, int(getattr(memory_cfg, "feedback_correction_reconcile_interval_minutes", 5) or 5))
+        return float(minutes) * 60.0
+
+    @staticmethod
+    def _feedback_cfg_reconcile_batch_size() -> int:
+        memory_cfg = global_config.a_memorix.integration
+        return max(1, int(getattr(memory_cfg, "feedback_correction_reconcile_batch_size", 20) or 20))
+
+    @classmethod
+    def _feedback_cfg_window_label(cls) -> str:
+        hours = cls._feedback_cfg_window_hours()
+        if abs(hours - round(hours)) < 1e-9:
+            return f"{int(round(hours))}h"
+        return f"{hours:.2f}h"
+
+    async def enqueue_feedback_task(
+        self,
+        *,
+        query_tool_id: str,
+        session_id: str,
+        query_timestamp: Any = None,
+        structured_content: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        if not self._feedback_cfg_enabled():
+            return {"success": False, "queued": False, "reason": "feedback_correction_disabled"}
+        if self.metadata_store is None:
+            return {"success": False, "queued": False, "reason": "metadata_store_unavailable"}
+
+        clean_tool_id = str(query_tool_id or "").strip()
+        clean_session_id = str(session_id or "").strip()
+        if not clean_tool_id or not clean_session_id:
+            return {"success": False, "queued": False, "reason": "missing_required_fields"}
+
+        content = structured_content if isinstance(structured_content, dict) else {}
+        hits = content.get("hits")
+        if not isinstance(hits, list) or not hits:
+            return {"success": False, "queued": False, "reason": "no_hits"}
+
+        query_time = self._coerce_datetime(query_timestamp) or datetime.now()
+        due_at = query_time + timedelta(hours=self._feedback_cfg_window_hours())
+        saved = self.metadata_store.enqueue_feedback_task(
+            query_tool_id=clean_tool_id,
+            session_id=clean_session_id,
+            query_timestamp=query_time.timestamp(),
+            due_at=due_at.timestamp(),
+            query_snapshot=content,
+        )
+        if not isinstance(saved, dict):
+            return {"success": False, "queued": False, "reason": "db_save_failed"}
+
+        logger.debug(
+            "反馈纠错任务入队: query_tool_id=%s due_at=%s",
+            clean_tool_id,
+            due_at.isoformat(),
+        )
+        return {
+            "success": True,
+            "queued": True,
+            "query_tool_id": clean_tool_id,
+            "due_at": due_at.isoformat(),
+            "task": saved,
+        }
+
+    @staticmethod
+    def _extract_feedback_messages(
+        *,
+        session_id: str,
+        query_time: datetime,
+        due_time: datetime,
+        max_messages: int,
+    ) -> List[str]:
+        raw_messages = message_api.get_messages_by_time_in_chat(
+            chat_id=session_id,
+            start_time=query_time.timestamp(),
+            end_time=due_time.timestamp(),
+            limit=max(1, int(max_messages) * 4),
+            limit_mode="latest",
+            filter_mai=True,
+            filter_command=True,
+        )
+        collected: List[str] = []
+        seen = set()
+        for item in raw_messages:
+            text = str(getattr(item, "processed_plain_text", "") or "").strip()
+            if SDKMemoryKernel._feedback_noise(text):
+                continue
+            if text in seen:
+                continue
+            seen.add(text)
+            collected.append(text)
+        if len(collected) > max_messages:
+            collected = collected[-max_messages:]
+        return collected
+
+    def _build_feedback_hit_briefs(self, hits: List[Dict[str, Any]], *, limit: int = 12) -> List[Dict[str, Any]]:
+        briefs: List[Dict[str, Any]] = []
+        for raw in hits[: max(1, int(limit))]:
+            if not isinstance(raw, dict):
+                continue
+            metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
+            subject = str(metadata.get("subject", "") or "").strip()
+            predicate = str(metadata.get("predicate", "") or "").strip()
+            obj = str(metadata.get("object", "") or "").strip()
+            linked_relation_hashes: List[str] = []
+            linked_relation_texts: List[str] = []
+
+            item_type = str(raw.get("type", "") or "").strip()
+            item_hash = str(raw.get("hash", "") or "").strip()
+            if item_type == "paragraph" and item_hash and self.metadata_store is not None:
+                linked_relations = self.metadata_store.get_paragraph_relations(item_hash)
+                for relation in linked_relations:
+                    relation_hash = str(relation.get("hash", "") or "").strip()
+                    if not relation_hash or relation_hash in linked_relation_hashes:
+                        continue
+                    linked_relation_hashes.append(relation_hash)
+                    rel_subject = str(relation.get("subject", "") or "").strip()
+                    rel_predicate = str(relation.get("predicate", "") or "").strip()
+                    rel_object = str(relation.get("object", "") or "").strip()
+                    relation_text = self._format_relation_text(rel_subject, rel_predicate, rel_object)
+                    if relation_text:
+                        linked_relation_texts.append(relation_text)
+                    if not (subject and predicate and obj):
+                        subject = rel_subject
+                        predicate = rel_predicate
+                        obj = rel_object
+            briefs.append(
+                {
+                    "hash": item_hash,
+                    "type": item_type,
+                    "content": str(raw.get("content", "") or "").strip(),
+                    "subject": subject,
+                    "predicate": predicate,
+                    "object": obj,
+                    "linked_relation_hashes": linked_relation_hashes[:6],
+                    "linked_relation_texts": linked_relation_texts[:3],
+                }
+            )
+        return briefs
+
+    @staticmethod
+    def _should_invoke_feedback_classifier(feedback_messages: List[str]) -> bool:
+        if not feedback_messages:
+            return False
+        lowered = "\n".join(feedback_messages).lower()
+        return any(token in lowered for token in SDKMemoryKernel._feedback_signal_tokens())
+
+    async def _classify_feedback(
+        self,
+        *,
+        query_tool_id: str,
+        query_text: str,
+        hit_briefs: List[Dict[str, Any]],
+        feedback_messages: List[str],
+    ) -> Dict[str, Any]:
+        prompt = (
+            "你是长期记忆纠错分类器。"
+            "你会根据“记忆检索命中列表”和“用户后续反馈”判断是否需要修正记忆。"
+            "请严格输出 JSON 对象，不要输出解释文字。\n\n"
+            f"query_tool_id: {query_tool_id}\n"
+            f"原查询: {query_text}\n"
+            f"候选命中: {json.dumps(hit_briefs, ensure_ascii=False)}\n"
+            f"反馈消息: {json.dumps(feedback_messages, ensure_ascii=False)}\n\n"
+            "输出 JSON schema:\n"
+            "{"
+            "\"decision\":\"confirm|reject|correct|supplement|none\","
+            "\"confidence\":0.0,"
+            "\"target_hashes\":[\"命中列表中的 hash\"],"
+            "\"corrected_relations\":[{\"subject\":\"\",\"predicate\":\"\",\"object\":\"\",\"confidence\":1.0}],"
+            "\"reason\":\"\""
+            "}\n"
+            "约束:\n"
+            "1. 只有当反馈明确指向错误时才输出 reject/correct。\n"
+            "2. target_hashes 必须来自候选命中 hash。\n"
+            "3. corrected_relations 仅在 decision=correct 时填写，且必须是明确三元组。\n"
+            "4. 不确定时输出 decision=none, confidence<=0.5。"
+        )
+        try:
+            if self._feedback_classifier is None:
+                self._feedback_classifier = LLMServiceClient(
+                    task_name="utils",
+                    request_type="memory_feedback_correction",
+                )
+            response = await self._feedback_classifier.generate_response(prompt)
+            payload = self._safe_json_loads(getattr(response, "response", ""))
+        except Exception as exc:
+            logger.warning(f"反馈分类器调用失败: {exc}")
+            payload = {}
+        return payload
+
+    @staticmethod
+    def _normalize_feedback_decision(
+        payload: Dict[str, Any],
+        *,
+        hit_hashes: Sequence[str],
+    ) -> Dict[str, Any]:
+        allowed = {"confirm", "reject", "correct", "supplement", "none"}
+        decision = str(payload.get("decision", "") or "").strip().lower()
+        if decision not in allowed:
+            decision = "none"
+        try:
+            confidence = float(payload.get("confidence", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        confidence = min(1.0, max(0.0, confidence))
+
+        valid_hashes = {str(item or "").strip() for item in hit_hashes if str(item or "").strip()}
+        target_hashes_raw = payload.get("target_hashes")
+        if isinstance(target_hashes_raw, str):
+            target_hashes_candidates = [target_hashes_raw]
+        elif isinstance(target_hashes_raw, list):
+            target_hashes_candidates = target_hashes_raw
+        else:
+            target_hashes_candidates = []
+        target_hashes = [
+            str(item or "").strip()
+            for item in target_hashes_candidates
+            if str(item or "").strip() in valid_hashes
+        ]
+
+        corrected_relations: List[Dict[str, Any]] = []
+        raw_relations = payload.get("corrected_relations")
+        if isinstance(raw_relations, list):
+            for item in raw_relations:
+                if not isinstance(item, dict):
+                    continue
+                subject = str(item.get("subject", "") or "").strip()
+                predicate = str(item.get("predicate", "") or "").strip()
+                obj = str(item.get("object", "") or "").strip()
+                if not (subject and predicate and obj):
+                    continue
+                try:
+                    rel_conf = float(item.get("confidence", 1.0) or 1.0)
+                except (TypeError, ValueError):
+                    rel_conf = 1.0
+                corrected_relations.append(
+                    {
+                        "subject": subject,
+                        "predicate": predicate,
+                        "object": obj,
+                        "confidence": min(1.0, max(0.0, rel_conf)),
+                    }
+                )
+        corrected_relations = corrected_relations[:6]
+
+        return {
+            "decision": decision,
+            "confidence": confidence,
+            "target_hashes": target_hashes,
+            "corrected_relations": corrected_relations,
+            "reason": str(payload.get("reason", "") or "").strip(),
+            "raw": payload,
+        }
+
+    @staticmethod
+    def _feedback_apply_result_status(apply_result: Dict[str, Any]) -> str:
+        if bool(apply_result.get("applied")):
+            return "applied"
+
+        reason = str(apply_result.get("reason", "") or "").strip().lower()
+        if reason in {"low_confidence", "no_relation_targets"} or reason.startswith("decision_"):
+            return "skipped"
+        return "error"
+
+    def _restore_feedback_relations_from_snapshots(
+        self,
+        *,
+        task_id: int,
+        query_tool_id: str,
+        relation_hashes: Sequence[str],
+        snapshots: Dict[str, Dict[str, Any]],
+        current_statuses: Optional[Dict[str, Dict[str, Any]]] = None,
+        reason: str,
+    ) -> Dict[str, List[str]]:
+        assert self.metadata_store is not None
+
+        restored_hashes: List[str] = []
+        failed_hashes: List[str] = []
+        status_map = current_statuses if isinstance(current_statuses, dict) else {}
+
+        for relation_hash in self._tokens(relation_hashes):
+            snapshot = snapshots.get(relation_hash) if isinstance(snapshots, dict) else None
+            if not isinstance(snapshot, dict) or not snapshot:
+                failed_hashes.append(relation_hash)
+                continue
+
+            after_status = self.metadata_store.restore_relation_status_from_snapshot(relation_hash, snapshot)
+            if after_status is None:
+                failed_hashes.append(relation_hash)
+                continue
+
+            restored_hashes.append(relation_hash)
+            self.metadata_store.append_feedback_action_log(
+                task_id=task_id,
+                query_tool_id=query_tool_id,
+                action_type="compensate_restore_relation",
+                target_hash=relation_hash,
+                before_payload=status_map.get(relation_hash, {}),
+                after_payload=after_status,
+                reason=reason,
+            )
+
+        if restored_hashes or failed_hashes:
+            self._rebuild_graph_from_metadata()
+            self._persist()
+
+        return {
+            "restored_hashes": restored_hashes,
+            "failed_hashes": failed_hashes,
+        }
+
+    async def _ingest_feedback_relations(
+        self,
+        *,
+        query_tool_id: str,
+        session_id: str,
+        relation_hashes: List[str],
+        corrected_relations: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        supersedes_hash = relation_hashes[0] if relation_hashes else ""
+        relation_rows: List[Dict[str, Any]] = []
+        for row in corrected_relations:
+            relation_rows.append(
+                {
+                    "subject": str(row.get("subject", "") or "").strip(),
+                    "predicate": str(row.get("predicate", "") or "").strip(),
+                    "object": str(row.get("object", "") or "").strip(),
+                    "confidence": float(row.get("confidence", 1.0) or 1.0),
+                    "metadata": {
+                        "supersedes_hash": supersedes_hash,
+                        "supersedes_hashes": relation_hashes,
+                        "from_query_tool_id": query_tool_id,
+                        "feedback_window": self._feedback_cfg_window_label(),
+                    },
+                }
+            )
+        plain_text = "；".join(
+            f"{item['subject']} {item['predicate']} {item['object']}"
+            for item in relation_rows
+            if item.get("subject") and item.get("predicate") and item.get("object")
+        )
+        external_id = compute_hash(
+            "feedback_correction:"
+            + query_tool_id
+            + ":"
+            + json.dumps(relation_rows, ensure_ascii=False, sort_keys=True)
+        )
+        payload = await self.ingest_text(
+            external_id=external_id,
+            source_type="chat_summary",
+            text=plain_text,
+            chat_id=session_id,
+            relations=relation_rows,
+            metadata={
+                "from_query_tool_id": query_tool_id,
+                "feedback_window": self._feedback_cfg_window_label(),
+                "supersedes_hashes": relation_hashes,
+                "feedback_correction_source": True,
+            },
+            respect_filter=False,
+        )
+        if isinstance(payload, dict):
+            stored_ids = self._tokens(payload.get("stored_ids"))
+            corrected_relation_hashes = stored_ids[1:]
+            payload["external_id"] = external_id
+            payload["source"] = self._chat_source(session_id)
+            payload["paragraph_hashes"] = stored_ids[:1]
+            payload["corrected_relation_hashes"] = corrected_relation_hashes
+            base_success = bool(payload.get("success")) if "success" in payload else True
+            payload["success"] = base_success and bool(corrected_relation_hashes)
+            if not payload["success"] and not str(payload.get("error", "") or "").strip():
+                payload["error"] = "missing_corrected_relations"
+            return payload
+        return {"success": False, "error": "invalid_ingest_payload"}
+
+    async def _apply_feedback_decision(
+        self,
+        *,
+        task_id: int,
+        query_tool_id: str,
+        session_id: str,
+        decision: Dict[str, Any],
+        hit_map: Dict[str, Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        threshold = self._feedback_cfg_auto_apply_threshold()
+        confidence = float(decision.get("confidence", 0.0) or 0.0)
+        if confidence < threshold:
+            return {
+                "applied": False,
+                "reason": "low_confidence",
+                "threshold": threshold,
+                "confidence": confidence,
+            }
+
+        decision_type = str(decision.get("decision", "none") or "none").strip().lower()
+        if decision_type not in {"reject", "correct"}:
+            return {
+                "applied": False,
+                "reason": f"decision_{decision_type}_no_auto_apply",
+            }
+
+        target_hashes = [
+            str(item or "").strip()
+            for item in (decision.get("target_hashes") or [])
+            if str(item or "").strip()
+        ]
+        relation_hashes = self._resolve_feedback_relation_hashes(
+            target_hashes=target_hashes,
+            hit_map=hit_map,
+        )
+        if not relation_hashes:
+            return {
+                "applied": False,
+                "reason": "no_relation_targets",
+            }
+
+        corrected_relations = [
+            dict(item)
+            for item in (decision.get("corrected_relations") or [])
+            if isinstance(item, dict)
+        ]
+        if decision_type == "correct" and not corrected_relations:
+            return {
+                "applied": False,
+                "reason": "missing_corrected_relations",
+                "relation_hashes": relation_hashes,
+                "stale_paragraph_hashes": [],
+                "episode_rebuild_sources": [],
+                "profile_refresh_person_ids": [],
+                "rollback_plan_summary": {},
+            }
+
+        assert self.metadata_store is not None
+        old_relation_rows = self._query_relation_rows_by_hashes(relation_hashes, include_inactive=True)
+        before_status = self.metadata_store.get_relation_status_batch(relation_hashes)
+        forget_result = self._apply_v5_relation_action(action="forget", hashes=relation_hashes, strength=1.0)
+        forget_success = bool(forget_result.get("success"))
+        after_status = self.metadata_store.get_relation_status_batch(relation_hashes)
+        for hash_value in relation_hashes:
+            self.metadata_store.append_feedback_action_log(
+                task_id=task_id,
+                query_tool_id=query_tool_id,
+                action_type="forget_relation",
+                target_hash=hash_value,
+                before_payload=before_status.get(hash_value) if isinstance(before_status, dict) else {},
+                after_payload=after_status.get(hash_value) if isinstance(after_status, dict) else {},
+                reason=str(decision.get("reason", "") or ""),
+            )
+
+        ingest_result = None
+        corrected_relation_hash_candidates: List[str] = []
+        corrected_relation_specs_by_hash: Dict[str, Dict[str, Any]] = {}
+        if decision_type == "correct" and corrected_relations and self.metadata_store is not None:
+            for item in corrected_relations:
+                try:
+                    relation_hash = self.metadata_store.compute_relation_hash(
+                        str(item.get("subject", "") or "").strip(),
+                        str(item.get("predicate", "") or "").strip(),
+                        str(item.get("object", "") or "").strip(),
+                    )
+                except Exception:
+                    continue
+                if not relation_hash:
+                    continue
+                corrected_relation_hash_candidates.append(relation_hash)
+                corrected_relation_specs_by_hash[relation_hash] = {
+                    "subject": str(item.get("subject", "") or "").strip(),
+                    "predicate": str(item.get("predicate", "") or "").strip(),
+                    "object": str(item.get("object", "") or "").strip(),
+                }
+        corrected_relation_before_status = (
+            self.metadata_store.get_relation_status_batch(corrected_relation_hash_candidates)
+            if corrected_relation_hash_candidates
+            else {}
+        )
+        if not forget_success:
+            return {
+                "applied": False,
+                "reason": "forget_failed",
+                "error": str(forget_result.get("error", "") or "forget_failed"),
+                "forget": forget_result,
+                "ingest": ingest_result,
+                "relation_hashes": relation_hashes,
+                "stale_paragraph_hashes": [],
+                "episode_rebuild_sources": [],
+                "profile_refresh_person_ids": [],
+                "rollback_plan_summary": {},
+            }
+
+        stale_paragraph_map: Dict[str, List[str]] = {}
+        stale_paragraph_hashes: List[str] = []
+        episode_rebuild_sources: List[str] = []
+        profile_refresh_person_ids: List[str] = []
+        rollback_plan: Dict[str, Any] = {}
+        if decision_type == "correct" and corrected_relations:
+            ingest_result = await self._ingest_feedback_relations(
+                query_tool_id=query_tool_id,
+                session_id=session_id,
+                relation_hashes=relation_hashes,
+                corrected_relations=corrected_relations,
+            )
+            self.metadata_store.append_feedback_action_log(
+                task_id=task_id,
+                query_tool_id=query_tool_id,
+                action_type="ingest_correction",
+                target_hash=relation_hashes[0] if relation_hashes else "",
+                before_payload={"target_hashes": relation_hashes},
+                after_payload=ingest_result,
+                reason=str(decision.get("reason", "") or ""),
+            )
+
+            ingest_success = bool((ingest_result or {}).get("success")) if isinstance(ingest_result, dict) else False
+            if not ingest_success:
+                compensation_result = self._restore_feedback_relations_from_snapshots(
+                    task_id=task_id,
+                    query_tool_id=query_tool_id,
+                    relation_hashes=relation_hashes,
+                    snapshots=before_status if isinstance(before_status, dict) else {},
+                    current_statuses=after_status if isinstance(after_status, dict) else {},
+                    reason=str(decision.get("reason", "") or "") or "feedback_correction_ingest_failed",
+                )
+                restore_failed_hashes = compensation_result.get("failed_hashes", [])
+                return {
+                    "applied": False,
+                    "reason": "correction_restore_failed" if restore_failed_hashes else "correction_ingest_failed",
+                    "error": str((ingest_result or {}).get("error", "") or "correction_ingest_failed"),
+                    "forget": forget_result,
+                    "ingest": ingest_result,
+                    "relation_hashes": relation_hashes,
+                    "stale_paragraph_hashes": [],
+                    "episode_rebuild_sources": [],
+                    "profile_refresh_person_ids": [],
+                    "restored_relation_hashes": compensation_result.get("restored_hashes", []),
+                    "restore_failed_hashes": restore_failed_hashes,
+                    "rollback_plan_summary": {},
+                }
+        else:
+            ingest_success = False
+
+        applied = forget_success if decision_type == "reject" else (forget_success and ingest_success)
+        if applied:
+            stale_paragraph_map = self._mark_feedback_stale_paragraphs(
+                task_id=task_id,
+                query_tool_id=query_tool_id,
+                relation_hashes=relation_hashes,
+                reason=str(decision.get("reason", "") or "") or "feedback_correction",
+            )
+            stale_paragraph_hashes = self._merge_tokens(
+                *[
+                    paragraph_hashes
+                    for paragraph_hashes in stale_paragraph_map.values()
+                    if isinstance(paragraph_hashes, list)
+                ]
+            )
+            episode_rebuild_sources = self._enqueue_feedback_episode_rebuilds(
+                paragraph_hashes=stale_paragraph_hashes,
+                session_id=session_id,
+                include_correction_source=bool(ingest_success),
+            )
+            profile_refresh_person_ids = self._enqueue_feedback_profile_refreshes(
+                person_ids=self._resolve_feedback_related_person_ids(
+                    old_relation_rows=old_relation_rows,
+                    corrected_relations=corrected_relations,
+                ),
+                query_tool_id=query_tool_id,
+            )
+            for relation_hash, paragraph_hashes in stale_paragraph_map.items():
+                for paragraph_hash in paragraph_hashes:
+                    self.metadata_store.append_feedback_action_log(
+                        task_id=task_id,
+                        query_tool_id=query_tool_id,
+                        action_type="mark_stale_paragraph",
+                        target_hash=paragraph_hash,
+                        after_payload={"relation_hash": relation_hash},
+                        reason=str(decision.get("reason", "") or ""),
+                    )
+            for source in episode_rebuild_sources:
+                self.metadata_store.append_feedback_action_log(
+                    task_id=task_id,
+                    query_tool_id=query_tool_id,
+                    action_type="enqueue_episode_rebuild",
+                    target_hash=source,
+                    reason=str(decision.get("reason", "") or ""),
+                )
+            for person_id in profile_refresh_person_ids:
+                self.metadata_store.append_feedback_action_log(
+                    task_id=task_id,
+                    query_tool_id=query_tool_id,
+                    action_type="enqueue_profile_refresh",
+                    target_hash=person_id,
+                    reason=str(decision.get("reason", "") or ""),
+                )
+            forgotten_relations = []
+            for row in old_relation_rows:
+                relation_hash = str(row.get("hash", "") or "").strip()
+                if not relation_hash:
+                    continue
+                forgotten_relations.append(
+                    {
+                        "hash": relation_hash,
+                        "subject": str(row.get("subject", "") or "").strip(),
+                        "predicate": str(row.get("predicate", "") or "").strip(),
+                        "object": str(row.get("object", "") or "").strip(),
+                        "before_status": before_status.get(relation_hash) if isinstance(before_status, dict) else {},
+                    }
+                )
+
+            corrected_write: Dict[str, Any] = {}
+            if isinstance(ingest_result, dict):
+                stored_relation_hashes = self._tokens(ingest_result.get("corrected_relation_hashes"))
+                corrected_write = {
+                    "external_id": str(ingest_result.get("external_id", "") or "").strip(),
+                    "source": str(ingest_result.get("source", "") or "").strip(),
+                    "paragraph_hashes": self._tokens(ingest_result.get("paragraph_hashes")),
+                    "corrected_relation_hashes": stored_relation_hashes,
+                    "corrected_relations": [
+                        {
+                            "hash": relation_hash,
+                            **corrected_relation_specs_by_hash.get(relation_hash, {}),
+                            "existed_before": relation_hash in corrected_relation_before_status,
+                            "before_status": corrected_relation_before_status.get(relation_hash, {}),
+                        }
+                        for relation_hash in stored_relation_hashes
+                    ],
+                }
+
+            rollback_plan = {
+                "task_id": task_id,
+                "query_tool_id": query_tool_id,
+                "session_id": session_id,
+                "decision_type": decision_type,
+                "forgotten_relations": forgotten_relations,
+                "corrected_write": corrected_write,
+                "stale_marks": [
+                    {"paragraph_hash": paragraph_hash, "relation_hash": relation_hash}
+                    for relation_hash, paragraph_hashes in stale_paragraph_map.items()
+                    for paragraph_hash in (paragraph_hashes or [])
+                    if str(paragraph_hash or "").strip()
+                ],
+                "episode_sources": episode_rebuild_sources,
+                "profile_person_ids": profile_refresh_person_ids,
+                "created_at": time.time(),
+            }
+            update_rollback_plan = getattr(self.metadata_store, "update_feedback_task_rollback_plan", None)
+            if callable(update_rollback_plan):
+                update_rollback_plan(
+                    task_id=task_id,
+                    rollback_plan=rollback_plan,
+                )
+        return {
+            "applied": applied,
+            "forget": forget_result,
+            "ingest": ingest_result,
+            "relation_hashes": relation_hashes,
+            "stale_paragraph_hashes": stale_paragraph_hashes,
+            "episode_rebuild_sources": episode_rebuild_sources,
+            "profile_refresh_person_ids": profile_refresh_person_ids,
+            "rollback_plan_summary": self._build_feedback_rollback_plan_summary(rollback_plan) if rollback_plan else {},
+        }
+
+    def _resolve_feedback_relation_hashes(
+        self,
+        *,
+        target_hashes: Sequence[str],
+        hit_map: Dict[str, Dict[str, Any]],
+    ) -> List[str]:
+        resolved: List[str] = []
+        seen: set[str] = set()
+        for target_hash in target_hashes:
+            token = str(target_hash or "").strip()
+            if not token:
+                continue
+            hit = hit_map.get(token) if isinstance(hit_map, dict) else None
+            item_type = str((hit or {}).get("type", "") or "").strip()
+            if item_type == "relation":
+                if token not in seen:
+                    seen.add(token)
+                    resolved.append(token)
+                continue
+            if item_type != "paragraph":
+                continue
+
+            linked_candidates = self._tokens((hit or {}).get("linked_relation_hashes"))
+            if not linked_candidates and self.metadata_store is not None:
+                for relation in self.metadata_store.get_paragraph_relations(token):
+                    linked_hash = str(relation.get("hash", "") or "").strip()
+                    if linked_hash:
+                        linked_candidates.append(linked_hash)
+
+            for linked_hash in linked_candidates:
+                if linked_hash in seen:
+                    continue
+                seen.add(linked_hash)
+                resolved.append(linked_hash)
+        return resolved
+
+    async def _process_feedback_task(self, task: Dict[str, Any]) -> None:
+        task_id = int(task.get("id") or 0)
+        query_tool_id = str(task.get("query_tool_id", "") or "").strip()
+        if task_id <= 0 or not query_tool_id:
+            return
+
+        assert self.metadata_store is not None
+        self.metadata_store.mark_feedback_task_running(task_id)
+
+        decision_payload: Dict[str, Any] = {}
+        session_id = str(task.get("session_id", "") or "").strip()
+        try:
+            structured = task.get("query_snapshot") if isinstance(task.get("query_snapshot"), dict) else {}
+            if not session_id:
+                session_id = str(structured.get("chat_id", "") or "").strip()
+            if not session_id:
+                raise RuntimeError("反馈任务缺少 session_id")
+            hits_raw = structured.get("hits")
+            if not isinstance(hits_raw, list) or not hits_raw:
+                decision_payload = {"decision": "none", "confidence": 1.0, "reason": "no_hits"}
+                self.metadata_store.finalize_feedback_task(
+                    task_id=task_id,
+                    status="skipped",
+                    decision_payload=decision_payload,
+                )
+                return
+
+            query_timestamp = self._coerce_datetime(task.get("query_timestamp")) or datetime.now()
+            due_at = self._coerce_datetime(task.get("due_at")) or (
+                query_timestamp + timedelta(hours=self._feedback_cfg_window_hours())
+            )
+            if due_at <= query_timestamp:
+                due_at = query_timestamp + timedelta(hours=self._feedback_cfg_window_hours())
+
+            feedback_messages = self._extract_feedback_messages(
+                session_id=session_id,
+                query_time=query_timestamp,
+                due_time=due_at,
+                max_messages=self._feedback_cfg_max_messages(),
+            )
+            if not feedback_messages:
+                decision_payload = {"decision": "none", "confidence": 1.0, "reason": "no_feedback_messages"}
+                self.metadata_store.finalize_feedback_task(
+                    task_id=task_id,
+                    status="skipped",
+                    decision_payload=decision_payload,
+                )
+                return
+
+            if self._feedback_cfg_prefilter_enabled() and not self._should_invoke_feedback_classifier(feedback_messages):
+                decision_payload = {"decision": "none", "confidence": 1.0, "reason": "prefilter_skipped"}
+                self.metadata_store.append_feedback_action_log(
+                    task_id=task_id,
+                    query_tool_id=query_tool_id,
+                    action_type="skip",
+                    reason="prefilter_skipped",
+                    after_payload={"feedback_messages": feedback_messages},
+                )
+                self.metadata_store.finalize_feedback_task(
+                    task_id=task_id,
+                    status="skipped",
+                    decision_payload=decision_payload,
+                )
+                return
+
+            hit_briefs = self._build_feedback_hit_briefs(hits_raw)
+            hit_map = {str(item.get("hash", "") or "").strip(): item for item in hit_briefs if str(item.get("hash", "") or "").strip()}
+            raw_decision = await self._classify_feedback(
+                query_tool_id=query_tool_id,
+                query_text=str(structured.get("query", "") or ""),
+                hit_briefs=hit_briefs,
+                feedback_messages=feedback_messages,
+            )
+            decision_payload = self._normalize_feedback_decision(raw_decision, hit_hashes=list(hit_map.keys()))
+            decision_payload["feedback_message_count"] = len(feedback_messages)
+            self.metadata_store.append_feedback_action_log(
+                task_id=task_id,
+                query_tool_id=query_tool_id,
+                action_type="classification",
+                after_payload=decision_payload,
+                reason=str(decision_payload.get("reason", "") or ""),
+            )
+
+            apply_result = await self._apply_feedback_decision(
+                task_id=task_id,
+                query_tool_id=query_tool_id,
+                session_id=session_id,
+                decision=decision_payload,
+                hit_map=hit_map,
+            )
+            decision_payload["apply_result"] = apply_result
+            final_status = self._feedback_apply_result_status(apply_result)
+            self.metadata_store.finalize_feedback_task(
+                task_id=task_id,
+                status=final_status,
+                decision_payload=decision_payload,
+                last_error=str(apply_result.get("error", "") or "") if final_status == "error" else "",
+            )
+        except Exception as exc:
+            logger.warning(f"反馈纠错任务处理失败: task_id={task_id} err={exc}", exc_info=True)
+            self.metadata_store.append_feedback_action_log(
+                task_id=task_id,
+                query_tool_id=query_tool_id,
+                action_type="error",
+                reason=str(exc),
+                after_payload=decision_payload if decision_payload else None,
+            )
+            self.metadata_store.finalize_feedback_task(
+                task_id=task_id,
+                status="error",
+                decision_payload=decision_payload if decision_payload else None,
+                last_error=str(exc),
+            )
+
+    async def _feedback_correction_loop(self) -> None:
+        try:
+            while not self._background_stopping:
+                interval_seconds = self._feedback_cfg_check_interval_seconds()
+                if not self._feedback_cfg_enabled():
+                    await asyncio.sleep(interval_seconds)
+                    continue
+                if self.metadata_store is None:
+                    await asyncio.sleep(interval_seconds)
+                    continue
+                tasks = self.metadata_store.fetch_due_feedback_tasks(
+                    limit=self._feedback_cfg_batch_size(),
+                    now=datetime.now().timestamp(),
+                )
+                if not tasks:
+                    await asyncio.sleep(interval_seconds)
+                    continue
+                for task in tasks:
+                    if self._background_stopping:
+                        break
+                    if not isinstance(task, dict):
+                        continue
+                    await self._process_feedback_task(task)
+                await asyncio.sleep(2.0)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(f"feedback_correction loop 异常: {exc}")
 
     async def _memory_maintenance_loop(self) -> None:
         try:
@@ -2244,12 +4060,20 @@ class SDKMemoryKernel:
         for source, target, relation_hashes in self.graph_store.iter_edge_hash_entries():
             if source not in node_set or target not in node_set:
                 continue
+            relation_hash_tokens = sorted(str(item) for item in relation_hashes if str(item).strip())
+            relation_rows = self._query_relation_rows_by_hashes(relation_hash_tokens)
+            predicates = self._dedupe_strings(row.get("predicate", "") for row in relation_rows)
+            evidence_hashes = self._query_distinct_paragraph_hashes_for_relations(relation_hash_tokens)
             edge_payload.append(
                 {
                     "source": source,
                     "target": target,
                     "weight": float(self.graph_store.get_edge_weight(source, target)),
-                    "relation_hashes": sorted(str(item) for item in relation_hashes if str(item).strip()),
+                    "relation_hashes": relation_hash_tokens,
+                    "predicates": predicates,
+                    "relation_count": len(relation_hash_tokens),
+                    "evidence_count": len(evidence_hashes),
+                    "label": self._build_graph_edge_label(predicates),
                 }
             )
         return {
@@ -2257,6 +4081,709 @@ class SDKMemoryKernel:
             "edges": edge_payload,
             "total_nodes": int(self.graph_store.num_nodes),
             "total_edges": int(self.graph_store.num_edges),
+        }
+
+    @staticmethod
+    def _graph_search_match_rank(value: str, keyword: str) -> Optional[int]:
+        token = str(value or "").strip().lower()
+        if not token or not keyword:
+            return None
+        if token == keyword:
+            return 0
+        if token.startswith(keyword):
+            return 1
+        if keyword in token:
+            return 2
+        return None
+
+    @classmethod
+    def _pick_graph_search_match(
+        cls,
+        fields: Sequence[tuple[str, str]],
+        keyword: str,
+    ) -> Optional[tuple[str, str, int]]:
+        best_match: Optional[tuple[str, str, int]] = None
+        for field, raw_value in fields:
+            value = str(raw_value or "").strip()
+            if not value:
+                continue
+            rank = cls._graph_search_match_rank(value, keyword)
+            if rank is None:
+                continue
+            if best_match is None or rank < best_match[2]:
+                best_match = (field, value, rank)
+        return best_match
+
+    def _search_graph(self, *, query: str, limit: int) -> Dict[str, Any]:
+        assert self.metadata_store is not None
+        token = str(query or "").strip()
+        normalized_query = token.lower()
+        safe_limit = max(1, int(limit or 50))
+        if not token:
+            return {
+                "success": False,
+                "query": token,
+                "limit": safe_limit,
+                "count": 0,
+                "items": [],
+                "error": "query 不能为空",
+            }
+
+        like_keyword = f"%{normalized_query}%"
+        entity_rows = self.metadata_store.query(
+            """
+            SELECT hash, name, appearance_count, created_at
+            FROM entities
+            WHERE (is_deleted IS NULL OR is_deleted = 0)
+              AND (
+                LOWER(COALESCE(name, '')) LIKE ?
+                OR LOWER(COALESCE(hash, '')) LIKE ?
+              )
+            """,
+            (like_keyword, like_keyword),
+        )
+
+        relation_rows = self.metadata_store.query(
+            """
+            SELECT hash, subject, predicate, object, confidence, created_at
+            FROM relations
+            WHERE (is_inactive IS NULL OR is_inactive = 0)
+              AND (
+                LOWER(COALESCE(subject, '')) LIKE ?
+                OR LOWER(COALESCE(object, '')) LIKE ?
+                OR LOWER(COALESCE(predicate, '')) LIKE ?
+                OR LOWER(COALESCE(hash, '')) LIKE ?
+              )
+            """,
+            (like_keyword, like_keyword, like_keyword, like_keyword),
+        )
+
+        entity_items: List[Dict[str, Any]] = []
+        seen_entity_keys: set[str] = set()
+        for row in entity_rows:
+            name = str(row.get("name", "") or "").strip()
+            hash_value = str(row.get("hash", "") or "").strip()
+            match = self._pick_graph_search_match(
+                [("name", name), ("hash", hash_value)],
+                normalized_query,
+            )
+            if match is None:
+                continue
+            dedupe_key = hash_value or f"name:{name.lower()}"
+            if dedupe_key in seen_entity_keys:
+                continue
+            seen_entity_keys.add(dedupe_key)
+            matched_field, matched_value, rank = match
+            entity_items.append(
+                {
+                    "type": "entity",
+                    "title": name or hash_value,
+                    "matched_field": matched_field,
+                    "matched_value": matched_value,
+                    "entity_name": name or hash_value,
+                    "entity_hash": hash_value,
+                    "appearance_count": int(row.get("appearance_count", 0) or 0),
+                    "_rank": rank,
+                }
+            )
+
+        relation_items: List[Dict[str, Any]] = []
+        seen_relation_keys: set[str] = set()
+        for row in relation_rows:
+            subject = str(row.get("subject", "") or "").strip()
+            predicate = str(row.get("predicate", "") or "").strip()
+            obj = str(row.get("object", "") or "").strip()
+            relation_hash = str(row.get("hash", "") or "").strip()
+            match = self._pick_graph_search_match(
+                [
+                    ("subject", subject),
+                    ("object", obj),
+                    ("predicate", predicate),
+                    ("hash", relation_hash),
+                ],
+                normalized_query,
+            )
+            if match is None:
+                continue
+            dedupe_key = relation_hash or f"{subject.lower()}|{predicate.lower()}|{obj.lower()}"
+            if dedupe_key in seen_relation_keys:
+                continue
+            seen_relation_keys.add(dedupe_key)
+            matched_field, matched_value, rank = match
+            relation_items.append(
+                {
+                    "type": "relation",
+                    "title": self._format_relation_text(subject, predicate, obj),
+                    "matched_field": matched_field,
+                    "matched_value": matched_value,
+                    "subject": subject,
+                    "predicate": predicate,
+                    "object": obj,
+                    "relation_hash": relation_hash,
+                    "confidence": float(row.get("confidence", 0.0) or 0.0),
+                    "created_at": float(row.get("created_at", 0.0) or 0.0),
+                    "_rank": rank,
+                }
+            )
+
+        items = entity_items + relation_items
+        items.sort(
+            key=lambda item: (
+                int(item["_rank"]) if item.get("_rank") is not None else 99,
+                0 if str(item.get("type", "") or "") == "entity" else 1,
+                -int(item.get("appearance_count", 0) or 0)
+                if str(item.get("type", "") or "") == "entity"
+                else -float(item.get("confidence", 0.0) or 0.0),
+                0.0 if str(item.get("type", "") or "") == "entity" else -float(item.get("created_at", 0.0) or 0.0),
+                str(item.get("entity_name", item.get("subject", "")) or "").lower(),
+                str(item.get("predicate", "") or "").lower(),
+                str(item.get("object", "") or "").lower(),
+                str(item.get("entity_hash", item.get("relation_hash", "")) or "").lower(),
+            )
+        )
+
+        normalized_items: List[Dict[str, Any]] = []
+        for item in items[:safe_limit]:
+            normalized = dict(item)
+            normalized.pop("_rank", None)
+            normalized_items.append(normalized)
+
+        return {
+            "success": True,
+            "query": token,
+            "limit": safe_limit,
+            "count": len(normalized_items),
+            "items": normalized_items,
+        }
+
+    @staticmethod
+    def _dedupe_strings(values: Iterable[Any]) -> List[str]:
+        deduped: List[str] = []
+        for value in values:
+            token = str(value or "").strip()
+            if token and token not in deduped:
+                deduped.append(token)
+        return deduped
+
+    @staticmethod
+    def _build_graph_edge_label(predicates: Sequence[str]) -> str:
+        labels = [str(item or "").strip() for item in predicates if str(item or "").strip()]
+        if not labels:
+            return ""
+        if len(labels) == 1:
+            return labels[0]
+        return f"{labels[0]} +{len(labels) - 1}"
+
+    @staticmethod
+    def _trim_text(value: str, limit: int = 220) -> str:
+        text = " ".join(str(value or "").split())
+        if len(text) <= limit:
+            return text
+        return f"{text[:limit]}..."
+
+    @staticmethod
+    def _format_relation_text(subject: Any, predicate: Any, obj: Any) -> str:
+        return " ".join(
+            [
+                str(subject or "").strip(),
+                str(predicate or "").strip(),
+                str(obj or "").strip(),
+            ]
+        ).strip()
+
+    def _query_relation_rows_by_hashes(
+        self,
+        relation_hashes: Sequence[str],
+        *,
+        include_inactive: bool = False,
+    ) -> List[Dict[str, Any]]:
+        assert self.metadata_store is not None
+        hashes = [str(item or "").strip() for item in relation_hashes if str(item or "").strip()]
+        if not hashes:
+            return []
+        placeholders = ",".join(["?"] * len(hashes))
+        inactive_clause = "" if include_inactive else "AND (is_inactive IS NULL OR is_inactive = 0)"
+        rows = self.metadata_store.query(
+            f"""
+            SELECT hash, subject, predicate, object, confidence, created_at, source_paragraph
+            FROM relations
+            WHERE hash IN ({placeholders})
+              {inactive_clause}
+            """,
+            tuple(hashes),
+        )
+        order = {hash_value: index for index, hash_value in enumerate(hashes)}
+        rows.sort(key=lambda row: order.get(str(row.get("hash", "") or ""), len(order)))
+        return rows
+
+    def _query_distinct_paragraph_hashes_for_relations(
+        self,
+        relation_hashes: Sequence[str],
+        *,
+        limit: Optional[int] = None,
+    ) -> List[str]:
+        assert self.metadata_store is not None
+        hashes = [str(item or "").strip() for item in relation_hashes if str(item or "").strip()]
+        if not hashes:
+            return []
+        placeholders = ",".join(["?"] * len(hashes))
+        sql = f"""
+            SELECT DISTINCT p.hash, p.updated_at, p.created_at
+            FROM paragraphs p
+            JOIN paragraph_relations pr ON p.hash = pr.paragraph_hash
+            WHERE pr.relation_hash IN ({placeholders})
+              AND (p.is_deleted IS NULL OR p.is_deleted = 0)
+            ORDER BY p.updated_at DESC, p.created_at DESC, p.hash ASC
+        """
+        params: List[Any] = list(hashes)
+        if limit is not None and limit > 0:
+            sql += " LIMIT ?"
+            params.append(limit)
+        rows = self.metadata_store.query(sql, tuple(params))
+        return [str(row.get("hash", "") or "").strip() for row in rows if str(row.get("hash", "") or "").strip()]
+
+    def _load_paragraph_rows(self, paragraph_hashes: Sequence[str]) -> List[Dict[str, Any]]:
+        assert self.metadata_store is not None
+        hashes = [str(item or "").strip() for item in paragraph_hashes if str(item or "").strip()]
+        if not hashes:
+            return []
+        rows: List[Dict[str, Any]] = []
+        for hash_value in hashes:
+            row = self.metadata_store.get_paragraph(hash_value)
+            if row is None:
+                continue
+            if bool(row.get("is_deleted", 0)):
+                continue
+            rows.append(row)
+        return rows
+
+    def _resolve_graph_node_name(self, node_id: str) -> str:
+        assert self.metadata_store is not None
+        assert self.graph_store is not None
+        token = str(node_id or "").strip()
+        if not token:
+            return ""
+        graph_nodes = self.graph_store.get_nodes()
+        for candidate in graph_nodes:
+            if str(candidate or "").strip().lower() == token.lower():
+                return str(candidate)
+        entity_rows = self.metadata_store.query(
+            """
+            SELECT name
+            FROM entities
+            WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))
+               OR hash = ?
+            ORDER BY appearance_count DESC, created_at ASC
+            LIMIT 1
+            """,
+            (token, token),
+        )
+        if entity_rows:
+            return str(entity_rows[0].get("name", "") or token)
+        relation_rows = self.metadata_store.query(
+            """
+            SELECT subject, object
+            FROM relations
+            WHERE (LOWER(TRIM(subject)) = LOWER(TRIM(?)) OR LOWER(TRIM(object)) = LOWER(TRIM(?)))
+              AND (is_inactive IS NULL OR is_inactive = 0)
+            LIMIT 1
+            """,
+            (token, token),
+        )
+        if relation_rows:
+            subject = str(relation_rows[0].get("subject", "") or "").strip()
+            obj = str(relation_rows[0].get("object", "") or "").strip()
+            if subject.lower() == token.lower():
+                return subject
+            if obj.lower() == token.lower():
+                return obj
+        return token
+
+    def _get_related_relation_rows_for_entity(self, entity_name: str, *, limit: int) -> List[Dict[str, Any]]:
+        assert self.metadata_store is not None
+        rows = self.metadata_store.query(
+            """
+            SELECT hash, subject, predicate, object, confidence, created_at, source_paragraph
+            FROM relations
+            WHERE (LOWER(TRIM(subject)) = LOWER(TRIM(?)) OR LOWER(TRIM(object)) = LOWER(TRIM(?)))
+              AND (is_inactive IS NULL OR is_inactive = 0)
+            ORDER BY confidence DESC, created_at DESC
+            LIMIT ?
+            """,
+            (entity_name, entity_name, limit),
+        )
+        return rows
+
+    def _build_relation_summary(self, row: Dict[str, Any], paragraph_hashes: Optional[Sequence[str]] = None) -> Dict[str, Any]:
+        relation_hash = str(row.get("hash", "") or "").strip()
+        hashes = [str(item or "").strip() for item in (paragraph_hashes or []) if str(item or "").strip()]
+        if not hashes and relation_hash:
+            hashes = self._query_distinct_paragraph_hashes_for_relations([relation_hash])
+        return {
+            "hash": relation_hash,
+            "subject": str(row.get("subject", "") or "").strip(),
+            "predicate": str(row.get("predicate", "") or "").strip(),
+            "object": str(row.get("object", "") or "").strip(),
+            "text": self._format_relation_text(row.get("subject"), row.get("predicate"), row.get("object")),
+            "confidence": float(row.get("confidence", 0.0) or 0.0),
+            "paragraph_count": len(hashes),
+            "paragraph_hashes": hashes,
+            "source_paragraph": str(row.get("source_paragraph", "") or "").strip(),
+        }
+
+    def _build_paragraph_summary(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        assert self.metadata_store is not None
+        paragraph_hash = str(row.get("hash", "") or "").strip()
+        entities = self.metadata_store.get_paragraph_entities(paragraph_hash)
+        relations = self.metadata_store.get_paragraph_relations(paragraph_hash)
+        stale_marks_map, stale_status_map = self._load_paragraph_stale_marks([paragraph_hash])
+        stale_marks = [
+            {
+                **mark,
+                "relation_inactive": self._relation_status_is_inactive(
+                    stale_status_map.get(str(mark.get("relation_hash", "") or "").strip())
+                ),
+            }
+            for mark in stale_marks_map.get(paragraph_hash, [])
+        ]
+        return {
+            "hash": paragraph_hash,
+            "content": str(row.get("content", "") or ""),
+            "preview": self._trim_text(str(row.get("content", "") or "")),
+            "source": str(row.get("source", "") or ""),
+            "created_at": row.get("created_at"),
+            "updated_at": row.get("updated_at"),
+            "entity_count": len(entities),
+            "relation_count": len(relations),
+            "entities": self._dedupe_strings(entity.get("name", "") for entity in entities),
+            "relations": [
+                self._format_relation_text(
+                    relation.get("subject", ""),
+                    relation.get("predicate", ""),
+                    relation.get("object", ""),
+                )
+                for relation in relations
+            ],
+            "is_stale": bool(stale_marks),
+            "stale_relation_marks": stale_marks,
+        }
+
+    @staticmethod
+    def _evidence_entity_node_id(name: str) -> str:
+        return f"entity:{name}"
+
+    @staticmethod
+    def _evidence_relation_node_id(hash_value: str) -> str:
+        return f"relation:{hash_value}"
+
+    @staticmethod
+    def _evidence_paragraph_node_id(hash_value: str) -> str:
+        return f"paragraph:{hash_value}"
+
+    def _build_evidence_graph(
+        self,
+        *,
+        focus_entities: Sequence[str],
+        relation_rows: Sequence[Dict[str, Any]],
+        paragraph_rows: Sequence[Dict[str, Any]],
+        node_limit: int,
+    ) -> Dict[str, Any]:
+        assert self.metadata_store is not None
+
+        nodes: Dict[str, Dict[str, Any]] = {}
+        edges: List[Dict[str, Any]] = []
+        edge_keys: set[tuple[str, str, str]] = set()
+        relation_hash_set = {str(row.get("hash", "") or "").strip() for row in relation_rows if str(row.get("hash", "") or "").strip()}
+
+        def add_node(node_id: str, *, node_type: str, content: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+            if not node_id or node_id in nodes:
+                return
+            nodes[node_id] = {
+                "id": node_id,
+                "type": node_type,
+                "content": content,
+                "metadata": metadata or {},
+            }
+
+        def add_edge(source: str, target: str, *, kind: str, label: str, weight: float = 1.0) -> None:
+            key = (source, target, kind)
+            if not source or not target or key in edge_keys:
+                return
+            edge_keys.add(key)
+            edges.append(
+                {
+                    "source": source,
+                    "target": target,
+                    "kind": kind,
+                    "label": label,
+                    "weight": float(weight or 1.0),
+                }
+            )
+
+        for entity_name in self._dedupe_strings(focus_entities):
+            add_node(
+                self._evidence_entity_node_id(entity_name),
+                node_type="entity",
+                content=entity_name,
+                metadata={"entity_name": entity_name},
+            )
+
+        for row in relation_rows:
+            relation_hash = str(row.get("hash", "") or "").strip()
+            if not relation_hash:
+                continue
+            subject = str(row.get("subject", "") or "").strip()
+            obj = str(row.get("object", "") or "").strip()
+            predicate = str(row.get("predicate", "") or "").strip()
+            paragraph_hashes = self._query_distinct_paragraph_hashes_for_relations([relation_hash])
+            add_node(
+                self._evidence_relation_node_id(relation_hash),
+                node_type="relation",
+                content=self._format_relation_text(subject, predicate, obj),
+                metadata={
+                    "hash": relation_hash,
+                    "subject": subject,
+                    "predicate": predicate,
+                    "object": obj,
+                    "confidence": float(row.get("confidence", 0.0) or 0.0),
+                    "paragraph_count": len(paragraph_hashes),
+                    "paragraph_hashes": paragraph_hashes,
+                    "text": self._format_relation_text(subject, predicate, obj),
+                },
+            )
+            add_node(
+                self._evidence_entity_node_id(subject),
+                node_type="entity",
+                content=subject,
+                metadata={"entity_name": subject},
+            )
+            add_node(
+                self._evidence_entity_node_id(obj),
+                node_type="entity",
+                content=obj,
+                metadata={"entity_name": obj},
+            )
+            add_edge(
+                self._evidence_relation_node_id(relation_hash),
+                self._evidence_entity_node_id(subject),
+                kind="subject",
+                label="主语",
+            )
+            add_edge(
+                self._evidence_relation_node_id(relation_hash),
+                self._evidence_entity_node_id(obj),
+                kind="object",
+                label="宾语",
+            )
+
+        for paragraph in paragraph_rows:
+            paragraph_hash = str(paragraph.get("hash", "") or "").strip()
+            if not paragraph_hash:
+                continue
+            paragraph_entities = self.metadata_store.get_paragraph_entities(paragraph_hash)
+            paragraph_relations = self.metadata_store.get_paragraph_relations(paragraph_hash)
+            add_node(
+                self._evidence_paragraph_node_id(paragraph_hash),
+                node_type="paragraph",
+                content=str(paragraph.get("content", "") or ""),
+                metadata={
+                    "hash": paragraph_hash,
+                    "source": str(paragraph.get("source", "") or ""),
+                    "updated_at": paragraph.get("updated_at"),
+                    "entity_count": len(paragraph_entities),
+                    "relation_count": len(paragraph_relations),
+                    "preview": self._trim_text(str(paragraph.get("content", "") or "")),
+                },
+            )
+            for entity in paragraph_entities:
+                entity_name = str(entity.get("name", "") or "").strip()
+                if not entity_name:
+                    continue
+                mention_count = int(entity.get("mention_count", 1) or 1)
+                add_node(
+                    self._evidence_entity_node_id(entity_name),
+                    node_type="entity",
+                    content=entity_name,
+                    metadata={"entity_name": entity_name},
+                )
+                add_edge(
+                    self._evidence_paragraph_node_id(paragraph_hash),
+                    self._evidence_entity_node_id(entity_name),
+                    kind="mentions",
+                    label=f"提及 ×{mention_count}" if mention_count > 1 else "提及",
+                    weight=float(max(1, mention_count)),
+                )
+            for relation in paragraph_relations:
+                relation_hash = str(relation.get("hash", "") or "").strip()
+                if relation_hash not in relation_hash_set:
+                    continue
+                add_edge(
+                    self._evidence_paragraph_node_id(paragraph_hash),
+                    self._evidence_relation_node_id(relation_hash),
+                    kind="supports",
+                    label="支撑",
+                )
+
+        if len(nodes) > node_limit:
+            priority = {"entity": 0, "relation": 1, "paragraph": 2}
+            kept_ids = {
+                node["id"]
+                for node in sorted(
+                    nodes.values(),
+                    key=lambda node: (
+                        priority.get(str(node.get("type", "")), 9),
+                        str(node.get("id", "")),
+                    ),
+                )[:node_limit]
+            }
+            nodes = {node_id: node for node_id, node in nodes.items() if node_id in kept_ids}
+            edges = [edge for edge in edges if edge["source"] in nodes and edge["target"] in nodes]
+
+        return {
+            "nodes": list(nodes.values()),
+            "edges": edges,
+            "focus_entities": self._dedupe_strings(focus_entities),
+        }
+
+    def _build_graph_node_detail(
+        self,
+        *,
+        node_id: str,
+        relation_limit: int,
+        paragraph_limit: int,
+        evidence_node_limit: int,
+    ) -> Dict[str, Any]:
+        assert self.metadata_store is not None
+        resolved_name = self._resolve_graph_node_name(node_id)
+        if not resolved_name:
+            return {"success": False, "error": "node_id 不能为空"}
+
+        entity_row = None
+        entity_matches = self.metadata_store.query(
+            """
+            SELECT *
+            FROM entities
+            WHERE (LOWER(TRIM(name)) = LOWER(TRIM(?))
+               OR hash = ?)
+              AND (is_deleted IS NULL OR is_deleted = 0)
+            ORDER BY appearance_count DESC, created_at ASC
+            LIMIT 1
+            """,
+            (resolved_name, resolved_name),
+        )
+        if entity_matches and hasattr(self.metadata_store, "_row_to_dict"):
+            entity_row = self.metadata_store._row_to_dict(entity_matches[0], "entity")
+
+        relation_rows = self._get_related_relation_rows_for_entity(resolved_name, limit=relation_limit)
+        if not relation_rows and entity_row is None:
+            return {"success": False, "error": f"未找到节点: {resolved_name}"}
+
+        relation_hashes = [str(row.get("hash", "") or "").strip() for row in relation_rows if str(row.get("hash", "") or "").strip()]
+        direct_paragraph_rows = self.metadata_store.get_paragraphs_by_entity(resolved_name)
+        relation_paragraph_hashes = self._query_distinct_paragraph_hashes_for_relations(relation_hashes)
+        relation_paragraph_rows = self._load_paragraph_rows(relation_paragraph_hashes)
+        paragraph_rows_map: Dict[str, Dict[str, Any]] = {}
+        for row in direct_paragraph_rows + relation_paragraph_rows:
+            paragraph_hash = str(row.get("hash", "") or "").strip()
+            if paragraph_hash and not bool(row.get("is_deleted", 0)):
+                paragraph_rows_map[paragraph_hash] = row
+        paragraph_rows = list(paragraph_rows_map.values())
+        paragraph_rows.sort(key=lambda row: (float(row.get("updated_at", 0) or 0), float(row.get("created_at", 0) or 0)), reverse=True)
+        paragraph_rows = paragraph_rows[:paragraph_limit]
+
+        relation_summaries = []
+        for row in relation_rows:
+            relation_hash = str(row.get("hash", "") or "").strip()
+            relation_summaries.append(
+                self._build_relation_summary(
+                    row,
+                    paragraph_hashes=self._query_distinct_paragraph_hashes_for_relations([relation_hash]),
+                )
+            )
+
+        paragraph_summaries = [self._build_paragraph_summary(row) for row in paragraph_rows]
+        evidence_graph = self._build_evidence_graph(
+            focus_entities=[resolved_name],
+            relation_rows=relation_rows,
+            paragraph_rows=paragraph_rows,
+            node_limit=evidence_node_limit,
+        )
+
+        return {
+            "success": True,
+            "node": {
+                "id": resolved_name,
+                "type": "entity",
+                "content": resolved_name,
+                "hash": str(entity_row.get("hash", "") or "") if isinstance(entity_row, dict) else "",
+                "appearance_count": int(entity_row.get("appearance_count", 0) or 0) if isinstance(entity_row, dict) else 0,
+            },
+            "relations": relation_summaries,
+            "paragraphs": paragraph_summaries,
+            "evidence_graph": evidence_graph,
+        }
+
+    def _build_graph_edge_detail(
+        self,
+        *,
+        source: str,
+        target: str,
+        paragraph_limit: int,
+        evidence_node_limit: int,
+    ) -> Dict[str, Any]:
+        assert self.metadata_store is not None
+        source_name = self._resolve_graph_node_name(source)
+        target_name = self._resolve_graph_node_name(target)
+        if not source_name or not target_name:
+            return {"success": False, "error": "source/target 不能为空"}
+
+        relation_rows = self.metadata_store.query(
+            """
+            SELECT hash, subject, predicate, object, confidence, created_at, source_paragraph
+            FROM relations
+            WHERE LOWER(TRIM(subject)) = LOWER(TRIM(?))
+              AND LOWER(TRIM(object)) = LOWER(TRIM(?))
+              AND (is_inactive IS NULL OR is_inactive = 0)
+            ORDER BY confidence DESC, created_at DESC
+            """,
+            (source_name, target_name),
+        )
+        if not relation_rows:
+            return {"success": False, "error": f"未找到边: {source_name} -> {target_name}"}
+
+        relation_hashes = [str(row.get("hash", "") or "").strip() for row in relation_rows if str(row.get("hash", "") or "").strip()]
+        paragraph_hashes = self._query_distinct_paragraph_hashes_for_relations(relation_hashes, limit=paragraph_limit)
+        paragraph_rows = self._load_paragraph_rows(paragraph_hashes)
+        relation_summaries = [
+            self._build_relation_summary(
+                row,
+                paragraph_hashes=self._query_distinct_paragraph_hashes_for_relations([str(row.get("hash", "") or "").strip()]),
+            )
+            for row in relation_rows
+        ]
+        paragraph_summaries = [self._build_paragraph_summary(row) for row in paragraph_rows]
+        predicates = self._dedupe_strings(row.get("predicate", "") for row in relation_rows)
+        evidence_graph = self._build_evidence_graph(
+            focus_entities=[source_name, target_name],
+            relation_rows=relation_rows,
+            paragraph_rows=paragraph_rows,
+            node_limit=evidence_node_limit,
+        )
+        return {
+            "success": True,
+            "edge": {
+                "source": source_name,
+                "target": target_name,
+                "weight": float(self.graph_store.get_edge_weight(source_name, target_name)) if self.graph_store is not None else 0.0,
+                "relation_hashes": relation_hashes,
+                "predicates": predicates,
+                "relation_count": len(relation_hashes),
+                "evidence_count": len(paragraph_hashes),
+                "label": self._build_graph_edge_label(predicates),
+            },
+            "relations": relation_summaries,
+            "paragraphs": paragraph_summaries,
+            "evidence_graph": evidence_graph,
         }
 
     def _delete_sources(self, sources: Iterable[Any]) -> Dict[str, Any]:
@@ -2654,6 +5181,86 @@ class SDKMemoryKernel:
             if person_id and person_id in str(item.get("content", "") or ""):
                 filtered.append(item)
         return filtered or hits
+
+    def _filter_active_relation_hits(self, hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if self.metadata_store is None:
+            return hits
+        relation_hashes: List[str] = []
+        paragraph_relation_cache: Dict[str, List[str]] = {}
+        paragraph_hashes: List[str] = []
+        seen_relation_hashes: set[str] = set()
+
+        for item in hits:
+            item_type = str(item.get("type", "") or "").strip()
+            item_hash = str(item.get("hash", "") or "").strip()
+            if item_type == "relation" and item_hash and item_hash not in seen_relation_hashes:
+                seen_relation_hashes.add(item_hash)
+                relation_hashes.append(item_hash)
+                continue
+            if item_type != "paragraph" or not item_hash:
+                continue
+            paragraph_hashes.append(item_hash)
+            linked_relations = self.metadata_store.get_paragraph_relations(item_hash)
+            linked_hashes: List[str] = []
+            for relation in linked_relations:
+                linked_hash = str(relation.get("hash", "") or "").strip()
+                if not linked_hash or linked_hash in seen_relation_hashes:
+                    continue
+                seen_relation_hashes.add(linked_hash)
+                relation_hashes.append(linked_hash)
+                linked_hashes.append(linked_hash)
+            if linked_hashes:
+                paragraph_relation_cache[item_hash] = linked_hashes
+
+        marks_by_paragraph, _ = self._load_paragraph_stale_marks(paragraph_hashes)
+        stale_relation_hashes = self._tokens(
+            mark.get("relation_hash", "")
+            for marks in marks_by_paragraph.values()
+            for mark in marks
+            if isinstance(mark, dict)
+        )
+        for relation_hash in stale_relation_hashes:
+            if relation_hash in seen_relation_hashes:
+                continue
+            seen_relation_hashes.add(relation_hash)
+            relation_hashes.append(relation_hash)
+
+        if not relation_hashes and not marks_by_paragraph:
+            return hits
+
+        status_map = self.metadata_store.get_relation_status_batch(relation_hashes)
+        filtered: List[Dict[str, Any]] = []
+        for item in hits:
+            item_type = str(item.get("type", "") or "").strip()
+            if item_type == "paragraph":
+                paragraph_hash = str(item.get("hash", "") or "").strip()
+                if self._paragraph_hidden_by_stale_marks(
+                    paragraph_hash,
+                    marks_by_paragraph=marks_by_paragraph,
+                    relation_status_map=status_map,
+                ):
+                    continue
+                linked_hashes = paragraph_relation_cache.get(paragraph_hash, [])
+                if not linked_hashes:
+                    filtered.append(item)
+                    continue
+                if any(
+                    not bool((status_map.get(linked_hash) or {}).get("is_inactive"))
+                    for linked_hash in linked_hashes
+                ):
+                    filtered.append(item)
+                continue
+            if item_type != "relation":
+                filtered.append(item)
+                continue
+            hash_value = str(item.get("hash", "") or "").strip()
+            status = status_map.get(hash_value) if isinstance(status_map, dict) else None
+            if status is None:
+                continue
+            if bool(status.get("is_inactive")):
+                continue
+            filtered.append(item)
+        return filtered
 
     def _resolve_relation_hashes(self, target: str) -> List[str]:
         assert self.metadata_store
@@ -3117,6 +5724,87 @@ class SDKMemoryKernel:
             )
         return cursor.fetchone() is not None
 
+    def _build_delete_preview_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        item_type = str(item.get("item_type", "") or "").strip()
+        item_hash = str(item.get("item_hash", "") or "").strip()
+        item_key = str(item.get("item_key", "") or item_hash).strip()
+        payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+        preview = {
+            "item_type": item_type,
+            "item_hash": item_hash,
+            "item_key": item_key,
+        }
+        if item_type == "entity":
+            entity = payload.get("entity") if isinstance(payload.get("entity"), dict) else {}
+            name = str(entity.get("name", "") or item_key).strip()
+            preview["label"] = name
+            preview["preview"] = name
+        elif item_type == "relation":
+            relation = payload.get("relation") if isinstance(payload.get("relation"), dict) else {}
+            subject = str(relation.get("subject", "") or "").strip()
+            predicate = str(relation.get("predicate", "") or "").strip()
+            obj = str(relation.get("object", "") or "").strip()
+            text = self._format_relation_text(subject, predicate, obj)
+            preview["label"] = text or item_key
+            preview["preview"] = text or item_key
+        elif item_type == "paragraph":
+            paragraph = payload.get("paragraph") if isinstance(payload.get("paragraph"), dict) else {}
+            content = str(paragraph.get("content", "") or "").strip()
+            source = str(paragraph.get("source", "") or "").strip()
+            preview["label"] = source or item_key
+            preview["preview"] = self._trim_text(content)
+            preview["source"] = source
+        return preview
+
+    def _build_standard_delete_result(
+        self,
+        *,
+        mode: str,
+        operation_id: str = "",
+        counts: Optional[Dict[str, Any]] = None,
+        sources: Optional[Sequence[str]] = None,
+        deleted_entity_count: int = 0,
+        deleted_relation_count: int = 0,
+        deleted_paragraph_count: int = 0,
+        deleted_source_count: int = 0,
+        deleted_vector_count: int = 0,
+        requested_source_count: int = 0,
+        matched_source_count: int = 0,
+        error: str = "",
+    ) -> Dict[str, Any]:
+        normalized_counts = dict(counts or {})
+        normalized_counts.setdefault("entities", int(normalized_counts.get("entities", 0) or 0))
+        normalized_counts.setdefault("relations", int(normalized_counts.get("relations", 0) or 0))
+        normalized_counts.setdefault("paragraphs", int(normalized_counts.get("paragraphs", 0) or 0))
+        normalized_counts.setdefault("sources", int(normalized_counts.get("sources", 0) or 0))
+        if requested_source_count:
+            normalized_counts["requested_sources"] = int(requested_source_count or 0)
+        if matched_source_count:
+            normalized_counts["matched_sources"] = int(matched_source_count or 0)
+
+        deleted_count = (
+            int(deleted_entity_count or 0)
+            + int(deleted_relation_count or 0)
+            + int(deleted_paragraph_count or 0)
+            + int(deleted_source_count or 0)
+        )
+        return {
+            "success": bool(not error and deleted_count > 0),
+            "mode": str(mode or "").strip().lower(),
+            "operation_id": str(operation_id or "").strip(),
+            "counts": normalized_counts,
+            "sources": [str(item or "").strip() for item in (sources or []) if str(item or "").strip()],
+            "deleted_count": deleted_count,
+            "deleted_entity_count": int(deleted_entity_count or 0),
+            "deleted_relation_count": int(deleted_relation_count or 0),
+            "deleted_paragraph_count": int(deleted_paragraph_count or 0),
+            "deleted_source_count": int(deleted_source_count or 0),
+            "deleted_vector_count": int(deleted_vector_count or 0),
+            "requested_source_count": int(requested_source_count or 0),
+            "matched_source_count": int(matched_source_count or 0),
+            "error": str(error or ""),
+        }
+
     async def _build_delete_plan(self, *, mode: str, selector: Any) -> Dict[str, Any]:
         assert self.metadata_store
         act_mode = str(mode or "").strip().lower()
@@ -3132,29 +5820,73 @@ class SDKMemoryKernel:
             "sources": [],
             "matched_sources": [],
         }
+        seen_items: set[tuple[str, str]] = set()
+        relation_hashes: List[str] = []
+        paragraph_hashes: List[str] = []
+        entity_hashes: List[str] = []
+        paragraph_relation_candidates: List[str] = []
+
+        def append_item(snapshot: Optional[Dict[str, Any]]) -> None:
+            if not isinstance(snapshot, dict):
+                return
+            item_type = str(snapshot.get("item_type", "") or "").strip()
+            item_hash = str(snapshot.get("item_hash", "") or snapshot.get("item_key", "") or "").strip()
+            if not item_type or not item_hash:
+                return
+            key = (item_type, item_hash)
+            if key in seen_items:
+                return
+            seen_items.add(key)
+            items.append(snapshot)
+
+        def append_relation_hash(hash_value: str) -> None:
+            token = str(hash_value or "").strip()
+            if not token or token in relation_hashes:
+                return
+            row = self.metadata_store.get_relation(token)
+            if row is None:
+                return
+            relation_hashes.append(token)
+            append_item(self._snapshot_relation_item(token))
+            vector_ids.append(token)
+
+        def append_paragraph_row(row: Optional[Dict[str, Any]]) -> None:
+            if not isinstance(row, dict):
+                return
+            paragraph_hash = str(row.get("hash", "") or "").strip()
+            if not paragraph_hash or paragraph_hash in paragraph_hashes or bool(row.get("is_deleted", 0)):
+                return
+            paragraph_hashes.append(paragraph_hash)
+            snapshot = self._snapshot_paragraph_item(paragraph_hash)
+            append_item(snapshot)
+            vector_ids.append(paragraph_hash)
+            paragraph = (snapshot or {}).get("payload", {}).get("paragraph") if isinstance((snapshot or {}).get("payload"), dict) else {}
+            source = str((paragraph or {}).get("source", "") or "").strip()
+            if source:
+                sources.append(source)
+            paragraph_relation_candidates.extend(self._tokens(((snapshot or {}).get("payload") or {}).get("relation_hashes")))
+
+        def append_entity_row(row: Optional[Dict[str, Any]]) -> None:
+            if not isinstance(row, dict):
+                return
+            entity_hash = str(row.get("hash", "") or "").strip()
+            if not entity_hash or entity_hash in entity_hashes or bool(row.get("is_deleted", 0)):
+                return
+            entity_hashes.append(entity_hash)
+            append_item(self._snapshot_entity_item(entity_hash))
+            vector_ids.append(entity_hash)
 
         if act_mode == "relation":
-            relation_rows = [row for row in (self.metadata_store.get_relation(hash_value) for hash_value in self._resolve_relation_hashes(str(normalized_selector.get("query", "") or ""))) if row]
-            if normalized_selector.get("hashes"):
-                relation_rows = [
-                    row
-                    for hash_value in self._tokens(normalized_selector.get("hashes"))
-                    for row in [self.metadata_store.get_relation(hash_value)]
-                    if row is not None
-                ]
-            dedup_hashes: List[str] = []
-            seen = set()
-            for row in relation_rows:
-                hash_value = str(row.get("hash", "") or "").strip()
-                if hash_value and hash_value not in seen:
-                    seen.add(hash_value)
-                    dedup_hashes.append(hash_value)
-                    snap = self._snapshot_relation_item(hash_value)
-                    if snap:
-                        items.append(snap)
-                        vector_ids.append(hash_value)
-            counts["relations"] = len(dedup_hashes)
-            target_hashes["relations"] = dedup_hashes
+            direct_hashes = self._merge_tokens(
+                normalized_selector.get("hashes"),
+                normalized_selector.get("items"),
+                [normalized_selector.get("hash")],
+            )
+            query_hashes = self._resolve_relation_hashes(str(normalized_selector.get("query", "") or ""))
+            for hash_value in direct_hashes or query_hashes:
+                append_relation_hash(hash_value)
+            counts["relations"] = len(relation_hashes)
+            target_hashes["relations"] = list(relation_hashes)
 
         elif act_mode in {"paragraph", "source"}:
             paragraph_rows: List[Dict[str, Any]] = []
@@ -3183,68 +5915,92 @@ class SDKMemoryKernel:
                 counts["matched_sources"] = len(matched_source_tokens)
             else:
                 paragraph_rows = self._resolve_paragraph_targets(normalized_selector, include_deleted=False)
-            paragraph_hashes = self._tokens([row.get("hash", "") for row in paragraph_rows])
-            target_hashes["paragraphs"] = paragraph_hashes
+            for row in paragraph_rows:
+                append_paragraph_row(row)
+            target_hashes["paragraphs"] = list(paragraph_hashes)
             counts["paragraphs"] = len(paragraph_hashes)
-            for hash_value in paragraph_hashes:
-                snap = self._snapshot_paragraph_item(hash_value)
-                if snap:
-                    items.append(snap)
-                    vector_ids.append(hash_value)
-                    paragraph = snap["payload"].get("paragraph") or {}
-                    source = str(paragraph.get("source", "") or "").strip()
-                    if source:
-                        sources.append(source)
 
-            orphan_relations: List[str] = []
-            for item in items:
-                if item.get("item_type") != "paragraph":
-                    continue
-                for relation_hash in self._tokens((item.get("payload") or {}).get("relation_hashes")):
-                    if relation_hash in orphan_relations:
-                        continue
-                    if not self._relation_has_remaining_paragraphs(relation_hash, paragraph_hashes):
-                        orphan_relations.append(relation_hash)
-            for relation_hash in orphan_relations:
-                snap = self._snapshot_relation_item(relation_hash)
-                if snap:
-                    items.append(snap)
-                    vector_ids.append(relation_hash)
-            target_hashes["relations"] = orphan_relations
-            counts["relations"] = len(orphan_relations)
+            for relation_hash in self._tokens(paragraph_relation_candidates):
+                if not self._relation_has_remaining_paragraphs(relation_hash, paragraph_hashes):
+                    append_relation_hash(relation_hash)
+            target_hashes["relations"] = list(relation_hashes)
+            counts["relations"] = len(relation_hashes)
 
         elif act_mode == "entity":
             entity_rows = self._resolve_entity_targets(normalized_selector, include_deleted=False)
-            entity_hashes = self._tokens([row.get("hash", "") for row in entity_rows])
-            target_hashes["entities"] = entity_hashes
+            for row in entity_rows:
+                append_entity_row(row)
+            target_hashes["entities"] = list(entity_hashes)
             counts["entities"] = len(entity_hashes)
             entity_names = [str(row.get("name", "") or "").strip() for row in entity_rows if str(row.get("name", "") or "").strip()]
-            for hash_value in entity_hashes:
-                snap = self._snapshot_entity_item(hash_value)
-                if snap:
-                    items.append(snap)
-                    vector_ids.append(hash_value)
-            relation_hashes: List[str] = []
             for entity_name in entity_names:
                 for relation in self.metadata_store.get_relations(subject=entity_name) + self.metadata_store.get_relations(object=entity_name):
-                    hash_value = str(relation.get("hash", "") or "").strip()
-                    if hash_value and hash_value not in relation_hashes:
-                        relation_hashes.append(hash_value)
-            for relation_hash in relation_hashes:
-                snap = self._snapshot_relation_item(relation_hash)
-                if snap:
-                    items.append(snap)
-                    vector_ids.append(relation_hash)
-            target_hashes["relations"] = relation_hashes
+                    append_relation_hash(str(relation.get("hash", "") or "").strip())
+            target_hashes["relations"] = list(relation_hashes)
+            counts["relations"] = len(relation_hashes)
+        elif act_mode == "mixed":
+            source_tokens = self._merge_tokens(normalized_selector.get("sources"), [normalized_selector.get("source")])
+            target_hashes["sources"] = list(source_tokens)
+            counts["requested_sources"] = len(source_tokens)
+            matched_source_tokens: List[str] = []
+
+            for row in self._resolve_entity_targets({"hashes": normalized_selector.get("entity_hashes")}, include_deleted=False):
+                append_entity_row(row)
+            target_hashes["entities"] = list(entity_hashes)
+            counts["entities"] = len(entity_hashes)
+
+            for row in self._resolve_paragraph_targets({"hashes": normalized_selector.get("paragraph_hashes")}, include_deleted=False):
+                append_paragraph_row(row)
+
+            for source in source_tokens:
+                source_rows = self.metadata_store.query(
+                    """
+                    SELECT *
+                    FROM paragraphs
+                    WHERE source = ?
+                      AND (is_deleted IS NULL OR is_deleted = 0)
+                    ORDER BY created_at ASC
+                    """,
+                    (source,),
+                )
+                if source_rows:
+                    matched_source_tokens.append(source)
+                    sources.append(source)
+                    for row in source_rows:
+                        append_paragraph_row(row)
+
+            target_hashes["paragraphs"] = list(paragraph_hashes)
+            counts["paragraphs"] = len(paragraph_hashes)
+            target_hashes["matched_sources"] = matched_source_tokens
+            counts["sources"] = len(matched_source_tokens)
+            counts["matched_sources"] = len(matched_source_tokens)
+
+            for hash_value in self._tokens(normalized_selector.get("relation_hashes")):
+                append_relation_hash(hash_value)
+
+            entity_names = [
+                str(row.get("name", "") or "").strip()
+                for row in self._resolve_entity_targets({"hashes": entity_hashes}, include_deleted=False)
+                if str(row.get("name", "") or "").strip()
+            ]
+            for entity_name in entity_names:
+                for relation in self.metadata_store.get_relations(subject=entity_name) + self.metadata_store.get_relations(object=entity_name):
+                    append_relation_hash(str(relation.get("hash", "") or "").strip())
+
+            for relation_hash in self._tokens(paragraph_relation_candidates):
+                if not self._relation_has_remaining_paragraphs(relation_hash, paragraph_hashes):
+                    append_relation_hash(relation_hash)
+
+            target_hashes["relations"] = list(relation_hashes)
             counts["relations"] = len(relation_hashes)
         else:
             return {"success": False, "error": f"不支持的 delete mode: {act_mode}"}
 
         sources = self._tokens(sources)
         vector_ids = self._tokens(vector_ids)
-        primary_count = counts.get(f"{act_mode}s", 0) if act_mode != "source" else counts.get("matched_sources", 0)
+        primary_count = counts.get(f"{act_mode}s", 0) if act_mode not in {"source", "mixed"} else counts.get("matched_sources", 0)
         success = (
-            primary_count > 0 or counts.get("paragraphs", 0) > 0 or counts.get("relations", 0) > 0
+            primary_count > 0 or counts.get("paragraphs", 0) > 0 or counts.get("relations", 0) > 0 or counts.get("entities", 0) > 0
             if act_mode != "source"
             else (counts.get("matched_sources", 0) > 0 and counts.get("paragraphs", 0) > 0)
         )
@@ -3266,13 +6022,7 @@ class SDKMemoryKernel:
         plan = await self._build_delete_plan(mode=mode, selector=selector)
         if not plan.get("success", False):
             return {"success": False, "error": plan.get("error", "未命中可删除内容")}
-        preview_items = [
-            {
-                "item_type": str(item.get("item_type", "") or ""),
-                "item_hash": str(item.get("item_hash", "") or ""),
-            }
-            for item in plan.get("items", [])[:100]
-        ]
+        preview_items = [self._build_delete_preview_item(item) for item in plan.get("items", [])[:100]]
         return {
             "success": True,
             "mode": plan.get("mode"),
@@ -3357,38 +6107,24 @@ class SDKMemoryKernel:
                 self.metadata_store._enqueue_episode_source_rebuilds(list(plan.get("sources") or []), reason="delete_admin_execute")
             self._rebuild_graph_from_metadata()
             self._persist()
-            deleted_count = (
-                len(paragraph_hashes)
-                if act_mode == "source"
-                else len(paragraph_hashes)
-                if act_mode == "paragraph"
-                else len(entity_hashes)
-                if act_mode == "entity"
-                else len(relation_hashes)
+            return self._build_standard_delete_result(
+                mode=act_mode,
+                operation_id=str(operation.get("operation_id", "") or ""),
+                counts=plan.get("counts", {}),
+                sources=plan.get("sources", []),
+                deleted_entity_count=len(entity_hashes),
+                deleted_relation_count=len(relation_hashes),
+                deleted_paragraph_count=len(paragraph_hashes),
+                deleted_source_count=len(matched_source_tokens),
+                deleted_vector_count=int(deleted_vectors or 0),
+                requested_source_count=len(requested_source_tokens),
+                matched_source_count=len(matched_source_tokens),
+                error="" if (entity_hashes or relation_hashes or paragraph_hashes or matched_source_tokens) else "未命中可删除内容",
             )
-            success = bool(deleted_count > 0)
-            result = {
-                "success": success,
-                "mode": act_mode,
-                "operation_id": operation.get("operation_id", ""),
-                "counts": plan.get("counts", {}),
-                "sources": plan.get("sources", []),
-                "deleted_count": deleted_count,
-                "deleted_vector_count": int(deleted_vectors or 0),
-                "deleted_relation_count": len(relation_hashes),
-            }
-            if act_mode == "source":
-                result["requested_source_count"] = len(requested_source_tokens)
-                result["matched_source_count"] = len(matched_source_tokens)
-                result["deleted_source_count"] = len(matched_source_tokens)
-                result["deleted_paragraph_count"] = len(paragraph_hashes)
-                if not success:
-                    result["error"] = "未命中可删除内容"
-            return result
         except Exception as exc:
             conn.rollback()
             logger.warning(f"delete_admin execute 失败: {exc}")
-            return {"success": False, "error": str(exc)}
+            return self._build_standard_delete_result(mode=act_mode, error=str(exc))
 
     async def _restore_delete_action(
         self,

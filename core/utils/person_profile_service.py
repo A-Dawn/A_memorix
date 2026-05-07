@@ -15,6 +15,7 @@ from sqlmodel import select
 from src.common.logger import get_logger
 from src.common.database.database import get_db_session
 from src.common.database.database_model import PersonInfo
+from src.config.config import global_config
 
 from ..embedding import EmbeddingAPIAdapter
 from ..retrieval import (
@@ -285,11 +286,11 @@ class PersonProfileService:
     def _collect_relation_evidence(self, aliases: List[str], limit: int = 30) -> List[Dict[str, Any]]:
         relation_by_hash: Dict[str, Dict[str, Any]] = {}
         for alias in aliases:
-            for rel in self.metadata_store.get_relations(subject=alias):
+            for rel in self.metadata_store.get_relations(subject=alias, include_inactive=False):
                 h = str(rel.get("hash", ""))
                 if h:
                     relation_by_hash[h] = rel
-            for rel in self.metadata_store.get_relations(object=alias):
+            for rel in self.metadata_store.get_relations(object=alias, include_inactive=False):
                 h = str(rel.get("hash", ""))
                 if h:
                     relation_by_hash[h] = rel
@@ -342,7 +343,53 @@ class PersonProfileService:
                     "metadata": {},
                 }
             )
-        return evidence
+        return self._filter_stale_paragraph_evidence(evidence)
+
+    def _filter_stale_paragraph_evidence(
+        self,
+        evidence: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        memory_cfg = global_config.a_memorix.integration
+        if not bool(getattr(memory_cfg, "feedback_correction_paragraph_hard_filter_enabled", True)):
+            return evidence
+        paragraph_hashes = [
+            str(item.get("hash", "") or "").strip()
+            for item in evidence
+            if str(item.get("type", "") or "").strip() == "paragraph" and str(item.get("hash", "") or "").strip()
+        ]
+        if not paragraph_hashes:
+            return evidence
+
+        marks_by_paragraph = self.metadata_store.get_paragraph_stale_relation_marks_batch(paragraph_hashes)
+        relation_hashes: List[str] = []
+        seen = set()
+        for marks in marks_by_paragraph.values():
+            for mark in marks:
+                relation_hash = str(mark.get("relation_hash", "") or "").strip()
+                if not relation_hash or relation_hash in seen:
+                    continue
+                seen.add(relation_hash)
+                relation_hashes.append(relation_hash)
+        status_map = self.metadata_store.get_relation_status_batch(relation_hashes) if relation_hashes else {}
+
+        filtered: List[Dict[str, Any]] = []
+        for item in evidence:
+            item_type = str(item.get("type", "") or "").strip()
+            item_hash = str(item.get("hash", "") or "").strip()
+            if item_type != "paragraph" or not item_hash:
+                filtered.append(item)
+                continue
+            marks = marks_by_paragraph.get(item_hash, [])
+            should_hide = any(
+                status_map.get(str(mark.get("relation_hash", "") or "").strip()) is None
+                or bool((status_map.get(str(mark.get("relation_hash", "") or "").strip()) or {}).get("is_inactive"))
+                for mark in marks
+                if str(mark.get("relation_hash", "") or "").strip()
+            )
+            if should_hide:
+                continue
+            filtered.append(item)
+        return filtered
 
     async def _collect_vector_evidence(
         self,
@@ -373,7 +420,7 @@ class PersonProfileService:
                             "metadata": {},
                         }
                     )
-            return fallback[:top_k]
+            return self._filter_stale_paragraph_evidence(fallback[:top_k])
 
         per_alias_top_k = max(2, int(top_k / max(1, len(alias_queries))))
         seen_hash = set()
@@ -406,7 +453,7 @@ class PersonProfileService:
                     }
                 )
         evidence.sort(key=lambda x: x.get("score", 0.0), reverse=True)
-        return evidence[:top_k]
+        return self._filter_stale_paragraph_evidence(evidence[:top_k])
 
     def _build_profile_text(
         self,

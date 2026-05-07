@@ -33,11 +33,16 @@ from typing import Any, Dict, Generator, Iterable, List, Optional, Sequence, Tup
 import numpy as np
 import tomlkit
 
+from _bootstrap import (
+    DEFAULT_CONFIG_PATH as BOOTSTRAP_DEFAULT_CONFIG_PATH,
+    DEFAULT_DATA_DIR as BOOTSTRAP_DEFAULT_DATA_DIR,
+    DEFAULT_DB_PATH as BOOTSTRAP_DEFAULT_DB_PATH,
+    PLUGIN_ROOT,
+    PROJECT_ROOT,
+    SRC_ROOT,
+    resolve_repo_path,
+)
 
-CURRENT_DIR = Path(__file__).resolve().parent
-PLUGIN_ROOT = CURRENT_DIR.parent
-WORKSPACE_ROOT = PLUGIN_ROOT.parent
-MAIBOT_ROOT = WORKSPACE_ROOT / "MaiBot"
 RUNTIME_CORE_PACKAGE = "_a_memorix_runtime_core"
 
 VectorStore = None
@@ -59,7 +64,7 @@ def _create_bootstrap_logger():
     if not fallback.handlers:
         fallback.addHandler(logging.NullHandler())
     try:
-        for path in (WORKSPACE_ROOT, MAIBOT_ROOT, PLUGIN_ROOT):
+        for path in (SRC_ROOT, PROJECT_ROOT, PLUGIN_ROOT):
             path_str = str(path)
             if path_str not in sys.path:
                 sys.path.insert(0, path_str)
@@ -74,7 +79,7 @@ logger = _create_bootstrap_logger()
 
 
 def _ensure_import_paths() -> None:
-    for path in (WORKSPACE_ROOT, MAIBOT_ROOT, PLUGIN_ROOT):
+    for path in (SRC_ROOT, PROJECT_ROOT, PLUGIN_ROOT):
         path_str = str(path)
         if path_str not in sys.path:
             sys.path.insert(0, path_str)
@@ -195,9 +200,9 @@ def _load_embedding_adapter_factory() -> None:
     create_embedding_api_adapter = api_adapter_module.create_embedding_api_adapter
 
 
-DEFAULT_SOURCE_DB = MAIBOT_ROOT / "data" / "MaiBot.db"
-DEFAULT_TARGET_DATA_DIR = PLUGIN_ROOT / "data"
-DEFAULT_CONFIG_PATH = PLUGIN_ROOT / "config.toml"
+DEFAULT_SOURCE_DB = BOOTSTRAP_DEFAULT_DB_PATH
+DEFAULT_TARGET_DATA_DIR = BOOTSTRAP_DEFAULT_DATA_DIR
+DEFAULT_CONFIG_PATH = BOOTSTRAP_DEFAULT_CONFIG_PATH
 
 MIGRATION_STATE_DIRNAME = "migration_state"
 STATE_FILENAME = "chat_history_resume.json"
@@ -359,18 +364,42 @@ def _extract_schema_defaults(schema_obj: Dict[str, Any]) -> Dict[str, Any]:
     return defaults
 
 
-def _load_manifest_defaults() -> Dict[str, Any]:
-    manifest_path = PLUGIN_ROOT / "_manifest.json"
-    if not manifest_path.exists():
+def _set_nested_dict_value(target: Dict[str, Any], dotted_key: str, value: Dict[str, Any]) -> None:
+    parts = [part for part in str(dotted_key or "").split(".") if part]
+    if not parts:
+        return
+    current = target
+    for part in parts[:-1]:
+        next_value = current.get(part)
+        if not isinstance(next_value, dict):
+            next_value = {}
+            current[part] = next_value
+        current = next_value
+    current[parts[-1]] = value
+
+
+def _load_schema_defaults() -> Dict[str, Any]:
+    schema_path = PLUGIN_ROOT / "config_schema.json"
+    if not schema_path.exists():
         return {}
     try:
-        with open(manifest_path, "r", encoding="utf-8") as f:
+        with open(schema_path, "r", encoding="utf-8") as f:
             payload = json.load(f)
-        schema = payload.get("config_schema")
+        schema = payload.get("sections")
         if isinstance(schema, dict):
-            return _extract_schema_defaults(schema)
+            defaults: Dict[str, Any] = {}
+            for section_name, section_spec in schema.items():
+                if not isinstance(section_spec, dict):
+                    continue
+                fields = section_spec.get("fields")
+                if not isinstance(fields, dict):
+                    continue
+                section_defaults = _extract_schema_defaults(fields)
+                if section_defaults:
+                    _set_nested_dict_value(defaults, str(section_name), section_defaults)
+            return defaults
     except Exception as e:
-        logger.warning(f"读取 manifest 默认配置失败，已回退空配置: {e}")
+        logger.warning(f"读取配置 schema 默认值失败，已回退空配置: {e}")
     return {}
 
 
@@ -600,8 +629,8 @@ class SourceDB:
 class MigrationRunner:
     def __init__(self, args: argparse.Namespace):
         self.args = args
-        self.source_db_path = Path(args.source_db).resolve()
-        self.target_data_dir = Path(args.target_data_dir).resolve()
+        self.source_db_path = resolve_repo_path(args.source_db, fallback=DEFAULT_SOURCE_DB)
+        self.target_data_dir = resolve_repo_path(args.target_data_dir, fallback=DEFAULT_TARGET_DATA_DIR)
         self.state_file = _state_path(self.target_data_dir)
         self.bad_rows_file = _bad_rows_path(self.target_data_dir)
         self.report_file = _report_path(self.target_data_dir)
@@ -715,7 +744,7 @@ class MigrationRunner:
             self.bad_rows_file.unlink()
 
     def _load_plugin_config(self) -> None:
-        merged = _load_manifest_defaults()
+        merged = _load_schema_defaults()
 
         config_path = DEFAULT_CONFIG_PATH
         if config_path.exists():
@@ -725,7 +754,7 @@ class MigrationRunner:
                 if isinstance(raw, dict):
                     merged = _deep_merge_dict(merged, dict(raw))
             except Exception as e:
-                logger.warning(f"读取插件配置失败，继续使用默认配置: {e}")
+                logger.warning(f"读取 A_Memorix 配置失败，继续使用默认配置: {e}")
 
         self.plugin_config = merged
 
@@ -1657,7 +1686,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--target-data-dir",
         default=str(DEFAULT_TARGET_DATA_DIR),
-        help="A_memorix 数据目录（默认 plugins/A_memorix/data）",
+        help="A_memorix 数据目录（默认 data/plugins/a-dawn.a-memorix）",
     )
 
     resume_group = parser.add_mutually_exclusive_group()

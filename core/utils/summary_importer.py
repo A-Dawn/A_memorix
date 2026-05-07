@@ -5,12 +5,13 @@
 导入到 A_memorix 的存储组件中。
 """
 
-import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
 import json
 import re
+import time
 import traceback
-from typing import List, Dict, Any, Tuple, Optional
-from pathlib import Path
 
 from src.common.logger import get_logger
 from src.services import llm_service as llm_api
@@ -54,6 +55,63 @@ SUMMARY_PROMPT_TEMPLATE = """
 
 注意：总结应具有叙事性，能够作为长程记忆的一部分。直接使用实体的实际名称，不要使用 e1/e2 等代号。
 """
+
+
+def _normalize_entity_items(raw_entities: Any) -> List[str]:
+    if not isinstance(raw_entities, list):
+        return []
+    entities: List[str] = []
+    seen = set()
+    for item in raw_entities:
+        if isinstance(item, str):
+            name = item.strip()
+        elif isinstance(item, dict):
+            name = str(item.get("name") or item.get("label") or item.get("entity") or "").strip()
+        else:
+            name = ""
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        entities.append(name)
+    return entities
+
+
+def _normalize_relation_items(raw_relations: Any) -> List[Dict[str, str]]:
+    if not isinstance(raw_relations, list):
+        return []
+    relations: List[Dict[str, str]] = []
+    for item in raw_relations:
+        if not isinstance(item, dict):
+            continue
+        subject = str(item.get("subject", "") or "").strip()
+        predicate = str(item.get("predicate", "") or "").strip()
+        obj = str(item.get("object", "") or "").strip()
+        if not (subject and predicate and obj):
+            continue
+        relations.append({"subject": subject, "predicate": predicate, "object": obj})
+    return relations
+
+
+def _message_timestamp(message: Any) -> Optional[float]:
+    for attr_name in ("timestamp", "time"):
+        value = getattr(message, attr_name, None)
+        if value is None:
+            continue
+        timestamp_func = getattr(value, "timestamp", None)
+        if callable(timestamp_func):
+            try:
+                return float(timestamp_func())
+            except Exception:
+                continue
+        try:
+            return float(value)
+        except Exception:
+            continue
+    return None
+
 
 class SummaryImporter:
     """总结并导入知识的工具类"""
@@ -135,7 +193,9 @@ class SummaryImporter:
         if not available_tasks:
             return None
 
-        raw_cfg = self.plugin_config.get("summarization", {}).get("model_name", "auto")
+        # vNext 要求该字段为 List[str]；当配置缺失时回退到 ["auto"]，
+        # 避免默认值本身触发类型校验异常。
+        raw_cfg = self.plugin_config.get("summarization", {}).get("model_name", ["auto"])
         selectors = self._normalize_summary_model_selectors(raw_cfg)
         default_task_name, default_task_cfg = self._pick_default_summary_task(available_tasks)
 
@@ -222,7 +282,9 @@ class SummaryImporter:
         self,
         stream_id: str,
         context_length: Optional[int] = None,
-        include_personality: Optional[bool] = None
+        include_personality: Optional[bool] = None,
+        time_end: Optional[float] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> Tuple[bool, str]:
         """
         从指定的聊天流中提取记录并执行总结导入
@@ -231,6 +293,7 @@ class SummaryImporter:
             stream_id: 聊天流 ID
             context_length: 总结的历史消息条数
             include_personality: 是否包含人设
+            time_end: 用于截取聊天记录的时间上界（闭区间）
 
         Returns:
             Tuple[bool, str]: (是否成功, 结果消息)
@@ -248,12 +311,13 @@ class SummaryImporter:
                 include_personality = self.plugin_config.get("summarization", {}).get("include_personality", True)
 
             # 2. 获取历史消息
-            # 获取当前时间之前的消息
-            now = time.time()
-            messages = message_api.get_messages_before_time_in_chat(
+            query_time_end = time.time() if time_end is None else float(time_end)
+            messages = message_api.get_messages_by_time_in_chat(
                 chat_id=stream_id,
-                timestamp=now,
-                limit=context_length
+                start_time=0.0,
+                end_time=query_time_end,
+                limit=context_length,
+                limit_mode="latest",
             )
 
             if not messages:
@@ -280,15 +344,22 @@ class SummaryImporter:
             model_config_to_use = self._resolve_summary_model_config()
             if model_config_to_use is None:
                 return False, "未找到可用的总结模型配置"
+            task_name_to_use = llm_api.resolve_task_name_from_model_config(model_config_to_use)
 
             logger.info(f"正在为流 {stream_id} 执行总结，消息条数: {len(messages)}")
             logger.info(f"总结模型候选列表: {model_config_to_use.model_list}")
 
-            success, response, _, _ = await llm_api.generate_with_model(
-                prompt=prompt,
-                model_config=model_config_to_use,
-                request_type="A_Memorix.ChatSummarization"
+            result = await llm_api.generate(
+                llm_api.LLMServiceRequest(
+                    task_name=task_name_to_use,
+                    request_type="A_Memorix.ChatSummarization",
+                    prompt=prompt,
+                    temperature=getattr(model_config_to_use, "temperature", None),
+                    max_tokens=getattr(model_config_to_use, "max_tokens", None),
+                )
             )
+            success = bool(result.success)
+            response = str(result.completion.response or "")
 
             if not success or not response:
                 return False, "LLM 生成总结失败"
@@ -298,14 +369,12 @@ class SummaryImporter:
             if not data or "summary" not in data:
                 return False, "解析 LLM 响应失败或总结为空"
 
-            summary_text = data["summary"]
-            entities = data.get("entities", [])
-            relations = data.get("relations", [])
-            msg_times = [
-                float(getattr(getattr(msg, "timestamp", None), "timestamp", lambda: 0.0)())
-                for msg in messages
-                if getattr(msg, "time", None) is not None
-            ]
+            summary_text = str(data["summary"] or "").strip()
+            if not summary_text:
+                return False, "解析 LLM 响应失败或总结为空"
+            entities = _normalize_entity_items(data.get("entities"))
+            relations = _normalize_relation_items(data.get("relations"))
+            msg_times = [timestamp for msg in messages if (timestamp := _message_timestamp(msg)) is not None]
             time_meta = {}
             if msg_times:
                 time_meta = {
@@ -316,7 +385,14 @@ class SummaryImporter:
                 }
 
             # 6. 执行导入
-            await self._execute_import(summary_text, entities, relations, stream_id, time_meta=time_meta)
+            await self._execute_import(
+                summary_text,
+                entities,
+                relations,
+                stream_id,
+                time_meta=time_meta,
+                metadata=metadata,
+            )
 
             # 7. 持久化
             self.vector_store.save()
@@ -382,6 +458,7 @@ class SummaryImporter:
         relations: List[Dict[str, str]],
         stream_id: str,
         time_meta: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ):
         """将数据写入存储"""
         # 获取默认知识类型
@@ -396,6 +473,7 @@ class SummaryImporter:
         hash_value = self.metadata_store.add_paragraph(
             content=summary,
             source=f"chat_summary:{stream_id}",
+            metadata=metadata,
             knowledge_type=knowledge_type.value,
             time_meta=time_meta,
         )
@@ -432,8 +510,8 @@ class SummaryImporter:
         if not isinstance(rv_cfg, dict):
             rv_cfg = {}
         write_vector = bool(rv_cfg.get("enabled", False)) and bool(rv_cfg.get("write_on_import", True))
-        for rel in relations:
-            s, p, o = rel.get("subject"), rel.get("predicate"), rel.get("object")
+        for rel in _normalize_relation_items(relations):
+            s, p, o = rel["subject"], rel["predicate"], rel["object"]
             if all([s, p, o]):
                 if self.relation_write_service is not None:
                     await self.relation_write_service.upsert_relation_with_vector(

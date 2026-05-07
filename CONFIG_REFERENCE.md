@@ -1,21 +1,23 @@
 # A_Memorix 配置参考 (v2.0.0)
 
-本文档对应当前仓库代码（`__version__ = 2.0.0`、`SCHEMA_VERSION = 9`）。
+本文档对应当前仓库代码（`__version__ = 2.0.0`、`SCHEMA_VERSION = 10`）。
 
 说明：
 
 - 本文只覆盖 **当前运行时实际读取** 的配置键。
+- 默认配置文件路径为 `config/a_memorix.toml`。
 - 旧版 `/query`、`/memory`、`/visualize` 命令体系相关配置，不再作为主路径说明。
 - 未配置的键会回退到代码默认值。
+- 长期记忆控制台已可视化高频常用字段；未展示的长尾高级项仍然有效，请通过“源码模式 / 原始 TOML”编辑。
 
-## 最小可用配置
+## 常用完整配置
 
 ```toml
 [plugin]
 enabled = true
 
 [storage]
-data_dir = "./data"
+data_dir = "data/a-memorix"
 
 [embedding]
 model_name = "auto"
@@ -49,45 +51,95 @@ enable_parallel = true
 
 [retrieval.sparse]
 enabled = true
+backend = "fts5"
+mode = "auto"
+tokenizer_mode = "jieba"
+candidate_k = 80
+relation_candidate_k = 60
+
+[threshold]
+min_threshold = 0.3
+max_threshold = 0.95
+percentile = 75.0
+min_results = 3
+enable_auto_adjust = true
+
+[filter]
+enabled = true
+mode = "blacklist"
+chats = []
 
 [episode]
 enabled = true
 generation_enabled = true
 pending_batch_size = 20
 pending_max_retry = 3
+max_paragraphs_per_call = 20
+max_chars_per_call = 6000
+source_time_window_hours = 24
+segmentation_model = "auto"
 
 [person_profile]
 enabled = true
+refresh_interval_minutes = 30
+active_window_hours = 72
+max_refresh_per_cycle = 50
+top_k_evidence = 12
 
 [memory]
 enabled = true
 half_life_hours = 24.0
 prune_threshold = 0.1
+freeze_duration_hours = 24.0
 
 [advanced]
 enable_auto_save = true
 auto_save_interval_minutes = 5
+debug = false
 
 [web.import]
 enabled = true
+max_queue_size = 20
+max_files_per_task = 200
+max_file_size_mb = 20
+max_paste_chars = 200000
+default_file_concurrency = 2
+default_chunk_concurrency = 4
 
 [web.tuning]
 enabled = true
+max_queue_size = 8
+poll_interval_ms = 1200
+default_intensity = "standard"
+default_objective = "precision_priority"
+default_top_k_eval = 20
+default_sample_size = 24
 ```
+
+### 可视化与原始 TOML 的分工
+
+- 长期记忆控制台：适合修改高频项，例如 embedding、检索、Episode、人物画像、导入与调优的常用开关。
+- 原始 TOML：适合复制整份配置、批量调整参数，或修改未在可视化表单中展示的高级项。
+- raw-only 高级项仍包括：`retrieval.fusion.*`、`retrieval.search.relation_intent.*`、`retrieval.search.graph_recall.*`、`retrieval.search.posterior_graph.*`、`retrieval.aggregate.*`、`memory.orphan.*`、`advanced.extraction_model`、`web.import.llm_retry.*`、`web.import.path_aliases`、`web.import.convert.*`、`web.tuning.llm_retry.*`、`web.tuning.eval_query_timeout_seconds`。
 
 ## 1. 存储与嵌入
 
 ### `storage`
 
-- `storage.data_dir` (默认 `./data`)
-: 数据目录。相对路径按插件目录解析。
+- `storage.data_dir` (当前配置模板默认 `data/a-memorix`)
+: 数据目录。相对路径按 MaiBot 仓库根目录解析。
+
+补充说明：
+
+- 部分离线脚本若未显式覆盖路径，会回退到 `A_memorix.paths.default_data_dir()`（当前为 `data/plugins/a-dawn.a-memorix`）。
+- 建议在运维侧统一目录策略，避免“控制台写入目录”和“脚本处理目录”不一致。
 
 ### `embedding`
 
 - `embedding.model_name` (默认 `auto`)
 : embedding 模型选择。
 - `embedding.dimension` (默认 `1024`)
-: 唯一公开的维度控制项。插件内部会自动映射为 provider 所需请求字段，并在运行时做真实探测与校验。
+: 唯一公开的维度控制项。A_Memorix 内部会自动映射为 provider 所需请求字段，并在运行时做真实探测与校验。
 - `embedding.batch_size` (默认 `32`)
 - `embedding.max_concurrent` (默认 `5`)
 - `embedding.enable_cache` (默认 `false`)
@@ -161,6 +213,26 @@ enabled = true
 - `allow_two_hop_pair` (默认 `true`)
 - `max_paths` (默认 `4`)
 
+### `retrieval.search.posterior_graph` (`PosteriorGraphConfig`)
+
+- `enabled` (默认 `true`)
+- `drop_ratio` (默认 `0.15`)
+- `min_core_results` (默认 `2`)
+- `max_graph_slots` (默认 `2`)
+- `gate_scan_top_k` (默认 `5`)
+- `grounded_confidence_threshold` (默认 `0.48`)
+- `incidental_confidence_threshold` (默认 `0.22`)
+- `min_query_token_coverage` (默认 `0.78`)
+- `incidental_query_relevance_threshold` (默认 `0.68`)
+- `incidental_core_overlap_threshold` (默认 `0.34`)
+- `incidental_specificity_threshold` (默认 `0.42`)
+
+说明：
+
+- 这组配置控制“后验图补位”，即先跑正常双路检索，再判断是否需要从图结构补一小批 relation 候选进入尾部竞争。
+- 设计目标以 `recall` 为主，而不是强行把 relation 顶到第一名。
+- 如果你的最终回答仍会经过 LLM 汇总，这组能力更适合用于“保证证据进入前排候选”，而不是做激进排序改写。
+
 ### `retrieval.aggregate`
 
 - `retrieval.aggregate.rrf_k`
@@ -212,6 +284,7 @@ chats = ["group:123", "user:456", "stream:abc"]
 - `episode.max_chars_per_call` (默认 `6000`)
 - `episode.source_time_window_hours` (默认 `24`)
 - `episode.segmentation_model` (默认 `auto`)
+: 支持 `auto`，也支持填写 `utils/replyer/planner/tool_use` 或具体模型名。
 
 ## 6. 人物画像
 
@@ -283,8 +356,8 @@ chats = ["group:123", "user:456", "stream:abc"]
 - `web.tuning.max_queue_size` (默认 `8`)
 - `web.tuning.poll_interval_ms` (默认 `1200`)
 - `web.tuning.eval_query_timeout_seconds` (默认 `10.0`)
-- `web.tuning.default_intensity` (默认 `standard`)
-- `web.tuning.default_objective` (默认 `precision_priority`)
+- `web.tuning.default_intensity` (默认 `standard`，可选 `quick/standard/deep`)
+- `web.tuning.default_objective` (默认 `precision_priority`，可选 `precision_priority/balanced/recall_priority`)
 - `web.tuning.default_top_k_eval` (默认 `20`)
 - `web.tuning.default_sample_size` (默认 `24`)
 - `web.tuning.llm_retry.max_attempts` (默认 `3`)
@@ -297,15 +370,15 @@ chats = ["group:123", "user:456", "stream:abc"]
 - 若你从 `1.x` 升级，请优先运行：
 
 ```bash
-python plugins/A_memorix/scripts/release_vnext_migrate.py preflight --strict
-python plugins/A_memorix/scripts/release_vnext_migrate.py migrate --verify-after
-python plugins/A_memorix/scripts/release_vnext_migrate.py verify --strict
+python src/A_memorix/scripts/release_vnext_migrate.py preflight --strict
+python src/A_memorix/scripts/release_vnext_migrate.py migrate --verify-after
+python src/A_memorix/scripts/release_vnext_migrate.py verify --strict
 ```
 
 - 启动前再执行：
 
 ```bash
-python plugins/A_memorix/scripts/runtime_self_check.py --json
+python src/A_memorix/scripts/runtime_self_check.py --json
 ```
 
 以避免 embedding 维度与向量库不匹配导致运行时异常。

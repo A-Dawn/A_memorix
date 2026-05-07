@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import aiohttp
 import numpy as np
@@ -28,6 +28,9 @@ logger = get_logger("A_Memorix.EmbeddingAPIAdapter")
 
 class EmbeddingAPIAdapter:
     """适配宿主 embedding 请求接口。"""
+
+    _GLOBAL_DIMENSION_CACHE: Dict[str, int] = {}
+    _GLOBAL_TEXT_EMBEDDING_CACHE: Dict[Tuple[str, int, str], np.ndarray] = {}
 
     def __init__(
         self,
@@ -57,10 +60,10 @@ class EmbeddingAPIAdapter:
         self._total_time = 0.0
 
         logger.info(
-            "EmbeddingAPIAdapter 初始化: "
-            f"batch_size={self.batch_size}, "
-            f"max_concurrent={self.max_concurrent}, "
-            f"configured_dim={self.default_dimension}, "
+            "Embedding 初始化: "
+            f"batch={self.batch_size}, "
+            f"concurrent={self.max_concurrent}, "
+            f"dim={self.default_dimension}, "
             f"model={self.model_name}"
         )
 
@@ -232,11 +235,33 @@ class EmbeddingAPIAdapter:
             logger.error(f"通过直接 Client 获取 Embedding 失败: {last_exc}")
         return None
 
+    def _dimension_cache_key(self) -> str:
+        candidate_names = self._resolve_candidate_model_names()
+        return "|".join(
+            [
+                str(self.model_name or "auto"),
+                str(self.default_dimension),
+                ",".join(candidate_names),
+            ]
+        )
+
+    def _embedding_cache_key(self, text: str, dimensions: Optional[int]) -> Tuple[str, int, str]:
+        requested_dimension = self._resolve_canonical_dimension(dimensions)
+        return (self._dimension_cache_key(), int(requested_dimension), str(text or ""))
+
     async def _detect_dimension(self) -> int:
         if self._dimension_detected and self._dimension is not None:
             return self._dimension
 
-        logger.info("正在检测嵌入模型维度...")
+        cache_key = self._dimension_cache_key()
+        cached_dimension = self._GLOBAL_DIMENSION_CACHE.get(cache_key)
+        if cached_dimension is not None:
+            self._dimension = int(cached_dimension)
+            self._dimension_detected = True
+            logger.debug(f"嵌入维度命中进程缓存: {self._dimension}")
+            return self._dimension
+
+        logger.info("检测嵌入维度...")
         try:
             target_dim = self.default_dimension
             logger.debug(f"尝试请求指定维度: {target_dim}")
@@ -244,13 +269,14 @@ class EmbeddingAPIAdapter:
             if test_embedding and isinstance(test_embedding, list):
                 detected_dim = len(test_embedding)
                 if detected_dim == target_dim:
-                    logger.info(f"嵌入维度检测成功 (匹配 configured/requested): {detected_dim}")
+                    logger.info(f"嵌入维度: {detected_dim}")
                 else:
                     logger.warning(
                         f"requested_dimension={target_dim} 但模型返回 detected_dimension={detected_dim}，将使用真实输出维度"
                     )
                 self._dimension = detected_dim
                 self._dimension_detected = True
+                self._GLOBAL_DIMENSION_CACHE[cache_key] = int(detected_dim)
                 return detected_dim
         except Exception as exc:
             logger.debug(f"带维度参数探测失败: {exc}，尝试不带维度参数探测")
@@ -261,7 +287,8 @@ class EmbeddingAPIAdapter:
                 detected_dim = len(test_embedding)
                 self._dimension = detected_dim
                 self._dimension_detected = True
-                logger.info(f"嵌入维度检测成功 (自然维度): {detected_dim}")
+                self._GLOBAL_DIMENSION_CACHE[cache_key] = int(detected_dim)
+                logger.info(f"嵌入维度: {detected_dim} (自然输出)")
                 return detected_dim
             logger.warning(f"嵌入维度检测失败，使用 configured_dimension: {self.default_dimension}")
         except Exception as exc:
@@ -269,6 +296,7 @@ class EmbeddingAPIAdapter:
 
         self._dimension = self.default_dimension
         self._dimension_detected = True
+        self._GLOBAL_DIMENSION_CACHE[cache_key] = int(self.default_dimension)
         return self.default_dimension
 
     async def encode(
@@ -336,26 +364,54 @@ class EmbeddingAPIAdapter:
         all_embeddings: List[np.ndarray] = []
         for offset in range(0, len(texts), batch_size):
             batch = texts[offset : offset + batch_size]
+            batch_results: List[Tuple[int, np.ndarray]] = []
+            uncached_items: List[Tuple[int, str]] = []
+
+            if self.enable_cache:
+                for index, text in enumerate(batch):
+                    cache_key = self._embedding_cache_key(text, dimensions)
+                    cached_vector = self._GLOBAL_TEXT_EMBEDDING_CACHE.get(cache_key)
+                    if cached_vector is None:
+                        uncached_items.append((index, text))
+                    else:
+                        batch_results.append((index, cached_vector.copy()))
+            else:
+                uncached_items = list(enumerate(batch))
+
+            if not uncached_items:
+                batch_results.sort(key=lambda item: item[0])
+                all_embeddings.extend(emb for _, emb in batch_results)
+                continue
+
             semaphore = asyncio.Semaphore(self.max_concurrent)
 
-            async def encode_with_semaphore(text: str, index: int):
+            async def encode_with_semaphore(text: str, batch_index: int, absolute_index: int):
                 async with semaphore:
                     embedding = await self._get_embedding_direct(text, dimensions=dimensions)
                     if embedding is None:
-                        raise RuntimeError(f"文本 {index} 编码失败：embedding 返回为空")
+                        raise RuntimeError(f"文本 {absolute_index} 编码失败：embedding 返回为空")
                     vector = self._validate_embedding_vector(
                         embedding,
-                        source=f"文本 {index}",
+                        source=f"文本 {absolute_index}",
                     )
-                    return index, vector
+                    return batch_index, vector
 
             tasks = [
-                encode_with_semaphore(text, offset + index)
-                for index, text in enumerate(batch)
+                encode_with_semaphore(text, index, offset + index)
+                for index, text in uncached_items
             ]
             results = await asyncio.gather(*tasks)
-            results.sort(key=lambda item: item[0])
-            all_embeddings.extend(emb for _, emb in results)
+            normalized_results: List[Tuple[int, np.ndarray]] = []
+            for batch_index, vector in results:
+                normalized_results.append((batch_index, vector))
+                if self.enable_cache:
+                    text = batch[batch_index]
+                    cache_key = self._embedding_cache_key(text, dimensions)
+                    self._GLOBAL_TEXT_EMBEDDING_CACHE[cache_key] = vector.copy()
+
+            batch_results.extend(normalized_results)
+            batch_results.sort(key=lambda item: item[0])
+            all_embeddings.extend(emb for _, emb in batch_results)
 
         return np.array(all_embeddings, dtype=np.float32)
 

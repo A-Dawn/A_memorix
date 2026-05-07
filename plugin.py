@@ -1,14 +1,18 @@
-"""A_Memorix SDK plugin entry."""
+"""Legacy compatibility entry for upstream/plugin-style integrations.
+
+MaiBot 主线当前通过 `src.A_memorix.host_service` 直接接入 A_Memorix，
+不再通过插件运行时发现或加载本模块。
+"""
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from maibot_sdk import MaiBotPlugin, Tool
 from maibot_sdk.types import ToolParameterInfo, ToolParamType
 
 from A_memorix.core.runtime.sdk_memory_kernel import KernelSearchRequest, SDKMemoryKernel
+from A_memorix.paths import repo_root
 
 
 def _tool_param(name: str, param_type: ToolParamType, description: str, required: bool) -> ToolParameterInfo:
@@ -24,7 +28,7 @@ _ADMIN_TOOL_PARAMS = [
 class AMemorixPlugin(MaiBotPlugin):
     def __init__(self) -> None:
         super().__init__()
-        self._plugin_root = Path(__file__).resolve().parent
+        self._plugin_root = repo_root()
         self._plugin_config: Dict[str, Any] = {}
         self._kernel: Optional[SDKMemoryKernel] = None
 

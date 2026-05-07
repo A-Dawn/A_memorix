@@ -21,24 +21,19 @@ from typing import Any, Dict, List
 
 import tomlkit
 
-
-CURRENT_DIR = Path(__file__).resolve().parent
-PLUGIN_ROOT = CURRENT_DIR.parent
-PROJECT_ROOT = PLUGIN_ROOT.parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(PLUGIN_ROOT))
+from _bootstrap import DEFAULT_CONFIG_PATH, DEFAULT_DATA_DIR, resolve_repo_path
 
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="关系向量一次性回填")
     parser.add_argument(
         "--config",
-        default=str(PLUGIN_ROOT / "config.toml"),
-        help="配置文件路径（默认 plugins/A_memorix/config.toml）",
+        default=str(DEFAULT_CONFIG_PATH),
+        help="配置文件路径（默认 config/a_memorix.toml）",
     )
     parser.add_argument(
         "--data-dir",
-        default=str(PLUGIN_ROOT / "data"),
-        help="数据目录（默认 plugins/A_memorix/data）",
+        default=str(DEFAULT_DATA_DIR),
+        help="数据目录（默认 data/plugins/a-dawn.a-memorix）",
     )
     parser.add_argument(
         "--states",
@@ -62,15 +57,15 @@ if any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
     _build_arg_parser().print_help()
     raise SystemExit(0)
 
-from core.storage import (
+from A_memorix.core.storage import (
     VectorStore,
     GraphStore,
     MetadataStore,
     QuantizationType,
     SparseMatrixFormat,
 )
-from core.embedding import create_embedding_api_adapter
-from core.utils.relation_write_service import RelationWriteService
+from A_memorix.core.embedding import create_embedding_api_adapter
+from A_memorix.core.utils.relation_write_service import RelationWriteService
 
 
 def _load_config(config_path: Path) -> Dict[str, Any]:
@@ -160,7 +155,7 @@ async def _process_rows(
 
 
 async def main_async(args: argparse.Namespace) -> int:
-    config_path = Path(args.config).resolve()
+    config_path = resolve_repo_path(args.config, fallback=DEFAULT_CONFIG_PATH)
     if not config_path.exists():
         print(f"❌ 配置文件不存在: {config_path}")
         return 2
@@ -177,7 +172,7 @@ async def main_async(args: argparse.Namespace) -> int:
     if not isinstance(rv_cfg, dict):
         rv_cfg = {}
 
-    data_dir = Path(args.data_dir).resolve()
+    data_dir = resolve_repo_path(args.data_dir, fallback=DEFAULT_DATA_DIR)
     if not data_dir.exists():
         print(f"❌ 数据目录不存在: {data_dir}")
         return 2

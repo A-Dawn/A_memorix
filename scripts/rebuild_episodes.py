@@ -6,17 +6,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
-from pathlib import Path
 from typing import Any, Dict, List
 
-CURRENT_DIR = Path(__file__).resolve().parent
-PLUGIN_ROOT = CURRENT_DIR.parent
-WORKSPACE_ROOT = PLUGIN_ROOT.parent
-MAIBOT_ROOT = WORKSPACE_ROOT / "MaiBot"
-for path in (WORKSPACE_ROOT, MAIBOT_ROOT, PLUGIN_ROOT):
-    path_str = str(path)
-    if path_str not in sys.path:
-        sys.path.insert(0, path_str)
+from _bootstrap import DEFAULT_CONFIG_PATH, DEFAULT_DATA_DIR, resolve_repo_path
 
 try:
     import tomlkit  # type: ignore
@@ -29,7 +21,7 @@ from A_memorix.core.utils.episode_service import EpisodeService
 
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Rebuild A_Memorix episodes by source")
-    parser.add_argument("--data-dir", default=str(PLUGIN_ROOT / "data"), help="插件数据目录")
+    parser.add_argument("--data-dir", default=str(DEFAULT_DATA_DIR), help="插件数据目录")
     parser.add_argument("--source", type=str, help="指定单个 source 入队/重建")
     parser.add_argument("--all", action="store_true", help="对所有 source 入队/重建")
     parser.add_argument("--wait", action="store_true", help="在脚本内同步执行重建")
@@ -42,7 +34,7 @@ if any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
 
 
 def _load_plugin_config() -> Dict[str, Any]:
-    config_path = PLUGIN_ROOT / "config.toml"
+    config_path = DEFAULT_CONFIG_PATH
     if tomlkit is None or not config_path.exists():
         return {}
     try:
@@ -100,7 +92,7 @@ def main() -> int:
     if bool(args.all) == bool(args.source):
         parser.error("必须且只能选择一个：--source 或 --all")
 
-    store = MetadataStore(data_dir=Path(args.data_dir) / "metadata")
+    store = MetadataStore(data_dir=resolve_repo_path(args.data_dir, fallback=DEFAULT_DATA_DIR) / "metadata")
     store.connect()
     try:
         sources = _resolve_sources(store, source=args.source, rebuild_all=bool(args.all))

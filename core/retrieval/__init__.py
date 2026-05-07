@@ -9,6 +9,7 @@ from .dual_path import (
     FusionConfig,
     RelationIntentConfig,
 )
+from .posterior_graph import PosteriorGraphConfig
 from .pagerank import (
     PersonalizedPageRank,
     PageRankConfig,
@@ -37,6 +38,7 @@ __all__ = [
     "TemporalQueryOptions",
     "FusionConfig",
     "RelationIntentConfig",
+    "PosteriorGraphConfig",
     # PersonalizedPageRank
     "PersonalizedPageRank",
     "PageRankConfig",

@@ -13,20 +13,15 @@ from typing import Any
 
 import tomlkit
 
-
-CURRENT_DIR = Path(__file__).resolve().parent
-PLUGIN_ROOT = CURRENT_DIR.parent
-PROJECT_ROOT = PLUGIN_ROOT.parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(PLUGIN_ROOT))
+from _bootstrap import DEFAULT_CONFIG_PATH, DEFAULT_DATA_DIR, resolve_repo_path
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="A_Memorix runtime self-check")
     parser.add_argument(
         "--config",
-        default=str(PLUGIN_ROOT / "config.toml"),
-        help="config.toml path (default: plugins/A_memorix/config.toml)",
+        default=str(DEFAULT_CONFIG_PATH),
+        help="config.toml path (default: config/a_memorix.toml)",
     )
     parser.add_argument(
         "--data-dir",
@@ -51,8 +46,8 @@ if any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
     _build_arg_parser().print_help()
     raise SystemExit(0)
 
-from core.runtime.lifecycle_orchestrator import initialize_storage_async
-from core.utils.runtime_self_check import run_embedding_runtime_self_check
+from A_memorix.core.runtime.lifecycle_orchestrator import initialize_storage_async
+from A_memorix.core.utils.runtime_self_check import run_embedding_runtime_self_check
 
 
 def _load_config(path: Path) -> dict[str, Any]:
@@ -86,7 +81,7 @@ class _PluginStub:
 
 
 async def _main_async(args: argparse.Namespace) -> int:
-    config_path = Path(args.config).resolve()
+    config_path = resolve_repo_path(args.config, fallback=DEFAULT_CONFIG_PATH)
     if not config_path.exists():
         print(f"❌ 配置文件不存在: {config_path}")
         return 2
@@ -94,13 +89,10 @@ async def _main_async(args: argparse.Namespace) -> int:
     config = _load_config(config_path)
     temp_dir_ctx = None
     if args.data_dir:
-        storage_dir = str(Path(args.data_dir).resolve())
+        storage_dir = str(resolve_repo_path(args.data_dir, fallback=DEFAULT_DATA_DIR))
     elif args.use_config_data_dir:
         raw_data_dir = str(_nested_get(config, "storage.data_dir", "./data") or "./data").strip()
-        if raw_data_dir.startswith("."):
-            storage_dir = str((config_path.parent / raw_data_dir).resolve())
-        else:
-            storage_dir = str(Path(raw_data_dir).resolve())
+        storage_dir = str(resolve_repo_path(raw_data_dir, fallback=DEFAULT_DATA_DIR))
     else:
         temp_dir_ctx = tempfile.TemporaryDirectory(prefix="memorix-runtime-self-check-")
         storage_dir = temp_dir_ctx.name
