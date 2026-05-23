@@ -448,4 +448,3 @@ class DynamicThresholdFilter:
             f"min_threshold={self.config.min_threshold}, "
             f"filtered={self._total_filtered}/{self._total_processed})"
         )
-

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "amemorix"
-version = "0.6.1"
+version = "1.0.0"
 description = "API-specialized standalone A_Memorix knowledge service"
 readme = "README.md"
 requires-python = ">=3.10"

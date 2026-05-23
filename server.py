@@ -2,6 +2,7 @@
 import asyncio
 import threading
 import json
+import tomllib
 import uvicorn
 from fastapi import FastAPI, HTTPException, Body, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -44,6 +45,10 @@ class NodeRename(BaseModel):
 
 class AutoSaveConfig(BaseModel):
     enabled: bool
+
+class RuntimeConfigUpdate(BaseModel):
+    updates: Dict[str, Any]
+    persist: bool = False
 
 class SourceListRequest(BaseModel):
     node_id: Optional[str] = None
@@ -1249,7 +1254,213 @@ class MemorixServer:
             plugin_config = getattr(self.plugin, "config", None)
             if isinstance(plugin_config, dict):
                 base_payload["config"] = mask_sensitive(plugin_config)
+                base_payload["config_persistence"] = runtime_config_persistence_state(plugin_config)
             return base_payload
+
+        def auth_write_tokens_configured(plugin_config: Dict[str, Any]) -> bool:
+            auth = plugin_config.get("auth", {}) if isinstance(plugin_config, dict) else {}
+            if not isinstance(auth, dict) or auth.get("enabled") is False:
+                return False
+            write_tokens = auth.get("write_tokens") or []
+            return isinstance(write_tokens, list) and any(str(token).strip() for token in write_tokens)
+
+        def config_file_target() -> Path:
+            settings = getattr(self.plugin, "settings", None)
+            configured_path = getattr(settings, "config_path", None)
+            if configured_path:
+                return Path(configured_path)
+            return Path.cwd() / "config.toml"
+
+        def runtime_config_persistence_state(plugin_config: Dict[str, Any]) -> Dict[str, Any]:
+            enabled = auth_write_tokens_configured(plugin_config)
+            return {
+                "enabled": enabled,
+                "path": str(config_file_target()),
+                "reason": "" if enabled else "需要开启服务端 Token 鉴权并配置 write_tokens",
+            }
+
+        def toml_key(key: str) -> str:
+            text = str(key)
+            if text and all(ch.isalnum() or ch in {"_", "-"} for ch in text) and not text[0].isdigit():
+                return text
+            return json.dumps(text, ensure_ascii=False)
+
+        def toml_literal(value: Any) -> Optional[str]:
+            if value is None:
+                return None
+            if isinstance(value, bool):
+                return "true" if value else "false"
+            if isinstance(value, int) and not isinstance(value, bool):
+                return str(value)
+            if isinstance(value, float):
+                return repr(float(value))
+            if isinstance(value, str):
+                return json.dumps(value, ensure_ascii=False)
+            if isinstance(value, list):
+                items = []
+                for item in value:
+                    rendered = toml_literal(item)
+                    if rendered is not None:
+                        items.append(rendered)
+                return f"[{', '.join(items)}]"
+            raise TypeError(f"Unsupported TOML value type: {type(value).__name__}")
+
+        def dump_toml(data: Dict[str, Any]) -> str:
+            lines: List[str] = []
+
+            def write_table(table: Dict[str, Any], path: List[str]) -> None:
+                scalar_items = []
+                child_items = []
+                for key in sorted(table.keys()):
+                    value = table[key]
+                    if isinstance(value, dict):
+                        child_items.append((key, value))
+                    else:
+                        scalar_items.append((key, value))
+
+                if path:
+                    lines.append(f"[{'.'.join(toml_key(part) for part in path)}]")
+
+                for key, value in scalar_items:
+                    rendered = toml_literal(value)
+                    if rendered is not None:
+                        lines.append(f"{toml_key(key)} = {rendered}")
+
+                if path and scalar_items:
+                    lines.append("")
+
+                for key, child in child_items:
+                    write_table(child, [*path, str(key)])
+
+            write_table(data, [])
+            return "\n".join(lines).strip() + "\n"
+
+        def set_nested(root: Dict[str, Any], key: str, value: Any) -> None:
+            parts = key.split(".")
+            current = root
+            for part in parts[:-1]:
+                next_value = current.get(part)
+                if not isinstance(next_value, dict):
+                    next_value = {}
+                    current[part] = next_value
+                current = next_value
+            current[parts[-1]] = value
+
+        def write_runtime_config_file(applied: Dict[str, Any]) -> Path:
+            target = config_file_target()
+            persisted: Dict[str, Any] = {}
+            if target.exists():
+                with target.open("rb") as handle:
+                    persisted = tomllib.load(handle)
+            for key, value in applied.items():
+                set_nested(persisted, key, value)
+
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = target.with_name(f"{target.name}.tmp")
+            tmp_path.write_text(dump_toml(persisted), encoding="utf-8")
+            tmp_path.replace(target)
+
+            settings = getattr(self.plugin, "settings", None)
+            if settings is not None and getattr(settings, "config_path", None) is None:
+                settings.config_path = target
+            return target
+
+        @self.app.patch("/api/config/runtime")
+        async def update_runtime_config(data: RuntimeConfigUpdate):
+            """Update selected runtime-safe configuration keys in memory."""
+            plugin_config = getattr(self.plugin, "config", None)
+            if not isinstance(plugin_config, dict):
+                raise HTTPException(status_code=503, detail="Config unavailable")
+
+            schema = {
+                "advanced.enable_auto_save": ("bool", None),
+                "advanced.auto_save_interval_minutes": ("float", (0.1, 1440.0)),
+                "advanced.debug": ("bool", None),
+                "memory.enabled": ("bool", None),
+                "memory.half_life_hours": ("float", (0.1, 8760.0)),
+                "memory.prune_threshold": ("float", (0.0, 100.0)),
+                "memory.auto_protect_ttl_hours": ("float", (0.0, 8760.0)),
+                "episode.enabled": ("bool", None),
+                "episode.generation_enabled": ("bool", None),
+                "episode.generation_interval_seconds": ("int", (1, 86400)),
+                "episode.generation_batch_size": ("int", (1, 1000)),
+                "episode.max_retry": ("int", (0, 20)),
+                "person_profile.enabled": ("bool", None),
+                "person_profile.profile_ttl_minutes": ("float", (1.0, 525600.0)),
+                "person_profile.refresh_interval_minutes": ("int", (1, 10080)),
+                "person_profile.top_k_evidence": ("int", (1, 100)),
+                "retrieval.top_k_paragraphs": ("int", (1, 200)),
+                "retrieval.top_k_relations": ("int", (1, 200)),
+                "retrieval.top_k_final": ("int", (1, 200)),
+                "retrieval.alpha": ("float", (0.0, 1.0)),
+                "retrieval.enable_ppr": ("bool", None),
+                "retrieval.ppr_alpha": ("float", (0.0, 1.0)),
+                "retrieval.ppr_timeout_seconds": ("float", (0.1, 60.0)),
+                "tasks.queue_maxsize": ("int", (1, 100000)),
+            }
+
+            def coerce(key: str, value: Any) -> Any:
+                kind, bounds = schema[key]
+                if kind == "bool":
+                    if isinstance(value, bool):
+                        return value
+                    if isinstance(value, str):
+                        lowered = value.strip().lower()
+                        if lowered in {"true", "1", "yes", "on"}:
+                            return True
+                        if lowered in {"false", "0", "no", "off"}:
+                            return False
+                    raise HTTPException(status_code=400, detail=f"{key} must be boolean")
+                try:
+                    if kind == "int":
+                        coerced = int(value)
+                    elif kind == "float":
+                        coerced = float(value)
+                    else:
+                        coerced = value
+                except (TypeError, ValueError):
+                    raise HTTPException(status_code=400, detail=f"{key} must be {kind}")
+                if bounds is not None:
+                    low, high = bounds
+                    if coerced < low or coerced > high:
+                        raise HTTPException(status_code=400, detail=f"{key} must be between {low} and {high}")
+                return coerced
+
+            if data.persist and not auth_write_tokens_configured(plugin_config):
+                raise HTTPException(
+                    status_code=403,
+                    detail="写回配置文件需要开启服务端 Token 鉴权并配置 write_tokens",
+                )
+
+            applied: Dict[str, Any] = {}
+            for key, value in (data.updates or {}).items():
+                if key not in schema:
+                    raise HTTPException(status_code=400, detail=f"Unsupported runtime config key: {key}")
+                coerced = coerce(key, value)
+                applied[key] = coerced
+
+            config_path = None
+            if data.persist and applied:
+                config_path = write_runtime_config_file(applied)
+
+            for key, coerced in applied.items():
+                set_nested(plugin_config, key, coerced)
+
+            if "advanced.enable_auto_save" in applied:
+                self.plugin._runtime_auto_save = bool(applied["advanced.enable_auto_save"])
+
+            logger.info("Runtime config updated: %s", sorted(applied.keys()))
+            return {
+                "success": True,
+                "runtime_only": not bool(config_path),
+                "persisted": bool(config_path),
+                "config_path": str(config_path) if config_path else None,
+                "applied": applied,
+                "config": mask_sensitive(plugin_config),
+                "config_persistence": runtime_config_persistence_state(plugin_config),
+                "auto_save_enabled": self.plugin.get_config("advanced.enable_auto_save", True),
+                "auto_save_interval": self.plugin.get_config("advanced.auto_save_interval_minutes", 5),
+            }
 
         @self.app.post("/api/config/auto_save")
         async def set_auto_save(data: AutoSaveConfig):
@@ -1258,13 +1469,32 @@ class MemorixServer:
             logger.info(f"自动保存已{'启用' if data.enabled else '禁用'}（运行时）")
             return {"success": True, "auto_save_enabled": data.enabled}
 
-        @self.app.get("/")
-        async def index():
-            """返回主页"""
+        def _index_response():
             html_path = Path(__file__).parent / "web" / "index.html"
             if html_path.exists():
                 return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
             return HTMLResponse(content="<h1>UI Not Found</h1>")
+
+        assets_path = Path(__file__).parent / "web" / "assets"
+        if assets_path.exists():
+            self.app.mount("/assets", StaticFiles(directory=str(assets_path)), name="assets")
+
+        @self.app.get("/favicon.ico")
+        async def favicon():
+            icon_path = Path(__file__).parent / "web" / "assets" / "amemorix-icon.png"
+            if icon_path.exists():
+                return FileResponse(str(icon_path), media_type="image/png")
+            raise HTTPException(status_code=404, detail="favicon not found")
+
+        @self.app.get("/import")
+        async def import_page():
+            """返回导入工作区。"""
+            return _index_response()
+
+        @self.app.get("/")
+        async def index():
+            """返回主页"""
+            return _index_response()
 
     def run(self):
         """运行服务器 (阻塞)"""

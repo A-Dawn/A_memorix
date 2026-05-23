@@ -10,6 +10,9 @@ from .time_parser import (
     normalize_time_meta,
     format_timestamp,
 )
+from .relation_write_service import RelationWriteService, RelationWriteResult
+from .relation_query import RelationQuerySpec, parse_relation_query_spec
+from .plugin_id_policy import PluginIdPolicy
 
 __all__ = [
     "compute_hash",
@@ -22,4 +25,9 @@ __all__ = [
     "parse_ingest_datetime_to_timestamp",
     "normalize_time_meta",
     "format_timestamp",
+    "RelationWriteService",
+    "RelationWriteResult",
+    "RelationQuerySpec",
+    "parse_relation_query_spec",
+    "PluginIdPolicy",
 ]

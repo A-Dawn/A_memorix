@@ -8,14 +8,25 @@ from pathlib import Path
 from typing import Any, Dict
 
 from core.embedding.api_adapter import create_embedding_api_adapter
-from core.retrieval.dual_path import DualPathRetriever, DualPathRetrieverConfig, FusionConfig
+from core.retrieval.dual_path import (
+    DualPathRetriever,
+    DualPathRetrieverConfig,
+    FusionConfig,
+    RelationIntentConfig,
+)
+from core.retrieval.graph_relation_recall import GraphRelationRecallConfig
 from core.retrieval.sparse_bm25 import SparseBM25Config, SparseBM25Index
 from core.retrieval.threshold import DynamicThresholdFilter, ThresholdConfig, ThresholdMethod
 from core.storage import GraphStore, MetadataStore, QuantizationType, SparseMatrixFormat, VectorStore
+from core.utils.episode_retrieval_service import EpisodeRetrievalService
+from core.utils.episode_segmentation_service import EpisodeSegmentationService
+from core.utils.episode_service import EpisodeService
 from core.utils.person_profile_service import PersonProfileService
+from core.utils.relation_write_service import RelationWriteService
 
 from .common.logging import get_logger
 from .context import AppContext
+from .llm_client import LLMClient
 from .settings import AppSettings, resolve_openapi_endpoint_config
 
 logger = get_logger("A_Memorix.Bootstrap")
@@ -171,6 +182,9 @@ def build_context(settings: AppSettings) -> AppContext:
     retrieval_raw = settings.get("retrieval", {}) or {}
     sparse_for_retriever = retrieval_raw.get("sparse", {}) if isinstance(retrieval_raw, dict) else {}
     fusion_for_retriever = retrieval_raw.get("fusion", {}) if isinstance(retrieval_raw, dict) else {}
+    search_raw = retrieval_raw.get("search", {}) if isinstance(retrieval_raw, dict) else {}
+    relation_intent_raw = search_raw.get("relation_intent", {}) if isinstance(search_raw, dict) else {}
+    graph_recall_raw = search_raw.get("graph_recall", {}) if isinstance(search_raw, dict) else {}
     retriever_config = DualPathRetrieverConfig(
         top_k_paragraphs=_safe_int(settings.get("retrieval.top_k_paragraphs", 20), 20),
         top_k_relations=_safe_int(settings.get("retrieval.top_k_relations", 10), 10),
@@ -178,11 +192,18 @@ def build_context(settings: AppSettings) -> AppContext:
         alpha=_safe_float(settings.get("retrieval.alpha", 0.5), 0.5),
         enable_ppr=bool(settings.get("retrieval.enable_ppr", True)),
         ppr_alpha=_safe_float(settings.get("retrieval.ppr_alpha", 0.85), 0.85),
+        ppr_timeout_seconds=_safe_float(settings.get("retrieval.ppr_timeout_seconds", 1.5), 1.5),
         ppr_concurrency_limit=_safe_int(settings.get("retrieval.ppr_concurrency_limit", 4), 4),
         enable_parallel=bool(settings.get("retrieval.enable_parallel", True)),
         debug=bool(settings.get("advanced.debug", False)),
         sparse=SparseBM25Config(**(sparse_for_retriever if isinstance(sparse_for_retriever, dict) else {})),
         fusion=FusionConfig(**(fusion_for_retriever if isinstance(fusion_for_retriever, dict) else {})),
+        relation_intent=RelationIntentConfig(
+            **(relation_intent_raw if isinstance(relation_intent_raw, dict) else {})
+        ),
+        graph_recall=GraphRelationRecallConfig(
+            **(graph_recall_raw if isinstance(graph_recall_raw, dict) else {})
+        ),
     )
 
     retriever = DualPathRetriever(
@@ -206,13 +227,54 @@ def build_context(settings: AppSettings) -> AppContext:
         )
     )
 
+    llm_endpoint_cfg = resolve_openapi_endpoint_config(settings.config, section="embedding")
+    chat_model = str(
+        settings.get("summarization.model_name", "")
+        or llm_endpoint_cfg.get("chat_model", "")
+        or llm_endpoint_cfg.get("model", "")
+        or "gpt-4o-mini"
+    )
+    if chat_model.lower() == "auto":
+        chat_model = str(llm_endpoint_cfg.get("chat_model", "") or llm_endpoint_cfg.get("model", "") or "gpt-4o-mini")
+    llm_client = LLMClient(
+        base_url=str(llm_endpoint_cfg.get("base_url", "")),
+        api_key=str(llm_endpoint_cfg.get("api_key", "")),
+        model=chat_model,
+        timeout_seconds=_safe_float(llm_endpoint_cfg.get("timeout_seconds", 60), 60.0),
+        max_retries=_safe_int(llm_endpoint_cfg.get("max_retries", 3), 3),
+    )
+
+    relation_write_service = RelationWriteService(
+        metadata_store=metadata_store,
+        graph_store=graph_store,
+        vector_store=vector_store,
+        embedding_manager=adapter,
+    )
+
+    service_config: Dict[str, Any] = dict(settings.config)
+    service_config.update(
+        {
+            "llm_client": llm_client,
+            "relation_write_service": relation_write_service,
+        }
+    )
+    episode_service = EpisodeService(
+        metadata_store=metadata_store,
+        plugin_config=service_config,
+        segmentation_service=EpisodeSegmentationService(plugin_config=service_config),
+    )
+    episode_retrieval_service = EpisodeRetrievalService(
+        metadata_store=metadata_store,
+        retriever=retriever,
+    )
+
     person_profile_service = PersonProfileService(
         metadata_store=metadata_store,
         graph_store=graph_store,
         vector_store=vector_store,
         embedding_manager=adapter,
         sparse_index=sparse_index,
-        plugin_config=settings.config,
+        plugin_config=service_config,
         retriever=retriever,
     )
 
@@ -226,6 +288,10 @@ def build_context(settings: AppSettings) -> AppContext:
         retriever=retriever,
         threshold_filter=threshold_filter,
         person_profile_service=person_profile_service,
+        relation_write_service=relation_write_service,
+        episode_service=episode_service,
+        episode_retrieval_service=episode_retrieval_service,
+        llm_client=llm_client,
         data_dir=data_dir,
         config=settings.config,
     )

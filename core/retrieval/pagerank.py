@@ -480,4 +480,3 @@ def create_ppr_from_graph(
         graph_store=graph_store,
         config=config,
     )
-

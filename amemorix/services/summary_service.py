@@ -7,35 +7,20 @@ from typing import Any, Dict, List
 from core.utils.summary_importer import SummaryImporter
 
 from amemorix.context import AppContext
-from amemorix.llm_client import LLMClient
-from amemorix.settings import resolve_openapi_endpoint_config
 
 
 class SummaryService:
     def __init__(self, ctx: AppContext):
         self.ctx = ctx
-        endpoint_cfg = resolve_openapi_endpoint_config(self.ctx.config, section="embedding")
-        summarization_model = str(self.ctx.get_config("summarization.model_name", "") or "").strip()
-        if summarization_model.lower() == "auto":
-            summarization_model = ""
-        self.llm_client = LLMClient(
-            base_url=str(endpoint_cfg.get("base_url", "")),
-            api_key=str(endpoint_cfg.get("api_key", "")),
-            model=str(
-                summarization_model
-                or endpoint_cfg.get("chat_model", "")
-                or endpoint_cfg.get("model", "")
-                or "gpt-4o-mini"
-            ),
-            timeout_seconds=float(endpoint_cfg.get("timeout_seconds", 60) or 60),
-            max_retries=int(endpoint_cfg.get("max_retries", 3) or 3),
-        )
+        self.llm_client = self.ctx.llm_client
+        plugin_config = dict(self.ctx.config)
+        plugin_config["relation_write_service"] = self.ctx.relation_write_service
         self.importer = SummaryImporter(
             vector_store=self.ctx.vector_store,
             graph_store=self.ctx.graph_store,
             metadata_store=self.ctx.metadata_store,
             embedding_manager=self.ctx.embedding_manager,
-            plugin_config=self.ctx.config,
+            plugin_config=plugin_config,
             llm_client=self.llm_client,
         )
 

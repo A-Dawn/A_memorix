@@ -5,7 +5,9 @@ from .storage import (
     VectorStore, 
     GraphStore, 
     MetadataStore,
+    ImportStrategy,
     KnowledgeType,
+    parse_import_strategy,
     detect_knowledge_type,
     should_extract_relations,
     get_type_display_name,
@@ -25,6 +27,7 @@ from .retrieval import (
     DualPathRetrieverConfig,
     TemporalQueryOptions,
     FusionConfig,
+    RelationIntentConfig,
     PersonalizedPageRank,
     PageRankConfig,
     create_ppr_from_graph,
@@ -33,6 +36,8 @@ from .retrieval import (
     ThresholdConfig,
     SparseBM25Index,
     SparseBM25Config,
+    GraphRelationRecallConfig,
+    GraphRelationRecallService,
 )
 
 __all__ = [
@@ -40,7 +45,9 @@ __all__ = [
     "VectorStore",
     "GraphStore",
     "MetadataStore",
+    "ImportStrategy",
     "KnowledgeType",
+    "parse_import_strategy",
     "detect_knowledge_type",
     "should_extract_relations",
     "get_type_display_name",
@@ -54,6 +61,7 @@ __all__ = [
     "DualPathRetrieverConfig",
     "TemporalQueryOptions",
     "FusionConfig",
+    "RelationIntentConfig",
     "PersonalizedPageRank",
     "PageRankConfig",
     "create_ppr_from_graph",
@@ -62,5 +70,6 @@ __all__ = [
     "ThresholdConfig",
     "SparseBM25Index",
     "SparseBM25Config",
+    "GraphRelationRecallConfig",
+    "GraphRelationRecallService",
 ]
-

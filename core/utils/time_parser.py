@@ -5,6 +5,8 @@
 1. 查询参数（Action/Command/Tool）仅接受结构化绝对时间：
    - YYYY/MM/DD
    - YYYY/MM/DD HH:mm
+   - YYYY-MM-DD
+   - YYYY-MM-DD HH:mm
 2. 入库时允许更宽松格式（含时间戳、YYYY-MM-DD 等）。
 """
 
@@ -15,8 +17,8 @@ from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
 
 
-_QUERY_DATE_RE = re.compile(r"^\d{4}/\d{2}/\d{2}$")
-_QUERY_MINUTE_RE = re.compile(r"^\d{4}/\d{2}/\d{2} \d{2}:\d{2}$")
+_QUERY_DATE_RE = re.compile(r"^\d{4}[/-]\d{2}[/-]\d{2}$")
+_QUERY_MINUTE_RE = re.compile(r"^\d{4}[/-]\d{2}[/-]\d{2} \d{2}:\d{2}$")
 _NUMERIC_RE = re.compile(r"^-?\d+(?:\.\d+)?$")
 
 _INGEST_FORMATS = [
@@ -34,23 +36,25 @@ _INGEST_DATE_FORMATS = {"%Y/%m/%d", "%Y-%m-%d"}
 
 
 def parse_query_datetime_to_timestamp(value: str, is_end: bool = False) -> float:
-    """解析查询时间，仅支持 YYYY/MM/DD 或 YYYY/MM/DD HH:mm。"""
+    """解析查询时间，支持 YYYY/MM/DD、YYYY-MM-DD 及分钟格式。"""
     text = str(value).strip()
     if not text:
         raise ValueError("时间不能为空")
 
     if _QUERY_DATE_RE.fullmatch(text):
-        dt = datetime.strptime(text, "%Y/%m/%d")
+        fmt = "%Y-%m-%d" if "-" in text else "%Y/%m/%d"
+        dt = datetime.strptime(text, fmt)
         if is_end:
             dt = dt.replace(hour=23, minute=59, second=0, microsecond=0)
         return dt.timestamp()
 
     if _QUERY_MINUTE_RE.fullmatch(text):
-        dt = datetime.strptime(text, "%Y/%m/%d %H:%M")
+        fmt = "%Y-%m-%d %H:%M" if "-" in text else "%Y/%m/%d %H:%M"
+        dt = datetime.strptime(text, fmt)
         return dt.timestamp()
 
     raise ValueError(
-        f"时间格式错误: {text}。仅支持 YYYY/MM/DD 或 YYYY/MM/DD HH:mm"
+        f"时间格式错误: {text}。仅支持 YYYY/MM/DD、YYYY/MM/DD HH:mm、YYYY-MM-DD 或 YYYY-MM-DD HH:mm"
     )
 
 
@@ -93,6 +97,15 @@ def parse_ingest_datetime_to_timestamp(
 
     if _NUMERIC_RE.fullmatch(text):
         return float(text)
+
+    if "T" in text or text.endswith("Z") or re.search(r"[+-]\d{2}:?\d{2}$", text):
+        iso_text = text[:-1] + "+00:00" if text.endswith("Z") else text
+        if re.search(r"[+-]\d{4}$", iso_text):
+            iso_text = f"{iso_text[:-5]}{iso_text[-5:-2]}:{iso_text[-2:]}"
+        try:
+            return datetime.fromisoformat(iso_text).timestamp()
+        except ValueError:
+            pass
 
     for fmt in _INGEST_FORMATS:
         try:
@@ -167,4 +180,3 @@ def format_timestamp(ts: Optional[float]) -> Optional[str]:
     if ts is None:
         return None
     return datetime.fromtimestamp(ts).strftime("%Y/%m/%d %H:%M")
-

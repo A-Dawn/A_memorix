@@ -6,6 +6,7 @@ person_id -> 别名解析 -> 图谱证据 + 向量证据 -> 画像快照
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -248,9 +249,16 @@ class PersonProfileService:
         per_alias_top_k = max(2, int(top_k / max(1, len(alias_queries))))
         seen_hash = set()
         evidence: List[Dict[str, Any]] = []
+        timeout_seconds = float(self._cfg("person_profile.vector_evidence_timeout_seconds", 3.0) or 3.0)
         for alias in alias_queries:
             try:
-                results = await self.retriever.retrieve(alias, top_k=per_alias_top_k)
+                results = await asyncio.wait_for(
+                    self.retriever.retrieve(alias, top_k=per_alias_top_k),
+                    timeout=max(0.2, timeout_seconds),
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Vector evidence retrieve timed out: alias=%s", alias)
+                continue
             except Exception as exc:
                 logger.warning("Vector evidence retrieve failed: %s", exc)
                 continue
@@ -362,6 +370,10 @@ class PersonProfileService:
         pid = str(person_id or "").strip()
         if not pid and person_keyword:
             pid = self.resolve_person_id(person_keyword)
+        if not pid and person_keyword:
+            # basic 场景里常见“人物”只作为图谱实体存在，尚未进入 person_registry。
+            # 允许直接使用关键词生成轻量画像，避免候选表为空时功能不可用。
+            pid = str(person_keyword or "").strip()
         if not pid:
             return {"success": False, "error": "person_id 无效，且未能通过别名解析"}
 

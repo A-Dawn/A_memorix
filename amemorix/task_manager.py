@@ -52,6 +52,7 @@ class TaskManager:
         self._workers.append(asyncio.create_task(self._auto_save_loop(), name="auto-save-loop"))
         self._workers.append(asyncio.create_task(self._memory_maintenance_loop(), name="memory-maint-loop"))
         self._workers.append(asyncio.create_task(self._person_profile_refresh_loop(), name="person-profile-loop"))
+        self._workers.append(asyncio.create_task(self._episode_generation_loop(), name="episode-generation-loop"))
         logger.info("TaskManager started with %s workers", len(self._workers))
 
     async def stop(self) -> None:
@@ -280,3 +281,46 @@ class TaskManager:
             except Exception as exc:
                 logger.warning("Person profile refresh loop error: %s", exc)
 
+    async def _episode_generation_loop(self) -> None:
+        while not self._stopping:
+            try:
+                interval_s = int(self.ctx.get_config("episode.generation_interval_seconds", 30))
+                await asyncio.sleep(max(1, interval_s))
+                if not bool(self.ctx.get_config("episode.enabled", True)):
+                    continue
+                if not bool(self.ctx.get_config("episode.generation_enabled", True)):
+                    continue
+
+                batch_size = int(self.ctx.get_config("episode.generation_batch_size", 20))
+                max_retry = int(self.ctx.get_config("episode.max_retry", 3))
+                rows = self.ctx.metadata_store.fetch_episode_source_rebuild_batch(
+                    limit=max(1, batch_size),
+                    max_retry=max(0, max_retry),
+                )
+                for row in rows:
+                    source = str(row.get("source", "") or "").strip()
+                    requested_at = row.get("requested_at")
+                    if not source:
+                        continue
+                    if not self.ctx.metadata_store.mark_episode_source_running(
+                        source,
+                        requested_at=requested_at,
+                    ):
+                        continue
+                    try:
+                        await self.ctx.episode_service.rebuild_source(source)
+                        self.ctx.metadata_store.mark_episode_source_done(
+                            source,
+                            requested_at=requested_at,
+                        )
+                    except Exception as exc:
+                        self.ctx.metadata_store.mark_episode_source_failed(
+                            source,
+                            str(exc),
+                            requested_at=requested_at,
+                        )
+                        logger.warning("Episode rebuild failed for source=%s: %s", source, exc)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.warning("Episode generation loop error: %s", exc, exc_info=True)

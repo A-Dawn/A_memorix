@@ -11,9 +11,13 @@ from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 from core.embedding.api_adapter import EmbeddingAPIAdapter
 from core.retrieval import DynamicThresholdFilter, DualPathRetriever, SparseBM25Index
 from core.storage import GraphStore, MetadataStore, VectorStore
+from core.utils.episode_retrieval_service import EpisodeRetrievalService
+from core.utils.episode_service import EpisodeService
 from core.utils.person_profile_service import PersonProfileService
+from core.utils.relation_write_service import RelationWriteService
 
 from .common.logging import get_logger
+from .llm_client import LLMClient
 from .settings import AppSettings
 
 logger = get_logger("A_Memorix.AppContext")
@@ -30,8 +34,13 @@ class AppContext:
     retriever: DualPathRetriever
     threshold_filter: DynamicThresholdFilter
     person_profile_service: PersonProfileService
+    relation_write_service: RelationWriteService
+    episode_service: EpisodeService
+    episode_retrieval_service: EpisodeRetrievalService
+    llm_client: LLMClient
     data_dir: Path
     config: Dict[str, Any]
+    _runtime_self_check_report: Optional[Dict[str, Any]] = None
     _runtime_auto_save: Optional[bool] = None
     _request_dedup_cache: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     _request_dedup_inflight: Dict[str, asyncio.Future] = field(default_factory=dict)

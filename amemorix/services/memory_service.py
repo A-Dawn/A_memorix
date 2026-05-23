@@ -82,6 +82,24 @@ class MemoryService:
         self.ctx.graph_store.save()
         return {"success": True, "count": len(hashes), "revived": revived}
 
+    async def freeze(self, query_or_hash: str) -> Dict[str, Any]:
+        hashes = await self._resolve_relations(query_or_hash)
+        if not hashes:
+            return {"success": False, "message": "未找到关系"}
+
+        cursor = self.ctx.metadata_store._conn.cursor()
+        placeholders = ",".join(["?"] * len(hashes))
+        cursor.execute(
+            f"SELECT hash, subject, object FROM relations WHERE hash IN ({placeholders})",
+            hashes,
+        )
+        edges = [(str(row[1]), str(row[2])) for row in cursor.fetchall()]
+        self.ctx.metadata_store.mark_relations_inactive(hashes)
+        if edges:
+            self.ctx.graph_store.deactivate_edges(edges)
+            self.ctx.graph_store.save()
+        return {"success": True, "count": len(hashes), "frozen_edges": len(edges)}
+
     async def restore(self, hash_value: str, restore_type: str = "relation") -> Dict[str, Any]:
         h = str(hash_value or "").strip().lower()
         if not h:
@@ -121,6 +139,22 @@ class MemoryService:
             if hits:
                 return hits
 
+        if "_" in value:
+            subject, obj = value.split("_", 1)
+            rels = self.ctx.metadata_store.get_relations(subject=subject, object=obj)
+            hashes = [str(item.get("hash", "")) for item in rels if item.get("hash")]
+            if hashes:
+                return hashes[:5]
+
+        cursor = self.ctx.metadata_store._conn.cursor()
+        cursor.execute(
+            "SELECT hash FROM relations WHERE subject LIKE ? OR object LIKE ? LIMIT 5",
+            (f"%{value}%", f"%{value}%"),
+        )
+        hits = [str(row[0]) for row in cursor.fetchall()]
+        if hits:
+            return hits
+
         # Semantic relation fallback
         search = await SearchExecutionService.execute(
             retriever=self.ctx.retriever,
@@ -147,9 +181,4 @@ class MemoryService:
             if hashes:
                 return hashes[:5]
 
-        cursor = self.ctx.metadata_store._conn.cursor()
-        cursor.execute(
-            "SELECT hash FROM relations WHERE subject LIKE ? OR object LIKE ? LIMIT 5",
-            (f"%{value}%", f"%{value}%"),
-        )
-        return [str(row[0]) for row in cursor.fetchall()]
+        return []

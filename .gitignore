@@ -213,6 +213,7 @@ benchmark_output.txt
 e2e_debug.log
 e2e_error.log
 full_diff.txt
+visual-checks*/
 
 # Large Test Data Files
 机娘导论-openie.json
@@ -223,7 +224,6 @@ data.zip
 scripts/full_feature_smoke_test.py
 ACL2026_DEMO_EVAL.md
 .probe_write
-tests/
 temp_verify_v5_data/metadata/metadata.db
 sql2/t.db
 sql2/t.db-journal

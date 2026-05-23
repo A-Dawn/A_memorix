@@ -400,4 +400,3 @@ class SparseBM25Index:
             "has_jieba": HAS_JIEBA,
             "doc_count": doc_count,
         }
-

@@ -431,4 +431,3 @@ class SearchExecutionService:
                 }
             )
         return serialized
-

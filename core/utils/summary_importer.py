@@ -60,6 +60,11 @@ class SummaryImporter:
         self.embedding_manager = embedding_manager
         self.plugin_config = plugin_config or {}
         self.llm_client = llm_client
+        self.relation_write_service = (
+            self.plugin_config.get("relation_write_service")
+            if isinstance(self.plugin_config, dict)
+            else None
+        )
 
     def _cfg(self, key: str, default: Any = None) -> Any:
         current: Any = self.plugin_config if isinstance(self.plugin_config, dict) else {}
@@ -203,13 +208,23 @@ class SummaryImporter:
             o = str(rel.get("object", "")).strip()
             if not (s and p and o):
                 continue
-            rel_hash = self.metadata_store.add_relation(
-                subject=s,
-                predicate=p,
-                obj=o,
-                confidence=1.0,
-                source_paragraph=hash_value,
-            )
-            self.graph_store.add_edges([(s, o)], relation_hashes=[rel_hash])
+            if self.relation_write_service is not None:
+                await self.relation_write_service.upsert_relation_with_vector(
+                    subject=s,
+                    predicate=p,
+                    obj=o,
+                    confidence=1.0,
+                    source_paragraph=hash_value,
+                    write_vector=bool(self._cfg("retrieval.relation_vectorization.enabled", True)),
+                )
+            else:
+                rel_hash = self.metadata_store.add_relation(
+                    subject=s,
+                    predicate=p,
+                    obj=o,
+                    confidence=1.0,
+                    source_paragraph=hash_value,
+                )
+                self.graph_store.add_edges([(s, o)], relation_hashes=[rel_hash])
 
         logger.info("Summary imported: %s", hash_value[:8])

@@ -7,6 +7,7 @@ from .dual_path import (
     DualPathRetrieverConfig,
     TemporalQueryOptions,
     FusionConfig,
+    RelationIntentConfig,
 )
 from .pagerank import (
     PersonalizedPageRank,
@@ -22,6 +23,10 @@ from .sparse_bm25 import (
     SparseBM25Index,
     SparseBM25Config,
 )
+from .graph_relation_recall import (
+    GraphRelationRecallConfig,
+    GraphRelationRecallService,
+)
 
 __all__ = [
     # DualPathRetriever
@@ -31,6 +36,7 @@ __all__ = [
     "DualPathRetrieverConfig",
     "TemporalQueryOptions",
     "FusionConfig",
+    "RelationIntentConfig",
     # PersonalizedPageRank
     "PersonalizedPageRank",
     "PageRankConfig",
@@ -42,4 +48,7 @@ __all__ = [
     # Sparse BM25
     "SparseBM25Index",
     "SparseBM25Config",
+    # Graph relation recall
+    "GraphRelationRecallConfig",
+    "GraphRelationRecallService",
 ]

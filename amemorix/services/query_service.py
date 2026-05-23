@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+from core.utils.aggregate_query_service import AggregateQueryService
 from core.utils.search_execution_service import (
     SearchExecutionRequest,
     SearchExecutionService,
@@ -131,6 +132,93 @@ class QueryService:
             "relations": rels,
         }
 
+    async def episode(
+        self,
+        *,
+        query: str = "",
+        time_from: Optional[str] = None,
+        time_to: Optional[str] = None,
+        person: Optional[str] = None,
+        source: Optional[str] = None,
+        top_k: Optional[int] = None,
+        include_paragraphs: bool = False,
+    ) -> Dict[str, Any]:
+        ts_from, ts_to = parse_query_time_range(time_from, time_to) if (time_from or time_to) else (None, None)
+        safe_top_k = max(1, min(50, int(top_k or self.ctx.get_config("retrieval.temporal.default_top_k", 10))))
+        results = await self.ctx.episode_retrieval_service.query(
+            query=query,
+            top_k=safe_top_k,
+            time_from=ts_from,
+            time_to=ts_to,
+            person=person,
+            source=source,
+            include_paragraphs=include_paragraphs,
+        )
+        return {
+            "query_type": "episode",
+            "query": query,
+            "time_from": time_from,
+            "time_to": time_to,
+            "top_k": safe_top_k,
+            "count": len(results),
+            "results": results,
+        }
+
+    async def aggregate(
+        self,
+        *,
+        query: str = "",
+        time_from: Optional[str] = None,
+        time_to: Optional[str] = None,
+        person: Optional[str] = None,
+        source: Optional[str] = None,
+        top_k: Optional[int] = None,
+        mix: bool = True,
+        mix_top_k: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        safe_top_k = max(1, min(50, int(top_k or self.ctx.get_config("retrieval.temporal.default_top_k", 10))))
+
+        async def _search_runner() -> Dict[str, Any]:
+            payload = await self.search(query=query, top_k=safe_top_k)
+            payload["success"] = True
+            return payload
+
+        async def _time_runner() -> Dict[str, Any]:
+            payload = await self.time_search(
+                query=query,
+                time_from=time_from,
+                time_to=time_to,
+                person=person,
+                source=source,
+                top_k=safe_top_k,
+            )
+            payload["success"] = True
+            return payload
+
+        async def _episode_runner() -> Dict[str, Any]:
+            payload = await self.episode(
+                query=query,
+                time_from=time_from,
+                time_to=time_to,
+                person=person,
+                source=source,
+                top_k=safe_top_k,
+            )
+            payload["success"] = True
+            return payload
+
+        return await AggregateQueryService(self.ctx).execute(
+            query=query,
+            top_k=safe_top_k,
+            mix=bool(mix),
+            mix_top_k=mix_top_k,
+            time_from=time_from,
+            time_to=time_to,
+            search_runner=_search_runner,
+            time_runner=_time_runner if (time_from or time_to) else None,
+            episode_runner=_episode_runner,
+        )
+
     async def stats(self) -> Dict[str, Any]:
         vector_stats = {"num_vectors": self.ctx.vector_store.num_vectors, "dimension": self.ctx.vector_store.dimension}
         graph_stats = {"num_nodes": self.ctx.graph_store.num_nodes, "num_edges": self.ctx.graph_store.num_edges}
@@ -142,4 +230,3 @@ class QueryService:
             "retriever": self.ctx.retriever.get_statistics(),
             "sparse": self.ctx.sparse_index.stats() if self.ctx.sparse_index is not None else None,
         }
-

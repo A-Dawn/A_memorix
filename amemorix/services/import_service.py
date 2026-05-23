@@ -118,20 +118,24 @@ class ImportService:
         if not (s and p and o):
             raise ValueError("relation subject/predicate/object cannot be empty")
 
-        self.ctx.graph_store.add_nodes([s, o])
-        rel_hash = self.ctx.metadata_store.add_relation(
+        write_vector = bool(self.ctx.get_config("retrieval.relation_vectorization.enabled", True))
+        result = await self.ctx.relation_write_service.upsert_relation_with_vector(
             subject=s,
             predicate=p,
             obj=o,
             confidence=float(confidence),
             source_paragraph=source_paragraph,
+            write_vector=write_vector,
         )
-        self.ctx.graph_store.add_edges([(s, o)], weights=[float(confidence)], relation_hashes=[rel_hash])
-
-        relation_text = f"{s} {p} {o}"
-        rel_embedding = await self.ctx.embedding_manager.encode(relation_text)
-        self.ctx.vector_store.add(vectors=rel_embedding.reshape(1, -1), ids=[rel_hash])
-        return {"mode": "relation", "hash": rel_hash, "subject": s, "predicate": p, "object": o}
+        return {
+            "mode": "relation",
+            "hash": result.hash_value,
+            "subject": s,
+            "predicate": p,
+            "object": o,
+            "vector_state": result.vector_state,
+            "vector_written": result.vector_written,
+        }
 
     async def import_json(self, payload: Any) -> Dict[str, Any]:
         if isinstance(payload, str):
@@ -232,4 +236,3 @@ class ImportService:
             if current:
                 out.append(current.strip())
         return out
-
