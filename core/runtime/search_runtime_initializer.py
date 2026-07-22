@@ -1,4 +1,4 @@
-"""Shared runtime initializer for Action/Tool/Command retrieval components."""
+"""Action、Tool 和 Command 检索组件共用的运行时初始化器。"""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from ..retrieval import (
     SparseBM25Config,
     ThresholdConfig,
     ThresholdMethod,
+    VectorPoolsConfig,
 )
 
 _logger = get_logger("A_Memorix.SearchRuntimeInitializer")
@@ -54,11 +55,32 @@ def _resolve_debug_enabled(plugin_config: Optional[dict]) -> bool:
     return bool(_get_config_value(plugin_config, "debug", False))
 
 
+def _resolve_vector_pools_ready(plugin_config: Optional[dict]) -> bool:
+    configured = _get_config_value(plugin_config, "runtime.vector_pools_ready", None)
+    if configured is not None:
+        return bool(configured)
+
+    plugin_instance = _get_config_value(plugin_config, "plugin_instance")
+    checker = getattr(plugin_instance, "_dual_vector_pools_enabled", None)
+    if callable(checker):
+        return bool(checker())
+
+    try:
+        from ...runtime_registry import get_runtime_components
+
+        instances = get_runtime_components()
+    except Exception:
+        instances = {}
+    return bool(instances.get("vector_pools_ready")) if isinstance(instances, dict) else False
+
+
 @dataclass
 class SearchRuntimeBundle:
-    """Resolved runtime components and initialized retriever/filter."""
+    """已解析的运行时组件，以及完成初始化的检索器和过滤器。"""
 
     vector_store: Optional[Any] = None
+    paragraph_vector_store: Optional[Any] = None
+    graph_vector_store: Optional[Any] = None
     graph_store: Optional[Any] = None
     metadata_store: Optional[Any] = None
     embedding_manager: Optional[Any] = None
@@ -81,16 +103,20 @@ class SearchRuntimeBundle:
 def _resolve_runtime_components(plugin_config: Optional[dict]) -> SearchRuntimeBundle:
     bundle = SearchRuntimeBundle(
         vector_store=_get_config_value(plugin_config, "vector_store"),
+        paragraph_vector_store=_get_config_value(plugin_config, "paragraph_vector_store"),
+        graph_vector_store=_get_config_value(plugin_config, "graph_vector_store"),
         graph_store=_get_config_value(plugin_config, "graph_store"),
         metadata_store=_get_config_value(plugin_config, "metadata_store"),
         embedding_manager=_get_config_value(plugin_config, "embedding_manager"),
         sparse_index=_get_config_value(plugin_config, "sparse_index"),
     )
 
-    missing_required = any(
-        getattr(bundle, key) is None for key in _REQUIRED_COMPONENT_KEYS
-    )
+    missing_required = any(getattr(bundle, key) is None for key in _REQUIRED_COMPONENT_KEYS)
     if not missing_required:
+        if bundle.paragraph_vector_store is None:
+            bundle.paragraph_vector_store = bundle.vector_store
+        if bundle.graph_vector_store is None:
+            bundle.graph_vector_store = bundle.vector_store
         return bundle
 
     try:
@@ -105,6 +131,10 @@ def _resolve_runtime_components(plugin_config: Optional[dict]) -> SearchRuntimeB
 
     if bundle.vector_store is None:
         bundle.vector_store = instances.get("vector_store")
+    if bundle.paragraph_vector_store is None:
+        bundle.paragraph_vector_store = instances.get("paragraph_vector_store")
+    if bundle.graph_vector_store is None:
+        bundle.graph_vector_store = instances.get("graph_vector_store")
     if bundle.graph_store is None:
         bundle.graph_store = instances.get("graph_store")
     if bundle.metadata_store is None:
@@ -113,6 +143,10 @@ def _resolve_runtime_components(plugin_config: Optional[dict]) -> SearchRuntimeB
         bundle.embedding_manager = instances.get("embedding_manager")
     if bundle.sparse_index is None:
         bundle.sparse_index = instances.get("sparse_index")
+    if bundle.paragraph_vector_store is None:
+        bundle.paragraph_vector_store = bundle.vector_store
+    if bundle.graph_vector_store is None:
+        bundle.graph_vector_store = bundle.vector_store
     return bundle
 
 
@@ -123,7 +157,7 @@ def build_search_runtime(
     *,
     log_prefix: str = "",
 ) -> SearchRuntimeBundle:
-    """Build retriever + threshold filter with unified fallback/config parsing."""
+    """通过统一的降级与配置解析构建检索器和阈值过滤器。"""
 
     log = logger_obj or _logger
     owner = str(owner_tag or "runtime").strip().lower() or "runtime"
@@ -138,15 +172,15 @@ def build_search_runtime(
 
     sparse_cfg_raw = _safe_dict(_get_config_value(plugin_config, "retrieval.sparse", {}) or {})
     fusion_cfg_raw = _safe_dict(_get_config_value(plugin_config, "retrieval.fusion", {}) or {})
-    relation_intent_cfg_raw = _safe_dict(
-        _get_config_value(plugin_config, "retrieval.search.relation_intent", {}) or {}
-    )
-    graph_recall_cfg_raw = _safe_dict(
-        _get_config_value(plugin_config, "retrieval.search.graph_recall", {}) or {}
-    )
-    posterior_graph_cfg_raw = _safe_dict(
-        _get_config_value(plugin_config, "retrieval.search.posterior_graph", {}) or {}
-    )
+    relation_intent_cfg_raw = _safe_dict(_get_config_value(plugin_config, "retrieval.search.relation_intent", {}) or {})
+    graph_recall_cfg_raw = _safe_dict(_get_config_value(plugin_config, "retrieval.search.graph_recall", {}) or {})
+    posterior_graph_cfg_raw = _safe_dict(_get_config_value(plugin_config, "retrieval.search.posterior_graph", {}) or {})
+    vector_pools_cfg_raw = _safe_dict(_get_config_value(plugin_config, "retrieval.vector_pools", {}) or {})
+    vector_pools_ready = _resolve_vector_pools_ready(plugin_config)
+    if str(vector_pools_cfg_raw.get("mode", "dual") or "dual").strip().lower() == "dual" and not vector_pools_ready:
+        vector_pools_cfg_raw = dict(vector_pools_cfg_raw)
+        vector_pools_cfg_raw["mode"] = "single"
+        log.warning(f"{prefix_text}[{owner}] 双池向量尚未 ready，当前按单池检索运行")
 
     try:
         sparse_cfg = SparseBM25Config(**sparse_cfg_raw)
@@ -179,6 +213,12 @@ def build_search_runtime(
         posterior_graph_cfg = PosteriorGraphConfig()
 
     try:
+        vector_pools_cfg = VectorPoolsConfig(**vector_pools_cfg_raw)
+    except Exception as e:
+        log.warning(f"{prefix_text}[{owner}] vector_pools 配置非法，回退默认: {e}")
+        vector_pools_cfg = VectorPoolsConfig()
+
+    try:
         config = DualPathRetrieverConfig(
             top_k_paragraphs=_get_config_value(plugin_config, "retrieval.top_k_paragraphs", 20),
             top_k_relations=_get_config_value(plugin_config, "retrieval.top_k_relations", 10),
@@ -186,24 +226,27 @@ def build_search_runtime(
             alpha=_get_config_value(plugin_config, "retrieval.alpha", 0.5),
             enable_ppr=_get_config_value(plugin_config, "retrieval.enable_ppr", True),
             ppr_alpha=_get_config_value(plugin_config, "retrieval.ppr_alpha", 0.85),
-            ppr_timeout_seconds=_get_config_value(
-                plugin_config, "retrieval.ppr_timeout_seconds", 1.5
-            ),
-            ppr_concurrency_limit=_get_config_value(
-                plugin_config, "retrieval.ppr_concurrency_limit", 4
-            ),
+            ppr_timeout_seconds=_get_config_value(plugin_config, "retrieval.ppr_timeout_seconds", 1.5),
+            ppr_concurrency_limit=_get_config_value(plugin_config, "retrieval.ppr_concurrency_limit", 4),
+            ppr_local_enabled=_get_config_value(plugin_config, "retrieval.ppr_local_enabled", True),
+            ppr_local_max_nodes=_get_config_value(plugin_config, "retrieval.ppr_local_max_nodes", 256),
+            ppr_local_hops=_get_config_value(plugin_config, "retrieval.ppr_local_hops", 2),
+            ppr_local_min_graph_nodes=_get_config_value(plugin_config, "retrieval.ppr_local_min_graph_nodes", 128),
             enable_parallel=_get_config_value(plugin_config, "retrieval.enable_parallel", True),
             retrieval_strategy=RetrievalStrategy.DUAL_PATH,
             debug=_resolve_debug_enabled(plugin_config),
             sparse=sparse_cfg,
             fusion=fusion_cfg,
             relation_intent=relation_intent_cfg,
+            vector_pools=vector_pools_cfg,
             graph_recall=graph_recall_cfg,
             posterior_graph=posterior_graph_cfg,
         )
 
         runtime.retriever = DualPathRetriever(
             vector_store=runtime.vector_store,
+            paragraph_vector_store=runtime.paragraph_vector_store or runtime.vector_store,
+            graph_vector_store=runtime.graph_vector_store or runtime.vector_store,
             graph_store=runtime.graph_store,
             metadata_store=runtime.metadata_store,
             embedding_manager=runtime.embedding_manager,
@@ -213,12 +256,11 @@ def build_search_runtime(
 
         threshold_config = ThresholdConfig(
             method=ThresholdMethod.ADAPTIVE,
-            min_threshold=_get_config_value(plugin_config, "threshold.min_threshold", 0.3),
+            min_threshold=_get_config_value(plugin_config, "threshold.min_threshold", 0.29),
             max_threshold=_get_config_value(plugin_config, "threshold.max_threshold", 0.95),
             percentile=_get_config_value(plugin_config, "threshold.percentile", 75.0),
             std_multiplier=_get_config_value(plugin_config, "threshold.std_multiplier", 1.5),
-            min_results=_get_config_value(plugin_config, "threshold.min_results", 3),
-            enable_auto_adjust=_get_config_value(plugin_config, "threshold.enable_auto_adjust", True),
+            min_results=_get_config_value(plugin_config, "threshold.min_results", 4),
         )
         runtime.threshold_filter = DynamicThresholdFilter(threshold_config)
         runtime.error = ""
@@ -233,7 +275,7 @@ def build_search_runtime(
 
 
 class SearchRuntimeInitializer:
-    """Compatibility wrapper around the function style initializer."""
+    """函数式初始化器的兼容包装类。"""
 
     @staticmethod
     def build_search_runtime(

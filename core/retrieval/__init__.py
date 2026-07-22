@@ -8,6 +8,7 @@ from .dual_path import (
     TemporalQueryOptions,
     FusionConfig,
     RelationIntentConfig,
+    VectorPoolsConfig,
 )
 from .posterior_graph import PosteriorGraphConfig
 from .pagerank import (
@@ -21,8 +22,11 @@ from .threshold import (
     ThresholdConfig,
 )
 from .sparse_bm25 import (
-    SparseBM25Index,
+    ExperimentalExternalInvertedIndexBackend,
     SparseBM25Config,
+    SparseBM25Index,
+    SparseSearchBackend,
+    SQLiteFTS5SparseBackend,
 )
 from .graph_relation_recall import (
     GraphRelationRecallConfig,
@@ -30,7 +34,7 @@ from .graph_relation_recall import (
 )
 
 __all__ = [
-    # DualPathRetriever
+    # 双路检索器（DualPathRetriever）
     "DualPathRetriever",
     "RetrievalStrategy",
     "RetrievalResult",
@@ -38,19 +42,23 @@ __all__ = [
     "TemporalQueryOptions",
     "FusionConfig",
     "RelationIntentConfig",
+    "VectorPoolsConfig",
     "PosteriorGraphConfig",
-    # PersonalizedPageRank
+    # 个性化 PageRank（PersonalizedPageRank）
     "PersonalizedPageRank",
     "PageRankConfig",
     "create_ppr_from_graph",
-    # DynamicThresholdFilter
+    # 动态阈值过滤器（DynamicThresholdFilter）
     "DynamicThresholdFilter",
     "ThresholdMethod",
     "ThresholdConfig",
-    # Sparse BM25
+    # 稀疏检索（Sparse BM25）
     "SparseBM25Index",
     "SparseBM25Config",
-    # Graph relation recall
+    "SparseSearchBackend",
+    "SQLiteFTS5SparseBackend",
+    "ExperimentalExternalInvertedIndexBackend",
+    # 图关系召回（Graph relation recall）
     "GraphRelationRecallConfig",
     "GraphRelationRecallService",
 ]

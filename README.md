@@ -12,6 +12,7 @@ A_Memorix 是 MaiBot 内置的长期记忆子系统。
 - [快速入门](QUICK_START.md)
 - [配置参数详解](CONFIG_REFERENCE.md)
 - [导入指南与最佳实践](IMPORT_GUIDE.md)
+- [修改约定](MODIFICATION_POLICY.md)
 - [更新日志](CHANGELOG.md)
 
 ## 2.0.0 版本定位
@@ -20,7 +21,7 @@ A_Memorix 是 MaiBot 内置的长期记忆子系统。
 
 - 旧 `components/commands/*`、`components/tools/*` 与 `server.py` 已移除。
 - 统一入口为宿主侧 host service + [`core/runtime/sdk_memory_kernel.py`](core/runtime/sdk_memory_kernel.py)。
-- 元数据 schema 为 `v12`，支持外部引用、反馈纠错队列、画像刷新队列、Episode 重建队列、向量回填队列与运维操作记录（如 `external_memory_refs`、`memory_v5_operations`、`delete_operations`）。
+- 元数据 schema 为 `v9`，支持外部引用与运维操作记录（如 `external_memory_refs`、`memory_v5_operations`、`delete_operations`）。
 
 如果你还在使用旧版 slash 命令（如 `/query`、`/memory`、`/visualize`），需要按本文的 Tool 接口迁移。
 
@@ -51,7 +52,7 @@ A_Memorix 是 MaiBot 内置的长期记忆子系统。
 | --- | --- |
 | `memory_graph_admin` | `get_graph/create_node/delete_node/rename_node/create_edge/delete_edge/update_edge_weight` |
 | `memory_source_admin` | `list/delete/batch_delete` |
-| `memory_episode_admin` | `query/list/get/status/rebuild/process_pending` |
+| `memory_episode_admin` | `query/list/get/status/rebuild/process_sources` |
 | `memory_profile_admin` | `query/list/set_override/delete_override` |
 | `memory_runtime_admin` | `save/get_config/self_check/refresh_self_check/set_auto_save` |
 | `memory_import_admin` | `settings/get_guide/create_upload/create_paste/create_raw_scan/create_lpmm_openie/create_lpmm_convert/create_temporal_backfill/create_maibot_migration/list/get/chunks/cancel/retry_failed` |
@@ -164,9 +165,37 @@ python src/A_memorix/scripts/process_knowledge.py
 
 - 常用字段：通过长期记忆控制台可视化调整。
 - 长尾高级项：继续通过“源码模式 / 原始 TOML”编辑。
-- 当前分支不再保留 `web/*.html` 静态页，也不再内置独立 `server.py`。
-- 页面路由与 API 暴露由宿主侧 React 页面和 `/api/webui/memory/*` 接口承接，并保留 `/api/*` 兼容路由。
-- WebUI 回归验证脚本由 MaiBot 宿主仓库维护，避免上游 A_Memorix 分支携带宿主侧 dashboard 资产。
+
+仓库内保留了 Web 静态页面：
+
+- `web/index.html`（图谱与记忆管理）
+- `web/import.html`（导入中心）
+- `web/tuning.html`（检索调优）
+
+当前分支不再内置独立 `server.py`，页面路由与 API 暴露由宿主侧 React 页面和 `/api/webui/memory/*` 接口承接（并保留 `/api/*` 兼容路由）。
+
+### WebUI 验证脚本
+
+仓库内提供了一套可重复执行的 Electron 验证脚本，用来回归这条真实链路：
+
+- 登录页可访问
+- 长期记忆控制台可打开
+- 通过 WebUI 以 `json` 模式创建导入任务
+- 长期记忆图谱可刷新并产出截图
+- 插件配置页中不再把 A_Memorix 当作插件展示
+
+执行方式：
+
+```bash
+bash scripts/verify_a_memorix_webui.sh
+```
+
+默认会把截图、任务明细和摘要结果写到 `tmp/ui-snapshots/a_memorix-electron/`。
+如果你已经手动启动了后端和 dashboard，可以加：
+
+```bash
+MAIBOT_UI_REUSE_SERVICES=1 bash scripts/verify_a_memorix_webui.sh
+```
 
 ## 常用脚本
 
@@ -201,6 +230,7 @@ python src/A_memorix/scripts/process_knowledge.py
 - `embedding.quantization_type`（当前仅支持 `int8`）
 - `retrieval.*`
 - `retrieval.sparse.*`
+- `filter.retrieval.*`（仅检索结果后置过滤，不影响写入、摘要/Episode 生成或人物画像）
 - `episode.*`
 - `person_profile.*`
 - `memory.*`

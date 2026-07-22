@@ -2,14 +2,16 @@
 请求式嵌入 API 适配器。
 
 统一记忆插件内部的维度控制语义：
-- 对外仅公开 `embedding.dimension`
-- 默认请求维度来自当前运行时的 canonical dimension
+- 对外公开 `embedding.dimension` 与 `embedding.dimension_request_mode`
+- 维度请求是否随默认 encode 发送由 `embedding.dimension_request_mode` 控制
 - provider-specific 字段在适配层内部完成映射
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import time
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -39,6 +41,7 @@ class EmbeddingAPIAdapter:
         default_dimension: int = 1024,
         enable_cache: bool = False,
         model_name: str = "auto",
+        dimension_request_mode: str = "explicit",
         retry_config: Optional[dict] = None,
     ) -> None:
         self.batch_size = max(1, int(batch_size))
@@ -46,6 +49,7 @@ class EmbeddingAPIAdapter:
         self.default_dimension = max(1, int(default_dimension))
         self.enable_cache = bool(enable_cache)
         self.model_name = str(model_name or "auto")
+        self.dimension_request_mode = self._normalize_dimension_request_mode(dimension_request_mode)
 
         self.retry_config = retry_config or {}
         self.max_attempts = max(1, int(self.retry_config.get("max_attempts", 5)))
@@ -58,13 +62,16 @@ class EmbeddingAPIAdapter:
         self._total_encoded = 0
         self._total_errors = 0
         self._total_time = 0.0
+        self._last_success_model_name = ""
+        self._last_success_provider_name = ""
 
         logger.info(
             "Embedding 初始化: "
             f"batch={self.batch_size}, "
             f"concurrent={self.max_concurrent}, "
             f"dim={self.default_dimension}, "
-            f"model={self.model_name}"
+            f"model={self.model_name}, "
+            f"dimension_request_mode={self.dimension_request_mode}"
         )
 
     def _get_current_model_config(self):
@@ -93,6 +100,58 @@ class EmbeddingAPIAdapter:
             return [self.model_name, *[name for name in configured if name != self.model_name]]
         return configured
 
+    @staticmethod
+    def _fingerprint_hash(payload: Dict[str, Any]) -> str:
+        normalized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        return f"sha256:{digest}"
+
+    def _resolve_model_provider_name(self, model_name: str) -> str:
+        token = str(model_name or "").strip()
+        if not token:
+            return ""
+        try:
+            return str(self._find_model_info(token).api_provider or "").strip()
+        except Exception:
+            return ""
+
+    def get_embedding_fingerprint(self, *, dimension: Optional[int] = None) -> Dict[str, Any]:
+        """返回当前适配器所用向量空间的精简指纹。"""
+        effective_dimension = max(1, int(dimension or self.get_embedding_dimension()))
+        model_token = str(self._last_success_model_name or "").strip()
+        provider_token = str(self._last_success_provider_name or "").strip()
+        source = "observed" if model_token else "configured"
+        candidate_names = [
+            str(item or "").strip() for item in self._resolve_candidate_model_names() if str(item or "").strip()
+        ]
+        if not model_token:
+            model_token = str(self.model_name or "auto").strip() or "auto"
+            if model_token == "auto" and candidate_names:
+                model_token = candidate_names[0]
+            if model_token != "auto":
+                provider_token = self._resolve_model_provider_name(model_token)
+        if model_token == "auto":
+            provider_token = ""
+
+        compare_payload: Dict[str, Any] = {
+            "model": model_token,
+            "provider": provider_token,
+            "dimension": effective_dimension,
+            "dimension_request_mode": self.dimension_request_mode,
+        }
+        if model_token == "auto":
+            compare_payload["candidate_models"] = candidate_names
+
+        return {
+            "version": 1,
+            "hash": self._fingerprint_hash(compare_payload),
+            "model": model_token,
+            "provider": provider_token,
+            "dimension": effective_dimension,
+            "dimension_request_mode": self.dimension_request_mode,
+            "source": source,
+        }
+
     def get_requested_dimension(self) -> int:
         if self._dimension is not None:
             return int(self._dimension)
@@ -109,6 +168,27 @@ class EmbeddingAPIAdapter:
         if override is not None:
             return override
         return self.get_requested_dimension()
+
+    @staticmethod
+    def _normalize_dimension_request_mode(mode: str) -> str:
+        normalized = str(mode or "explicit").strip().lower()
+        if normalized in {"auto", "explicit", "on_demand", "on-demand"}:
+            return "explicit"
+        if normalized in {"always", "force", "forced"}:
+            return "always"
+        if normalized in {"never", "none", "natural"}:
+            return "never"
+        logger.warning(f"未知 embedding.dimension_request_mode={mode!r}，回退 explicit")
+        return "explicit"
+
+    def _should_include_dimension(self, dimensions: Optional[int], include_dimension: bool) -> bool:
+        if not include_dimension:
+            return False
+        if self.dimension_request_mode == "never":
+            return False
+        if self.dimension_request_mode == "always":
+            return True
+        return dimensions is not None
 
     @staticmethod
     def _strip_dimension_control_keys(extra_params: dict) -> dict:
@@ -203,14 +283,17 @@ class EmbeddingAPIAdapter:
             try:
                 model_info = self._find_model_info(candidate_name)
                 api_provider = self._find_provider(model_info.api_provider)
-                client = client_registry.get_client_class_instance(api_provider, force_new=True)
+                client = client_registry.get_client_class_instance(api_provider)
 
-                requested_dimension = self._resolve_canonical_dimension(dimensions) if include_dimension else None
+                should_include_dimension = self._should_include_dimension(dimensions, include_dimension)
+                requested_dimension = (
+                    self._resolve_canonical_dimension(dimensions) if should_include_dimension else None
+                )
                 extra_params = self._build_request_extra_params(
                     api_provider=api_provider,
                     base_extra_params=dict(getattr(model_info, "extra_params", {}) or {}),
                     requested_dimension=requested_dimension,
-                    include_dimension=include_dimension,
+                    include_dimension=should_include_dimension,
                 )
 
                 response = await self._request_with_retry(
@@ -226,6 +309,8 @@ class EmbeddingAPIAdapter:
                     embedding,
                     source=f"embedding 模型 {candidate_name}",
                 )
+                self._last_success_model_name = str(candidate_name or "").strip()
+                self._last_success_provider_name = str(model_info.api_provider or "").strip()
                 return vector.tolist()
             except Exception as exc:
                 last_exc = exc
@@ -241,6 +326,7 @@ class EmbeddingAPIAdapter:
             [
                 str(self.model_name or "auto"),
                 str(self.default_dimension),
+                str(self.dimension_request_mode),
                 ",".join(candidate_names),
             ]
         )
@@ -262,24 +348,25 @@ class EmbeddingAPIAdapter:
             return self._dimension
 
         logger.info("检测嵌入维度...")
-        try:
-            target_dim = self.default_dimension
-            logger.debug(f"尝试请求指定维度: {target_dim}")
-            test_embedding = await self._get_embedding_direct("test", dimensions=target_dim)
-            if test_embedding and isinstance(test_embedding, list):
-                detected_dim = len(test_embedding)
-                if detected_dim == target_dim:
-                    logger.info(f"嵌入维度: {detected_dim}")
-                else:
-                    logger.warning(
-                        f"requested_dimension={target_dim} 但模型返回 detected_dimension={detected_dim}，将使用真实输出维度"
-                    )
-                self._dimension = detected_dim
-                self._dimension_detected = True
-                self._GLOBAL_DIMENSION_CACHE[cache_key] = int(detected_dim)
-                return detected_dim
-        except Exception as exc:
-            logger.debug(f"带维度参数探测失败: {exc}，尝试不带维度参数探测")
+        if self.dimension_request_mode == "always":
+            try:
+                target_dim = self.default_dimension
+                logger.debug(f"尝试请求指定维度: {target_dim}")
+                test_embedding = await self._get_embedding_direct("test", dimensions=target_dim)
+                if test_embedding and isinstance(test_embedding, list):
+                    detected_dim = len(test_embedding)
+                    if detected_dim == target_dim:
+                        logger.info(f"嵌入维度: {detected_dim}")
+                    else:
+                        logger.warning(
+                            f"requested_dimension={target_dim} 但模型返回 detected_dimension={detected_dim}，将使用真实输出维度"
+                        )
+                    self._dimension = detected_dim
+                    self._dimension_detected = True
+                    self._GLOBAL_DIMENSION_CACHE[cache_key] = int(detected_dim)
+                    return detected_dim
+            except Exception as exc:
+                logger.debug(f"带维度参数探测失败: {exc}，尝试不带维度参数探测")
 
         try:
             test_embedding = await self._get_embedding_direct("test", include_dimension=False)
@@ -311,9 +398,11 @@ class EmbeddingAPIAdapter:
         del normalize
 
         start_time = time.time()
-        if dimensions is None:
+        if dimensions is None or self.dimension_request_mode == "never":
             target_dim = int(await self._detect_dimension())
-            requested_dimension = self._resolve_canonical_dimension()
+            requested_dimension = (
+                None if self.dimension_request_mode != "always" else self._resolve_canonical_dimension()
+            )
         else:
             target_dim = self._resolve_canonical_dimension(dimensions)
             requested_dimension = target_dim
@@ -385,8 +474,13 @@ class EmbeddingAPIAdapter:
 
             semaphore = asyncio.Semaphore(self.max_concurrent)
 
-            async def encode_with_semaphore(text: str, batch_index: int, absolute_index: int):
-                async with semaphore:
+            async def encode_with_semaphore(
+                text: str,
+                batch_index: int,
+                absolute_index: int,
+                _semaphore: asyncio.Semaphore = semaphore,
+            ):
+                async with _semaphore:
                     embedding = await self._get_embedding_direct(text, dimensions=dimensions)
                     if embedding is None:
                         raise RuntimeError(f"文本 {absolute_index} 编码失败：embedding 返回为空")
@@ -396,10 +490,7 @@ class EmbeddingAPIAdapter:
                     )
                     return batch_index, vector
 
-            tasks = [
-                encode_with_semaphore(text, index, offset + index)
-                for index, text in uncached_items
-            ]
+            tasks = [encode_with_semaphore(text, index, offset + index) for index, text in uncached_items]
             results = await asyncio.gather(*tasks)
             normalized_results: List[Tuple[int, np.ndarray]] = []
             for batch_index, vector in results:
@@ -448,6 +539,7 @@ class EmbeddingAPIAdapter:
             "requested_dimension": int(self.get_requested_dimension()),
             "detected_dimension": int(self._dimension or 0),
             "dimension_detected": self._dimension_detected,
+            "dimension_request_mode": self.dimension_request_mode,
             "batch_size": self.batch_size,
             "max_concurrent": self.max_concurrent,
             "total_encoded": self._total_encoded,
@@ -468,6 +560,7 @@ class EmbeddingAPIAdapter:
             f"configured={self.default_dimension}, "
             f"requested={self.get_requested_dimension()}, "
             f"detected={self._dimension or 0}, "
+            f"dimension_request_mode={self.dimension_request_mode}, "
             f"encoded={self._total_encoded})"
         )
 
@@ -478,6 +571,7 @@ def create_embedding_api_adapter(
     default_dimension: int = 1024,
     enable_cache: bool = False,
     model_name: str = "auto",
+    dimension_request_mode: str = "explicit",
     retry_config: Optional[dict] = None,
 ) -> EmbeddingAPIAdapter:
     return EmbeddingAPIAdapter(
@@ -486,5 +580,6 @@ def create_embedding_api_adapter(
         default_dimension=default_dimension,
         enable_cache=enable_cache,
         model_name=model_name,
+        dimension_request_mode=dimension_request_mode,
         retry_config=retry_config,
     )
