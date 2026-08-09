@@ -19,8 +19,11 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	MemoryService_IngestText_FullMethodName   = "/a_memorix.api.v1.MemoryService/IngestText"
-	MemoryService_SearchMemory_FullMethodName = "/a_memorix.api.v1.MemoryService/SearchMemory"
+	MemoryService_IngestText_FullMethodName      = "/a_memorix.api.v1.MemoryService/IngestText"
+	MemoryService_BatchIngestText_FullMethodName = "/a_memorix.api.v1.MemoryService/BatchIngestText"
+	MemoryService_GetMemory_FullMethodName       = "/a_memorix.api.v1.MemoryService/GetMemory"
+	MemoryService_DeleteMemory_FullMethodName    = "/a_memorix.api.v1.MemoryService/DeleteMemory"
+	MemoryService_SearchMemory_FullMethodName    = "/a_memorix.api.v1.MemoryService/SearchMemory"
 )
 
 // MemoryServiceClient is the client API for MemoryService service.
@@ -28,6 +31,9 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type MemoryServiceClient interface {
 	IngestText(ctx context.Context, in *IngestTextRequest, opts ...grpc.CallOption) (*IngestTextResponse, error)
+	BatchIngestText(ctx context.Context, in *BatchIngestTextRequest, opts ...grpc.CallOption) (*BatchIngestTextResponse, error)
+	GetMemory(ctx context.Context, in *GetMemoryRequest, opts ...grpc.CallOption) (*GetMemoryResponse, error)
+	DeleteMemory(ctx context.Context, in *DeleteMemoryRequest, opts ...grpc.CallOption) (*DeleteMemoryResponse, error)
 	SearchMemory(ctx context.Context, in *SearchMemoryRequest, opts ...grpc.CallOption) (*SearchMemoryResponse, error)
 }
 
@@ -49,6 +55,36 @@ func (c *memoryServiceClient) IngestText(ctx context.Context, in *IngestTextRequ
 	return out, nil
 }
 
+func (c *memoryServiceClient) BatchIngestText(ctx context.Context, in *BatchIngestTextRequest, opts ...grpc.CallOption) (*BatchIngestTextResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BatchIngestTextResponse)
+	err := c.cc.Invoke(ctx, MemoryService_BatchIngestText_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *memoryServiceClient) GetMemory(ctx context.Context, in *GetMemoryRequest, opts ...grpc.CallOption) (*GetMemoryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetMemoryResponse)
+	err := c.cc.Invoke(ctx, MemoryService_GetMemory_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *memoryServiceClient) DeleteMemory(ctx context.Context, in *DeleteMemoryRequest, opts ...grpc.CallOption) (*DeleteMemoryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteMemoryResponse)
+	err := c.cc.Invoke(ctx, MemoryService_DeleteMemory_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *memoryServiceClient) SearchMemory(ctx context.Context, in *SearchMemoryRequest, opts ...grpc.CallOption) (*SearchMemoryResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SearchMemoryResponse)
@@ -64,6 +100,9 @@ func (c *memoryServiceClient) SearchMemory(ctx context.Context, in *SearchMemory
 // for forward compatibility.
 type MemoryServiceServer interface {
 	IngestText(context.Context, *IngestTextRequest) (*IngestTextResponse, error)
+	BatchIngestText(context.Context, *BatchIngestTextRequest) (*BatchIngestTextResponse, error)
+	GetMemory(context.Context, *GetMemoryRequest) (*GetMemoryResponse, error)
+	DeleteMemory(context.Context, *DeleteMemoryRequest) (*DeleteMemoryResponse, error)
 	SearchMemory(context.Context, *SearchMemoryRequest) (*SearchMemoryResponse, error)
 	mustEmbedUnimplementedMemoryServiceServer()
 }
@@ -77,6 +116,15 @@ type UnimplementedMemoryServiceServer struct{}
 
 func (UnimplementedMemoryServiceServer) IngestText(context.Context, *IngestTextRequest) (*IngestTextResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method IngestText not implemented")
+}
+func (UnimplementedMemoryServiceServer) BatchIngestText(context.Context, *BatchIngestTextRequest) (*BatchIngestTextResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method BatchIngestText not implemented")
+}
+func (UnimplementedMemoryServiceServer) GetMemory(context.Context, *GetMemoryRequest) (*GetMemoryResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetMemory not implemented")
+}
+func (UnimplementedMemoryServiceServer) DeleteMemory(context.Context, *DeleteMemoryRequest) (*DeleteMemoryResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteMemory not implemented")
 }
 func (UnimplementedMemoryServiceServer) SearchMemory(context.Context, *SearchMemoryRequest) (*SearchMemoryResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SearchMemory not implemented")
@@ -120,6 +168,60 @@ func _MemoryService_IngestText_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _MemoryService_BatchIngestText_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BatchIngestTextRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MemoryServiceServer).BatchIngestText(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: MemoryService_BatchIngestText_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(MemoryServiceServer).BatchIngestText(ctx, req.(*BatchIngestTextRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _MemoryService_GetMemory_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetMemoryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MemoryServiceServer).GetMemory(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: MemoryService_GetMemory_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(MemoryServiceServer).GetMemory(ctx, req.(*GetMemoryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _MemoryService_DeleteMemory_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteMemoryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MemoryServiceServer).DeleteMemory(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: MemoryService_DeleteMemory_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(MemoryServiceServer).DeleteMemory(ctx, req.(*DeleteMemoryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _MemoryService_SearchMemory_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SearchMemoryRequest)
 	if err := dec(in); err != nil {
@@ -148,6 +250,18 @@ var MemoryService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "IngestText",
 			Handler:    _MemoryService_IngestText_Handler,
+		},
+		{
+			MethodName: "BatchIngestText",
+			Handler:    _MemoryService_BatchIngestText_Handler,
+		},
+		{
+			MethodName: "GetMemory",
+			Handler:    _MemoryService_GetMemory_Handler,
+		},
+		{
+			MethodName: "DeleteMemory",
+			Handler:    _MemoryService_DeleteMemory_Handler,
 		},
 		{
 			MethodName: "SearchMemory",

@@ -24,4 +24,5 @@ message ErrorDetail {
   string trace_id = 3;
   bool retryable = 4;
   google.protobuf.Struct details = 5;
+  string message = 6;
 }

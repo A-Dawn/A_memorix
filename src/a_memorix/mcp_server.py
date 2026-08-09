@@ -11,7 +11,12 @@ from mcp.server.mcpserver import Context
 from pydantic import BaseModel, ConfigDict, Field
 
 from a_memorix.contracts import (
+    BatchIngestTextRequest,
     CreateNamespaceRequest,
+    DeleteBySourceRequest,
+    DeleteMemoryRequest,
+    GetMemoryRequest,
+    IngestTextInput,
     IngestTextRequest,
     NamespaceNotFoundError,
     RelationInput,
@@ -30,6 +35,23 @@ class MCPRelationInput(BaseModel):
     object_value: str = Field(alias="object", serialization_alias="object", min_length=1)
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class MCPIngestTextInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    text: str = Field(min_length=1)
+    source_type: str = Field(min_length=1, max_length=128)
+    external_id: str = ""
+    person_ids: list[str] = Field(default_factory=list)
+    participants: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    entities: list[str] = Field(default_factory=list)
+    relations: list[MCPRelationInput] = Field(default_factory=list)
+    metadata: dict[str, object] = Field(default_factory=dict)
+    observed_at: datetime | None = None
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
 
 
 def create_fixed_namespace_mcp(
@@ -150,6 +172,109 @@ def create_fixed_namespace_mcp(
         return result.model_dump(mode="json")
 
     @server.tool()
+    async def batch_ingest_text(
+        items: list[MCPIngestTextInput],
+        ctx: Context,
+        conversation_id: str = "",
+        user_id: str = "",
+        group_id: str = "",
+        idempotency_key: str = "",
+    ) -> dict[str, object]:
+        """Store up to 100 text memories in the bound namespace."""
+
+        result = await engine.batch_ingest_text(
+            BatchIngestTextRequest(
+                context=_request_context(
+                    namespace_id,
+                    ctx,
+                    conversation_id=conversation_id,
+                    user_id=user_id,
+                    group_id=group_id,
+                    idempotency_key=idempotency_key,
+                ),
+                items=tuple(_mcp_ingest_input(item) for item in items),
+            )
+        )
+        return result.model_dump(mode="json")
+
+    @server.tool()
+    async def get_memory(
+        ctx: Context,
+        memory_id: str = "",
+        external_id: str = "",
+    ) -> dict[str, object]:
+        """Read one memory from the bound namespace."""
+
+        result = await engine.get_memory(
+            GetMemoryRequest(
+                context=_request_context(namespace_id, ctx),
+                memory_id=memory_id,
+                external_id=external_id,
+            )
+        )
+        return result.model_dump(mode="json")
+
+    @server.tool()
+    async def delete_memory(
+        ctx: Context,
+        memory_id: str = "",
+        external_id: str = "",
+        reason: str = "user_delete",
+    ) -> dict[str, object]:
+        """Delete one memory from the bound namespace."""
+
+        result = await engine.delete_memory(
+            DeleteMemoryRequest(
+                context=_request_context(namespace_id, ctx),
+                memory_id=memory_id,
+                external_id=external_id,
+                reason=reason,
+            )
+        )
+        return result.model_dump(mode="json")
+
+    @server.tool()
+    async def delete_by_source(
+        source: str,
+        ctx: Context,
+        reason: str = "source_delete",
+    ) -> dict[str, object]:
+        """Start a source deletion job in the bound namespace."""
+
+        job = await engine.submit_delete_by_source(
+            DeleteBySourceRequest(
+                context=_request_context(namespace_id, ctx),
+                source=source,
+                reason=reason,
+            )
+        )
+        return job.model_dump(mode="json")
+
+    @server.tool()
+    async def get_job(job_id: str) -> dict[str, object]:
+        """Read one persistent job from the bound namespace."""
+
+        job = await engine.get_job(namespace_id, job_id)
+        return job.model_dump(mode="json")
+
+    @server.tool()
+    async def list_jobs(
+        page_size: int = 50,
+        page_token: str = "",
+    ) -> dict[str, object]:
+        """List persistent jobs in the bound namespace."""
+
+        jobs, next_page_token = await engine.list_jobs_page(
+            namespace_id,
+            page_size=page_size,
+            page_token=page_token,
+        )
+        return {
+            "jobs": [item.model_dump(mode="json") for item in jobs],
+            "next_page_token": next_page_token,
+        }
+
+    @server.tool()
     async def namespace_health() -> dict[str, object]:
         """Return health and resource usage for the bound namespace."""
 
@@ -176,3 +301,23 @@ def _request_context(
     if request_id:
         data["request_id"] = request_id
     return RequestContext.model_validate(data)
+
+
+def _mcp_ingest_input(value: MCPIngestTextInput) -> IngestTextInput:
+    return IngestTextInput(
+        external_id=value.external_id,
+        source_type=value.source_type,
+        text=value.text,
+        person_ids=tuple(value.person_ids),
+        participants=tuple(value.participants),
+        tags=tuple(value.tags),
+        entities=tuple(value.entities),
+        relations=tuple(
+            RelationInput.model_validate(item.model_dump(by_alias=True))
+            for item in value.relations
+        ),
+        metadata=value.metadata,
+        observed_at=value.observed_at,
+        valid_from=value.valid_from,
+        valid_to=value.valid_to,
+    )

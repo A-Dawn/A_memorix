@@ -28,10 +28,13 @@ message CreateApiKeyResponse {
 
 message ListApiKeysRequest {
   string namespace_id = 1;
+  optional uint32 page_size = 2;
+  string page_token = 3;
 }
 
 message ListApiKeysResponse {
   repeated ApiKeyInfo api_keys = 1;
+  string next_page_token = 2;
 }
 
 message RevokeApiKeyRequest {

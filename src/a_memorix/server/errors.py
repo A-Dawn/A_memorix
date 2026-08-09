@@ -59,6 +59,7 @@ async def abort_for_exception(
         trace_id=trace_id,
         retryable=public_error.retryable,
         details=mapping_to_struct(_safe_details(public_error.details)),
+        message=str(public_error),
     )
     packed = any_pb2.Any()
     packed.Pack(detail)

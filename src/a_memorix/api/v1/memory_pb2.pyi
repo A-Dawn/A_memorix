@@ -88,6 +88,128 @@ class IngestTextResponse(_message.Message):
     detail: str
     def __init__(self, stored_ids: _Optional[_Iterable[str]] = ..., skipped_ids: _Optional[_Iterable[str]] = ..., fact_claim_ids: _Optional[_Iterable[str]] = ..., warnings: _Optional[_Iterable[str]] = ..., detail: _Optional[str] = ...) -> None: ...
 
+class IngestTextInput(_message.Message):
+    __slots__ = ("external_id", "source_type", "text", "person_ids", "participants", "observed_at", "valid_from", "valid_to", "tags", "metadata", "entities", "relations", "respect_filter")
+    EXTERNAL_ID_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_TYPE_FIELD_NUMBER: _ClassVar[int]
+    TEXT_FIELD_NUMBER: _ClassVar[int]
+    PERSON_IDS_FIELD_NUMBER: _ClassVar[int]
+    PARTICIPANTS_FIELD_NUMBER: _ClassVar[int]
+    OBSERVED_AT_FIELD_NUMBER: _ClassVar[int]
+    VALID_FROM_FIELD_NUMBER: _ClassVar[int]
+    VALID_TO_FIELD_NUMBER: _ClassVar[int]
+    TAGS_FIELD_NUMBER: _ClassVar[int]
+    METADATA_FIELD_NUMBER: _ClassVar[int]
+    ENTITIES_FIELD_NUMBER: _ClassVar[int]
+    RELATIONS_FIELD_NUMBER: _ClassVar[int]
+    RESPECT_FILTER_FIELD_NUMBER: _ClassVar[int]
+    external_id: str
+    source_type: str
+    text: str
+    person_ids: _containers.RepeatedScalarFieldContainer[str]
+    participants: _containers.RepeatedScalarFieldContainer[str]
+    observed_at: _timestamp_pb2.Timestamp
+    valid_from: _timestamp_pb2.Timestamp
+    valid_to: _timestamp_pb2.Timestamp
+    tags: _containers.RepeatedScalarFieldContainer[str]
+    metadata: _struct_pb2.Struct
+    entities: _containers.RepeatedScalarFieldContainer[str]
+    relations: _containers.RepeatedCompositeFieldContainer[RelationInput]
+    respect_filter: bool
+    def __init__(self, external_id: _Optional[str] = ..., source_type: _Optional[str] = ..., text: _Optional[str] = ..., person_ids: _Optional[_Iterable[str]] = ..., participants: _Optional[_Iterable[str]] = ..., observed_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., valid_from: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., valid_to: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., tags: _Optional[_Iterable[str]] = ..., metadata: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., entities: _Optional[_Iterable[str]] = ..., relations: _Optional[_Iterable[_Union[RelationInput, _Mapping]]] = ..., respect_filter: _Optional[bool] = ...) -> None: ...
+
+class BatchIngestTextRequest(_message.Message):
+    __slots__ = ("context", "items")
+    CONTEXT_FIELD_NUMBER: _ClassVar[int]
+    ITEMS_FIELD_NUMBER: _ClassVar[int]
+    context: _common_pb2.RequestContext
+    items: _containers.RepeatedCompositeFieldContainer[IngestTextInput]
+    def __init__(self, context: _Optional[_Union[_common_pb2.RequestContext, _Mapping]] = ..., items: _Optional[_Iterable[_Union[IngestTextInput, _Mapping]]] = ...) -> None: ...
+
+class BatchIngestItemResult(_message.Message):
+    __slots__ = ("index", "response", "error")
+    INDEX_FIELD_NUMBER: _ClassVar[int]
+    RESPONSE_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    index: int
+    response: IngestTextResponse
+    error: _common_pb2.ErrorDetail
+    def __init__(self, index: _Optional[int] = ..., response: _Optional[_Union[IngestTextResponse, _Mapping]] = ..., error: _Optional[_Union[_common_pb2.ErrorDetail, _Mapping]] = ...) -> None: ...
+
+class BatchIngestTextResponse(_message.Message):
+    __slots__ = ("results", "succeeded", "failed")
+    RESULTS_FIELD_NUMBER: _ClassVar[int]
+    SUCCEEDED_FIELD_NUMBER: _ClassVar[int]
+    FAILED_FIELD_NUMBER: _ClassVar[int]
+    results: _containers.RepeatedCompositeFieldContainer[BatchIngestItemResult]
+    succeeded: int
+    failed: int
+    def __init__(self, results: _Optional[_Iterable[_Union[BatchIngestItemResult, _Mapping]]] = ..., succeeded: _Optional[int] = ..., failed: _Optional[int] = ...) -> None: ...
+
+class GetMemoryRequest(_message.Message):
+    __slots__ = ("context", "memory_id", "external_id")
+    CONTEXT_FIELD_NUMBER: _ClassVar[int]
+    MEMORY_ID_FIELD_NUMBER: _ClassVar[int]
+    EXTERNAL_ID_FIELD_NUMBER: _ClassVar[int]
+    context: _common_pb2.RequestContext
+    memory_id: str
+    external_id: str
+    def __init__(self, context: _Optional[_Union[_common_pb2.RequestContext, _Mapping]] = ..., memory_id: _Optional[str] = ..., external_id: _Optional[str] = ...) -> None: ...
+
+class MemoryRecord(_message.Message):
+    __slots__ = ("memory_id", "external_id", "source_type", "source", "content", "metadata", "created_at", "updated_at", "observed_at", "valid_from", "valid_to")
+    MEMORY_ID_FIELD_NUMBER: _ClassVar[int]
+    EXTERNAL_ID_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_TYPE_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_FIELD_NUMBER: _ClassVar[int]
+    CONTENT_FIELD_NUMBER: _ClassVar[int]
+    METADATA_FIELD_NUMBER: _ClassVar[int]
+    CREATED_AT_FIELD_NUMBER: _ClassVar[int]
+    UPDATED_AT_FIELD_NUMBER: _ClassVar[int]
+    OBSERVED_AT_FIELD_NUMBER: _ClassVar[int]
+    VALID_FROM_FIELD_NUMBER: _ClassVar[int]
+    VALID_TO_FIELD_NUMBER: _ClassVar[int]
+    memory_id: str
+    external_id: str
+    source_type: str
+    source: str
+    content: str
+    metadata: _struct_pb2.Struct
+    created_at: _timestamp_pb2.Timestamp
+    updated_at: _timestamp_pb2.Timestamp
+    observed_at: _timestamp_pb2.Timestamp
+    valid_from: _timestamp_pb2.Timestamp
+    valid_to: _timestamp_pb2.Timestamp
+    def __init__(self, memory_id: _Optional[str] = ..., external_id: _Optional[str] = ..., source_type: _Optional[str] = ..., source: _Optional[str] = ..., content: _Optional[str] = ..., metadata: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., updated_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., observed_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., valid_from: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., valid_to: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
+
+class GetMemoryResponse(_message.Message):
+    __slots__ = ("memory",)
+    MEMORY_FIELD_NUMBER: _ClassVar[int]
+    memory: MemoryRecord
+    def __init__(self, memory: _Optional[_Union[MemoryRecord, _Mapping]] = ...) -> None: ...
+
+class DeleteMemoryRequest(_message.Message):
+    __slots__ = ("context", "memory_id", "external_id", "reason")
+    CONTEXT_FIELD_NUMBER: _ClassVar[int]
+    MEMORY_ID_FIELD_NUMBER: _ClassVar[int]
+    EXTERNAL_ID_FIELD_NUMBER: _ClassVar[int]
+    REASON_FIELD_NUMBER: _ClassVar[int]
+    context: _common_pb2.RequestContext
+    memory_id: str
+    external_id: str
+    reason: str
+    def __init__(self, context: _Optional[_Union[_common_pb2.RequestContext, _Mapping]] = ..., memory_id: _Optional[str] = ..., external_id: _Optional[str] = ..., reason: _Optional[str] = ...) -> None: ...
+
+class DeleteMemoryResponse(_message.Message):
+    __slots__ = ("operation_id", "deleted_count", "deleted_memory_ids")
+    OPERATION_ID_FIELD_NUMBER: _ClassVar[int]
+    DELETED_COUNT_FIELD_NUMBER: _ClassVar[int]
+    DELETED_MEMORY_IDS_FIELD_NUMBER: _ClassVar[int]
+    operation_id: str
+    deleted_count: int
+    deleted_memory_ids: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, operation_id: _Optional[str] = ..., deleted_count: _Optional[int] = ..., deleted_memory_ids: _Optional[_Iterable[str]] = ...) -> None: ...
+
 class SearchMemoryRequest(_message.Message):
     __slots__ = ("context", "query", "limit", "mode", "shared_conversation_ids", "person_id", "time_start", "time_end", "respect_filter")
     CONTEXT_FIELD_NUMBER: _ClassVar[int]

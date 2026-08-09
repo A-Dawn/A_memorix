@@ -1,0 +1,96 @@
+syntax = "proto3";
+
+package a_memorix.api.v1;
+
+import "a_memorix/api/v1/common.proto";
+import "google/api/annotations.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+enum JobType {
+  JOB_TYPE_UNSPECIFIED = 0;
+  JOB_TYPE_DELETE_BY_SOURCE = 1;
+}
+
+enum JobStatus {
+  JOB_STATUS_UNSPECIFIED = 0;
+  JOB_STATUS_PENDING = 1;
+  JOB_STATUS_RUNNING = 2;
+  JOB_STATUS_SUCCEEDED = 3;
+  JOB_STATUS_FAILED = 4;
+  JOB_STATUS_CANCELLED = 5;
+}
+
+message JobInfo {
+  string job_id = 1;
+  string namespace_id = 2;
+  JobType job_type = 3;
+  JobStatus status = 4;
+  double progress = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp updated_at = 7;
+  google.protobuf.Timestamp started_at = 8;
+  google.protobuf.Timestamp completed_at = 9;
+  google.protobuf.Struct result = 10;
+  ErrorDetail error = 11;
+}
+
+message SubmitDeleteBySourceRequest {
+  RequestContext context = 1;
+  string source = 2;
+  string reason = 3;
+}
+
+message SubmitDeleteBySourceResponse {
+  JobInfo job = 1;
+}
+
+message GetJobRequest {
+  string namespace_id = 1;
+  string job_id = 2;
+}
+
+message GetJobResponse {
+  JobInfo job = 1;
+}
+
+message ListJobsRequest {
+  string namespace_id = 1;
+  optional uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListJobsResponse {
+  repeated JobInfo jobs = 1;
+  string next_page_token = 2;
+}
+
+message CancelJobRequest {
+  string namespace_id = 1;
+  string job_id = 2;
+}
+
+message CancelJobResponse {
+  JobInfo job = 1;
+}
+
+service JobService {
+  rpc SubmitDeleteBySource(SubmitDeleteBySourceRequest) returns (SubmitDeleteBySourceResponse) {
+    option (google.api.http) = {
+      post: "/v1/namespaces/{context.namespace_id}/memories:deleteBySource"
+      body: "*"
+    };
+  }
+
+  rpc GetJob(GetJobRequest) returns (GetJobResponse) {
+    option (google.api.http) = {get: "/v1/namespaces/{namespace_id}/jobs/{job_id}"};
+  }
+
+  rpc ListJobs(ListJobsRequest) returns (ListJobsResponse) {
+    option (google.api.http) = {get: "/v1/namespaces/{namespace_id}/jobs"};
+  }
+
+  rpc CancelJob(CancelJobRequest) returns (CancelJobResponse) {
+    option (google.api.http) = {post: "/v1/namespaces/{namespace_id}/jobs/{job_id}:cancel"};
+  }
+}

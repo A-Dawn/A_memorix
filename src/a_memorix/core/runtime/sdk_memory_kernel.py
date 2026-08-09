@@ -10,7 +10,12 @@ import time  # noqa: F401
 
 from a_memorix.logging import get_logger
 from a_memorix.paths import resolve_data_dir
-from a_memorix.ports import EmbeddingProvider, IdentityResolver, LLMProvider, MessageSource
+from a_memorix.ports import (
+    EmbeddingProvider,
+    IdentityResolver,
+    LLMProvider,
+    MessageSource,
+)
 
 from ..embedding import create_embedding_api_adapter  # noqa: F401
 from ..retrieval import SparseBM25Config, SparseBM25Index  # noqa: F401
@@ -55,7 +60,10 @@ from ..utils.profile_policy import (
     person_profile_refresh_retry_backoff_seconds,
     should_auto_enqueue_episode,
 )
-from ..utils.profile_evidence import profile_evidence_type_from_source, profile_relation_content
+from ..utils.profile_evidence import (
+    profile_evidence_type_from_source,
+    profile_relation_content,
+)
 from ..utils.person_profile_service import PersonProfileService
 from ..utils.relation_write_service import RelationWriteService
 from ..utils.retrieval_tuning_manager import RetrievalTuningManager
@@ -71,7 +79,11 @@ from ..utils.runtime_payloads import (
     tokens,
 )
 from ..utils.runtime_self_check import run_embedding_runtime_self_check  # noqa: F401
-from ..utils.search_execution_service import SearchExecutionRequest, SearchExecutionResult, SearchExecutionService  # noqa: F401
+from ..utils.search_execution_service import (
+    SearchExecutionRequest,  # noqa: F401
+    SearchExecutionResult,
+    SearchExecutionService,  # noqa: F401
+)
 from ..utils.summary_importer import SummaryImporter
 from ..utils.web_import_manager import ImportTaskManager
 from .kernel_compat import KernelCompatibilityMixin
@@ -110,7 +122,9 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
         self.identity_resolver = identity_resolver
         self.message_source = message_source
         self.embedding_dimension = max(1, int(self._cfg("embedding.dimension", 1024)))
-        self.relation_vectors_enabled = bool(self._cfg("retrieval.relation_vectorization.enabled", False))
+        self.relation_vectors_enabled = bool(
+            self._cfg("retrieval.relation_vectorization.enabled", False)
+        )
 
         self.embedding_manager = None
         self.vector_store: Optional[VectorStore] = None
@@ -195,7 +209,10 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
             "updated_at": None,
         }
         self._legacy_vector_view = None
-        self._current_effective_filter_cache: Dict[str, Any] = {"checked_at": 0.0, "needed": False}
+        self._current_effective_filter_cache: Dict[str, Any] = {
+            "checked_at": 0.0,
+            "needed": False,
+        }
         self._feedback_classifier: Optional[Any] = None
         self._fuzzy_modify_planner: Optional[Any] = None
 
@@ -292,12 +309,16 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
             current = next_value
         current[parts[-1]] = value
 
-    def _build_runtime_config(self, base_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def _build_runtime_config(
+        self, base_config: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         service = self._runtime_config_service
         return type(service)._build_runtime_config(service, base_config)
 
     @staticmethod
-    def _merge_runtime_config_patch(base: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
+    def _merge_runtime_config_patch(
+        base: Dict[str, Any], patch: Dict[str, Any]
+    ) -> Dict[str, Any]:
         from .services.runtime_config_service import MemoryRuntimeConfigService
 
         return MemoryRuntimeConfigService._merge_runtime_config_patch(base, patch)
@@ -309,7 +330,9 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
         validate: bool = True,
     ) -> Dict[str, Any]:
         service = self._runtime_config_service
-        return await type(service).apply_retrieval_tuning_profile(service, profile, validate=validate)
+        return await type(service).apply_retrieval_tuning_profile(
+            service, profile, validate=validate
+        )
 
     def is_runtime_ready(self) -> bool:
         return bool(self._initialized and self.metadata_store is not None)
@@ -321,16 +344,36 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
         self._runtime_capabilities[token] = bool(available)
 
     def _runtime_capability_status(self) -> Dict[str, Any]:
-        ordered_channels = ("metadata", "sparse", "graph", "vector_read", "vector_write", "embedding")
-        capabilities = {name: bool(self._runtime_capabilities.get(name, False)) for name in ordered_channels}
-        available_channels = [name for name, available in capabilities.items() if available]
-        unavailable_channels = [name for name, available in capabilities.items() if not available]
-        vector_retrieval_available = capabilities["vector_read"] and capabilities["embedding"]
-        retrieval_channels = [name for name in ("sparse", "graph") if capabilities[name]]
+        ordered_channels = (
+            "metadata",
+            "sparse",
+            "graph",
+            "vector_read",
+            "vector_write",
+            "embedding",
+        )
+        capabilities = {
+            name: bool(self._runtime_capabilities.get(name, False))
+            for name in ordered_channels
+        }
+        available_channels = [
+            name for name, available in capabilities.items() if available
+        ]
+        unavailable_channels = [
+            name for name, available in capabilities.items() if not available
+        ]
+        vector_retrieval_available = (
+            capabilities["vector_read"] and capabilities["embedding"]
+        )
+        retrieval_channels = [
+            name for name in ("sparse", "graph") if capabilities[name]
+        ]
         if vector_retrieval_available:
             retrieval_channels.insert(0, "vector_read")
         retrieval_ready = bool(capabilities["metadata"] and retrieval_channels)
-        if vector_retrieval_available and (capabilities["sparse"] or capabilities["graph"]):
+        if vector_retrieval_available and (
+            capabilities["sparse"] or capabilities["graph"]
+        ):
             retrieval_mode = "hybrid"
         elif vector_retrieval_available:
             retrieval_mode = "vector"
@@ -364,9 +407,29 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
             "vector_health": self._vector_health_snapshot(),
         }
 
-    def is_chat_enabled(self, stream_id: str, group_id: str | None = None, user_id: str | None = None) -> bool:
+    def runtime_capability_status(self) -> Dict[str, Any]:
+        """Return a transport-neutral snapshot of the active runtime."""
+
+        status = self._runtime_capability_status()
+        capabilities = dict(status.get("capabilities") or {})
+        capabilities.update(
+            {
+                "llm": self.llm_provider is not None,
+                "identity_resolver": self.identity_resolver is not None,
+                "message_source": self.message_source is not None,
+                "episodes": bool(self._cfg("episode.enabled", True)),
+                "person_profiles": bool(self._cfg("person_profile.enabled", True)),
+            }
+        )
+        return {**status, "capabilities": capabilities}
+
+    def is_chat_enabled(
+        self, stream_id: str, group_id: str | None = None, user_id: str | None = None
+    ) -> bool:
         service = self._chat_filter_service
-        return type(service).is_chat_enabled(service, stream_id=stream_id, group_id=group_id, user_id=user_id)
+        return type(service).is_chat_enabled(
+            service, stream_id=stream_id, group_id=group_id, user_id=user_id
+        )
 
     @staticmethod
     def _chat_filter_config_allows(
@@ -404,7 +467,9 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
             user_id=user_id,
         )
 
-    def _stored_vector_dimension(self, store: Optional[VectorStore] = None) -> Optional[int]:
+    def _stored_vector_dimension(
+        self, store: Optional[VectorStore] = None
+    ) -> Optional[int]:
         service = self._embedding_state_service
         return type(service)._stored_vector_dimension(service, store)
 
@@ -418,9 +483,13 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
         service = self._embedding_state_service
         return type(service)._current_embedding_status_dimension(service)
 
-    def _current_embedding_fingerprint(self, *, dimension: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    def _current_embedding_fingerprint(
+        self, *, dimension: Optional[int] = None
+    ) -> Optional[Dict[str, Any]]:
         service = self._embedding_state_service
-        return type(service)._current_embedding_fingerprint(service, dimension=dimension)
+        return type(service)._current_embedding_fingerprint(
+            service, dimension=dimension
+        )
 
     def _current_embedding_fingerprint_for_validation(
         self,
@@ -433,13 +502,19 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
             dimension=dimension,
         )
 
-    def _stored_embedding_fingerprint(self, store: Optional[VectorStore] = None) -> Optional[Dict[str, Any]]:
+    def _stored_embedding_fingerprint(
+        self, store: Optional[VectorStore] = None
+    ) -> Optional[Dict[str, Any]]:
         service = self._embedding_state_service
         return type(service)._stored_embedding_fingerprint(service, store)
 
-    def _stamp_missing_embedding_fingerprint_if_dimension_matches(self, store: Optional[VectorStore]) -> bool:
+    def _stamp_missing_embedding_fingerprint_if_dimension_matches(
+        self, store: Optional[VectorStore]
+    ) -> bool:
         service = self._embedding_state_service
-        return type(service)._stamp_missing_embedding_fingerprint_if_dimension_matches(service, store)
+        return type(service)._stamp_missing_embedding_fingerprint_if_dimension_matches(
+            service, store
+        )
 
     @staticmethod
     def _embedding_fingerprint_status(
@@ -456,11 +531,17 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
             has_stored_vectors=has_stored_vectors,
         )
 
-    def _stored_vectors_compatible_with_current_embedding(self, store: Optional[VectorStore] = None) -> bool:
+    def _stored_vectors_compatible_with_current_embedding(
+        self, store: Optional[VectorStore] = None
+    ) -> bool:
         service = self._embedding_state_service
-        return type(service)._stored_vectors_compatible_with_current_embedding(service, store)
+        return type(service)._stored_vectors_compatible_with_current_embedding(
+            service, store
+        )
 
-    def _vector_mismatch_error(self, *, stored_dimension: int, detected_dimension: int) -> str:
+    def _vector_mismatch_error(
+        self, *, stored_dimension: int, detected_dimension: int
+    ) -> str:
         service = self._embedding_state_service
         return type(service)._vector_mismatch_error(
             service,
@@ -534,7 +615,9 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
 
     def _dual_vector_ready(self, *, expected_dimension: Optional[int] = None) -> bool:
         service = self._dual_vector_state_service
-        return type(service)._dual_vector_ready(service, expected_dimension=expected_dimension)
+        return type(service)._dual_vector_ready(
+            service, expected_dimension=expected_dimension
+        )
 
     def _write_dual_vector_ready_manifest(
         self,
@@ -575,7 +658,9 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
         service = self._dual_vector_state_service
         return type(service)._cleanup_stale_dual_vector_build_dirs(service)
 
-    def _make_vector_store(self, data_dir: Path, *, dimension: Optional[int] = None) -> VectorStore:
+    def _make_vector_store(
+        self, data_dir: Path, *, dimension: Optional[int] = None
+    ) -> VectorStore:
         service = self._dual_vector_state_service
         return type(service)._make_vector_store(service, data_dir, dimension=dimension)
 
@@ -672,7 +757,9 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
         service = self._embedding_state_service
         return type(service)._embedding_degraded_snapshot(service)
 
-    def _set_embedding_degraded(self, *, active: bool, reason: str = "", checked_at: Optional[float] = None) -> None:
+    def _set_embedding_degraded(
+        self, *, active: bool, reason: str = "", checked_at: Optional[float] = None
+    ) -> None:
         service = self._embedding_state_service
         return type(service)._set_embedding_degraded(
             service,
@@ -685,9 +772,13 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
         service = self._embedding_state_service
         return type(service)._apply_runtime_sparse_mode(service)
 
-    async def _refresh_runtime_self_check(self, *, sample_text: str = "A_Memorix runtime self check") -> Dict[str, Any]:
+    async def _refresh_runtime_self_check(
+        self, *, sample_text: str = "A_Memorix runtime self check"
+    ) -> Dict[str, Any]:
         service = self._embedding_state_service
-        return await type(service)._refresh_runtime_self_check(service, sample_text=sample_text)
+        return await type(service)._refresh_runtime_self_check(
+            service, sample_text=sample_text
+        )
 
     def _mark_startup_self_check_deferred(self) -> None:
         service = self._embedding_state_service
@@ -707,9 +798,13 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
         service = self._embedding_state_service
         return type(service)._apply_self_check_dimension_result(service, report)
 
-    def _enqueue_paragraph_vector_backfill(self, paragraph_hash: str, *, error: str = "") -> None:
+    def _enqueue_paragraph_vector_backfill(
+        self, paragraph_hash: str, *, error: str = ""
+    ) -> None:
         service = self._embedding_state_service
-        return type(service)._enqueue_paragraph_vector_backfill(service, paragraph_hash, error=error)
+        return type(service)._enqueue_paragraph_vector_backfill(
+            service, paragraph_hash, error=error
+        )
 
     async def _write_paragraph_vector_or_enqueue(
         self,
@@ -757,13 +852,19 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
         service = self._vector_runtime_service
         return type(service)._active_row_filter_sql(service, table)
 
-    async def _backfill_missing_dual_vector_pool_entries(self, *, batch_size: int) -> Dict[str, Any]:
+    async def _backfill_missing_dual_vector_pool_entries(
+        self, *, batch_size: int
+    ) -> Dict[str, Any]:
         service = self._vector_runtime_service
-        return await type(service)._backfill_missing_dual_vector_pool_entries(service, batch_size=batch_size)
+        return await type(service)._backfill_missing_dual_vector_pool_entries(
+            service, batch_size=batch_size
+        )
 
     def _refresh_runtime_dependents(self, *, preserve_managers: bool = True) -> None:
         service = self._runtime_dependency_service
-        return type(service)._refresh_runtime_dependents(service, preserve_managers=preserve_managers)
+        return type(service)._refresh_runtime_dependents(
+            service, preserve_managers=preserve_managers
+        )
 
     async def _encode_and_add_rebuild_vectors(
         self,
@@ -848,11 +949,17 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
 
     async def _detect_current_embedding_dimension_for_rebuild(self) -> int:
         service = self._vector_runtime_service
-        return await type(service)._detect_current_embedding_dimension_for_rebuild(service)
+        return await type(service)._detect_current_embedding_dimension_for_rebuild(
+            service
+        )
 
-    async def _recover_embedding_once(self, *, sample_text: str = "A_Memorix runtime self check") -> Dict[str, Any]:
+    async def _recover_embedding_once(
+        self, *, sample_text: str = "A_Memorix runtime self check"
+    ) -> Dict[str, Any]:
         service = self._embedding_state_service
-        return await type(service)._recover_embedding_once(service, sample_text=sample_text)
+        return await type(service)._recover_embedding_once(
+            service, sample_text=sample_text
+        )
 
     async def initialize(self) -> None:
         return await self._runtime_lifecycle_service.initialize()
@@ -869,7 +976,9 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
         executor: Callable[[], Coroutine[Any, Any, Dict[str, Any]]],
     ) -> tuple[bool, Dict[str, Any]]:
         service = self._request_dedup_service
-        return await type(service).execute_request_with_dedup(service, request_key, executor)
+        return await type(service).execute_request_with_dedup(
+            service, request_key, executor
+        )
 
     async def summarize_chat_stream(
         self,
@@ -965,7 +1074,46 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
     async def contains_external_memory(self, external_id: str) -> bool:
         await self.initialize()
         assert self.metadata_store is not None
-        return self.metadata_store.get_external_memory_ref(str(external_id or "").strip()) is not None
+        return (
+            self.metadata_store.get_external_memory_ref(str(external_id or "").strip())
+            is not None
+        )
+
+    async def get_memory_record(
+        self,
+        *,
+        memory_id: str = "",
+        external_id: str = "",
+    ) -> Dict[str, Any] | None:
+        await self.initialize()
+        assert self.metadata_store is not None
+        external_ref = None
+        paragraph_hash = str(memory_id or "").strip()
+        external_token = str(external_id or "").strip()
+        if external_token:
+            external_ref = self.metadata_store.get_external_memory_ref(external_token)
+            if external_ref is None:
+                return None
+            paragraph_hash = str(external_ref.get("paragraph_hash", "") or "").strip()
+        paragraph = self.metadata_store.get_paragraph(paragraph_hash)
+        if paragraph is None or bool(paragraph.get("is_deleted", False)):
+            return None
+        metadata = paragraph.get("metadata")
+        return {
+            "memory_id": paragraph_hash,
+            "external_id": external_token
+            or str((metadata or {}).get("external_id", "") or ""),
+            "source_type": str((external_ref or {}).get("source_type", "") or "")
+            or str((metadata or {}).get("source_type", "") or ""),
+            "source": str(paragraph.get("source", "") or ""),
+            "content": str(paragraph.get("content", "") or ""),
+            "metadata": metadata if isinstance(metadata, dict) else {},
+            "created_at": paragraph.get("created_at"),
+            "updated_at": paragraph.get("updated_at"),
+            "observed_at": paragraph.get("event_time"),
+            "valid_from": paragraph.get("event_time_start"),
+            "valid_to": paragraph.get("event_time_end"),
+        }
 
     async def process_episode_source_rebuild_batch(
         self,
@@ -990,7 +1138,9 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
         return await self._search_service.search_memory(request)
 
     @staticmethod
-    def _empty_person_profile_response(*, person_id: str = "", person_name: str = "") -> Dict[str, Any]:
+    def _empty_person_profile_response(
+        *, person_id: str = "", person_name: str = ""
+    ) -> Dict[str, Any]:
         return {
             "summary": "",
             "traits": [],
@@ -1035,7 +1185,9 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
             limit=limit,
         )
 
-    async def get_person_profile(self, *, person_id: str, chat_id: str = "", limit: int = 10) -> Dict[str, Any]:
+    async def get_person_profile(
+        self, *, person_id: str, chat_id: str = "", limit: int = 10
+    ) -> Dict[str, Any]:
         service = self._profile_admin_service
         return await type(service).get_person_profile(
             service,
@@ -1074,7 +1226,9 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
             limit=limit,
         )
 
-    async def rebuild_episodes_for_sources(self, sources: Iterable[str]) -> Dict[str, Any]:
+    async def rebuild_episodes_for_sources(
+        self, sources: Iterable[str]
+    ) -> Dict[str, Any]:
         service = self._episode_admin_service
         return await type(service).rebuild_episodes_for_sources(service, sources)
 
@@ -1113,9 +1267,13 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
             success=success,
         )
 
-    def _update_dual_vector_auto_migration_stage(self, stage: str, **progress: Any) -> None:
+    def _update_dual_vector_auto_migration_stage(
+        self, stage: str, **progress: Any
+    ) -> None:
         service = self._dual_vector_migration_service
-        return type(service)._update_dual_vector_auto_migration_stage(service, stage, **progress)
+        return type(service)._update_dual_vector_auto_migration_stage(
+            service, stage, **progress
+        )
 
     async def memory_graph_admin(self, *args: Any, **kwargs: Any) -> Any:
         return await self._graph_admin_service.memory_graph_admin(*args, **kwargs)
@@ -1126,18 +1284,24 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
 
     async def memory_episode_admin(self, *, action: str, **kwargs) -> Dict[str, Any]:
         service = self._episode_admin_service
-        return await type(service).memory_episode_admin(service, action=action, **kwargs)
+        return await type(service).memory_episode_admin(
+            service, action=action, **kwargs
+        )
 
     async def memory_profile_admin(self, *, action: str, **kwargs) -> Dict[str, Any]:
         service = self._profile_admin_service
-        return await type(service).memory_profile_admin(service, action=action, **kwargs)
+        return await type(service).memory_profile_admin(
+            service, action=action, **kwargs
+        )
 
     async def memory_feedback_admin(self, *args: Any, **kwargs: Any) -> Any:
         return await self._feedback_service.memory_feedback_admin(*args, **kwargs)
 
     async def memory_runtime_admin(self, *, action: str, **kwargs) -> Dict[str, Any]:
         service = self._vector_runtime_service
-        return await type(service).memory_runtime_admin(service, action=action, **kwargs)
+        return await type(service).memory_runtime_admin(
+            service, action=action, **kwargs
+        )
 
     async def memory_import_admin(self, *, action: str, **kwargs) -> Dict[str, Any]:
         service = self._import_tuning_admin_service
@@ -1155,10 +1319,14 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
         return await self._delete_admin_service.memory_delete_admin(*args, **kwargs)
 
     async def memory_correction_admin(self, *args: Any, **kwargs: Any) -> Any:
-        return await self._correction_admin_service.memory_correction_admin(*args, **kwargs)
+        return await self._correction_admin_service.memory_correction_admin(
+            *args, **kwargs
+        )
 
     async def memory_fuzzy_modify_admin(self, *args: Any, **kwargs: Any) -> Any:
-        return await self._correction_admin_service.memory_fuzzy_modify_admin(*args, **kwargs)
+        return await self._correction_admin_service.memory_fuzzy_modify_admin(
+            *args, **kwargs
+        )
 
     def get_import_task_manager(self) -> Optional[ImportTaskManager]:
         return self.import_task_manager
@@ -1166,7 +1334,9 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
     def get_retrieval_tuning_manager(self) -> Optional[RetrievalTuningManager]:
         return self.retrieval_tuning_manager
 
-    async def _aggregate_search(self, query: str, limit: int, request: KernelSearchRequest) -> Dict[str, Any]:
+    async def _aggregate_search(
+        self, query: str, limit: int, request: KernelSearchRequest
+    ) -> Dict[str, Any]:
         return await self._search_service._aggregate_search(query, limit, request)
 
     async def _aggregate_time(
@@ -1176,7 +1346,9 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
         request: KernelSearchRequest,
         time_window: _NormalizedSearchTimeWindow,
     ) -> Dict[str, Any]:
-        return await self._search_service._aggregate_time(query, limit, request, time_window)
+        return await self._search_service._aggregate_time(
+            query, limit, request, time_window
+        )
 
     async def _aggregate_episode(
         self,
@@ -1185,12 +1357,16 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
         request: KernelSearchRequest,
         time_window: _NormalizedSearchTimeWindow,
     ) -> Dict[str, Any]:
-        return await self._search_service._aggregate_episode(query, limit, request, time_window)
+        return await self._search_service._aggregate_episode(
+            query, limit, request, time_window
+        )
 
     def _get_search_hit_service(self) -> Any:
         service = getattr(self, "_search_hit_service", None)
         if service is None:
-            from .services.search_hit_processing_service import MemorySearchHitProcessingService
+            from .services.search_hit_processing_service import (
+                MemorySearchHitProcessingService,
+            )
 
             service = MemorySearchHitProcessingService(self)
             self._search_hit_service = service
@@ -1258,9 +1434,13 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
 
     @staticmethod
     def _relation_status_is_inactive(*args: Any, **kwargs: Any) -> Any:
-        from .services.search_hit_processing_service import MemorySearchHitProcessingService
+        from .services.search_hit_processing_service import (
+            MemorySearchHitProcessingService,
+        )
 
-        return MemorySearchHitProcessingService._relation_status_is_inactive(*args, **kwargs)
+        return MemorySearchHitProcessingService._relation_status_is_inactive(
+            *args, **kwargs
+        )
 
     def _load_paragraph_stale_marks(self, *args: Any, **kwargs: Any) -> Any:
         service = self._get_search_hit_service()
@@ -1282,13 +1462,19 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
         service = self._get_search_hit_service()
         return type(service)._filter_current_effective_hits(service, *args, **kwargs)
 
-    def _current_effective_filter_store_check_needed(self, *args: Any, **kwargs: Any) -> Any:
+    def _current_effective_filter_store_check_needed(
+        self, *args: Any, **kwargs: Any
+    ) -> Any:
         service = self._get_search_hit_service()
-        return type(service)._current_effective_filter_store_check_needed(service, *args, **kwargs)
+        return type(service)._current_effective_filter_store_check_needed(
+            service, *args, **kwargs
+        )
 
     def _filter_hits_by_memory_change_metadata(self, *args: Any, **kwargs: Any) -> Any:
         service = self._get_search_hit_service()
-        return type(service)._filter_hits_by_memory_change_metadata(service, *args, **kwargs)
+        return type(service)._filter_hits_by_memory_change_metadata(
+            service, *args, **kwargs
+        )
 
     @staticmethod
     def _coerce_datetime(value: Any) -> Optional[datetime]:
@@ -1373,13 +1559,21 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
     def _person_profile_refresh_max_retry(self) -> int:
         return person_profile_refresh_max_retry(self._cfg)
 
-    def _enqueue_person_profile_refresh(self, person_id: str, *, reason: str = "") -> bool:
-        return self._profile_admin_service._enqueue_person_profile_refresh(person_id, reason=reason)
+    def _enqueue_person_profile_refresh(
+        self, person_id: str, *, reason: str = ""
+    ) -> bool:
+        return self._profile_admin_service._enqueue_person_profile_refresh(
+            person_id, reason=reason
+        )
 
     def _has_pending_person_profile_refresh(self, person_id: str) -> bool:
-        return self._profile_admin_service._has_pending_person_profile_refresh(person_id)
+        return self._profile_admin_service._has_pending_person_profile_refresh(
+            person_id
+        )
 
-    async def _process_person_profile_refresh_queue_batch(self, *, limit: int) -> Dict[str, Any]:
+    async def _process_person_profile_refresh_queue_batch(
+        self, *, limit: int
+    ) -> Dict[str, Any]:
         return await self._process_feedback_profile_refresh_batch(
             limit=limit,
             debounce_seconds=self._person_profile_refresh_debounce_seconds(),
@@ -1396,7 +1590,9 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
 
     async def _run_memory_maintenance_cycle(self, *, interval_hours: float) -> None:
         service = self._maintenance_service
-        return await type(service)._run_memory_maintenance_cycle(service, interval_hours=interval_hours)
+        return await type(service)._run_memory_maintenance_cycle(
+            service, interval_hours=interval_hours
+        )
 
     async def _process_freeze_and_prune(self) -> None:
         service = self._maintenance_service
@@ -1431,37 +1627,53 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
 
     @staticmethod
     def _chat_source(*args: Any, **kwargs: Any) -> Any:
-        from .services.search_hit_processing_service import MemorySearchHitProcessingService
+        from .services.search_hit_processing_service import (
+            MemorySearchHitProcessingService,
+        )
 
         return MemorySearchHitProcessingService._chat_source(*args, **kwargs)
 
     @classmethod
     def _chat_source_for_search_scope(cls, *args: Any, **kwargs: Any) -> Any:
-        from .services.search_hit_processing_service import MemorySearchHitProcessingService
+        from .services.search_hit_processing_service import (
+            MemorySearchHitProcessingService,
+        )
 
-        return MemorySearchHitProcessingService._chat_source_for_search_scope(*args, **kwargs)
+        return MemorySearchHitProcessingService._chat_source_for_search_scope(
+            *args, **kwargs
+        )
 
     @staticmethod
     def _scoped_search_limit(*args: Any, **kwargs: Any) -> Any:
-        from .services.search_hit_processing_service import MemorySearchHitProcessingService
+        from .services.search_hit_processing_service import (
+            MemorySearchHitProcessingService,
+        )
 
         return MemorySearchHitProcessingService._scoped_search_limit(*args, **kwargs)
 
     @classmethod
     def _resolve_allowed_chat_ids(cls, *args: Any, **kwargs: Any) -> Any:
-        from .services.search_hit_processing_service import MemorySearchHitProcessingService
+        from .services.search_hit_processing_service import (
+            MemorySearchHitProcessingService,
+        )
 
-        return MemorySearchHitProcessingService._resolve_allowed_chat_ids(*args, **kwargs)
+        return MemorySearchHitProcessingService._resolve_allowed_chat_ids(
+            *args, **kwargs
+        )
 
     @staticmethod
     def _rank_score_from_item(*args: Any, **kwargs: Any) -> Any:
-        from .services.search_hit_processing_service import MemorySearchHitProcessingService
+        from .services.search_hit_processing_service import (
+            MemorySearchHitProcessingService,
+        )
 
         return MemorySearchHitProcessingService._rank_score_from_item(*args, **kwargs)
 
     @classmethod
     def _dedupe_ranked_items(cls, *args: Any, **kwargs: Any) -> Any:
-        from .services.search_hit_processing_service import MemorySearchHitProcessingService
+        from .services.search_hit_processing_service import (
+            MemorySearchHitProcessingService,
+        )
 
         return MemorySearchHitProcessingService._dedupe_ranked_items(*args, **kwargs)
 
@@ -1540,27 +1752,41 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
 
     @classmethod
     def _paragraph_matches_chat_scope(cls, *args: Any, **kwargs: Any) -> Any:
-        from .services.search_hit_processing_service import MemorySearchHitProcessingService
+        from .services.search_hit_processing_service import (
+            MemorySearchHitProcessingService,
+        )
 
-        return MemorySearchHitProcessingService._paragraph_matches_chat_scope(*args, **kwargs)
+        return MemorySearchHitProcessingService._paragraph_matches_chat_scope(
+            *args, **kwargs
+        )
 
     @classmethod
     def _hit_metadata_matches_chat_scope(cls, *args: Any, **kwargs: Any) -> Any:
-        from .services.search_hit_processing_service import MemorySearchHitProcessingService
+        from .services.search_hit_processing_service import (
+            MemorySearchHitProcessingService,
+        )
 
-        return MemorySearchHitProcessingService._hit_metadata_matches_chat_scope(*args, **kwargs)
+        return MemorySearchHitProcessingService._hit_metadata_matches_chat_scope(
+            *args, **kwargs
+        )
 
     @staticmethod
     def _extend_chat_scope_ids(*args: Any, **kwargs: Any) -> Any:
-        from .services.search_hit_processing_service import MemorySearchHitProcessingService
+        from .services.search_hit_processing_service import (
+            MemorySearchHitProcessingService,
+        )
 
         return MemorySearchHitProcessingService._extend_chat_scope_ids(*args, **kwargs)
 
     @classmethod
     def _metadata_chat_scope_ids(cls, *args: Any, **kwargs: Any) -> Any:
-        from .services.search_hit_processing_service import MemorySearchHitProcessingService
+        from .services.search_hit_processing_service import (
+            MemorySearchHitProcessingService,
+        )
 
-        return MemorySearchHitProcessingService._metadata_chat_scope_ids(*args, **kwargs)
+        return MemorySearchHitProcessingService._metadata_chat_scope_ids(
+            *args, **kwargs
+        )
 
     def _filter_hits_by_chat_scope(self, *args: Any, **kwargs: Any) -> Any:
         service = self._get_search_hit_service()
@@ -1568,11 +1794,15 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
 
     def _filter_hits_by_retrieval_type_scope(self, *args: Any, **kwargs: Any) -> Any:
         service = self._get_search_hit_service()
-        return type(service)._filter_hits_by_retrieval_type_scope(service, *args, **kwargs)
+        return type(service)._filter_hits_by_retrieval_type_scope(
+            service, *args, **kwargs
+        )
 
     def _has_enabled_retrieval_type_filter(self, *args: Any, **kwargs: Any) -> Any:
         service = self._get_search_hit_service()
-        return type(service)._has_enabled_retrieval_type_filter(service, *args, **kwargs)
+        return type(service)._has_enabled_retrieval_type_filter(
+            service, *args, **kwargs
+        )
 
     def _retrieval_type_filter_root(self, *args: Any, **kwargs: Any) -> Any:
         service = self._get_search_hit_service()
@@ -1584,33 +1814,49 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
 
     def _retrieval_filter_contexts_for_hit(self, *args: Any, **kwargs: Any) -> Any:
         service = self._get_search_hit_service()
-        return type(service)._retrieval_filter_contexts_for_hit(service, *args, **kwargs)
+        return type(service)._retrieval_filter_contexts_for_hit(
+            service, *args, **kwargs
+        )
 
     def _retrieval_filter_context_from_hit(self, *args: Any, **kwargs: Any) -> Any:
         service = self._get_search_hit_service()
-        return type(service)._retrieval_filter_context_from_hit(service, *args, **kwargs)
+        return type(service)._retrieval_filter_context_from_hit(
+            service, *args, **kwargs
+        )
 
-    def _retrieval_filter_context_from_paragraph(self, *args: Any, **kwargs: Any) -> Any:
+    def _retrieval_filter_context_from_paragraph(
+        self, *args: Any, **kwargs: Any
+    ) -> Any:
         service = self._get_search_hit_service()
-        return type(service)._retrieval_filter_context_from_paragraph(service, *args, **kwargs)
+        return type(service)._retrieval_filter_context_from_paragraph(
+            service, *args, **kwargs
+        )
 
     @staticmethod
     def _retrieval_filter_kind(*args: Any, **kwargs: Any) -> Any:
-        from .services.search_hit_processing_service import MemorySearchHitProcessingService
+        from .services.search_hit_processing_service import (
+            MemorySearchHitProcessingService,
+        )
 
         return MemorySearchHitProcessingService._retrieval_filter_kind(*args, **kwargs)
 
     @staticmethod
     def _source_stream_id(*args: Any, **kwargs: Any) -> Any:
-        from .services.search_hit_processing_service import MemorySearchHitProcessingService
+        from .services.search_hit_processing_service import (
+            MemorySearchHitProcessingService,
+        )
 
         return MemorySearchHitProcessingService._source_stream_id(*args, **kwargs)
 
     @staticmethod
     def _retrieval_filter_context(*args: Any, **kwargs: Any) -> Any:
-        from .services.search_hit_processing_service import MemorySearchHitProcessingService
+        from .services.search_hit_processing_service import (
+            MemorySearchHitProcessingService,
+        )
 
-        return MemorySearchHitProcessingService._retrieval_filter_context(*args, **kwargs)
+        return MemorySearchHitProcessingService._retrieval_filter_context(
+            *args, **kwargs
+        )
 
     def _current_retrieval_filter_context(self, *args: Any, **kwargs: Any) -> Any:
         service = self._get_search_hit_service()
@@ -1618,9 +1864,13 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
 
     @staticmethod
     def _retrieval_filter_context_is_current_source(*args: Any, **kwargs: Any) -> Any:
-        from .services.search_hit_processing_service import MemorySearchHitProcessingService
+        from .services.search_hit_processing_service import (
+            MemorySearchHitProcessingService,
+        )
 
-        return MemorySearchHitProcessingService._retrieval_filter_context_is_current_source(*args, **kwargs)
+        return MemorySearchHitProcessingService._retrieval_filter_context_is_current_source(
+            *args, **kwargs
+        )
 
     def _retrieval_filter_context_allowed(self, *args: Any, **kwargs: Any) -> Any:
         service = self._get_search_hit_service()
@@ -1632,43 +1882,61 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
 
     @staticmethod
     def _time_meta(
-        timestamp: Optional[float], time_start: Optional[float], time_end: Optional[float]
+        timestamp: Optional[float],
+        time_start: Optional[float],
+        time_end: Optional[float],
     ) -> Dict[str, Any]:
         return time_meta(timestamp, time_start, time_end)
 
     @classmethod
     def _normalize_search_time_bound(cls, *args: Any, **kwargs: Any) -> Any:
-        from .services.search_hit_processing_service import MemorySearchHitProcessingService
+        from .services.search_hit_processing_service import (
+            MemorySearchHitProcessingService,
+        )
 
-        return MemorySearchHitProcessingService._normalize_search_time_bound(*args, **kwargs)
+        return MemorySearchHitProcessingService._normalize_search_time_bound(
+            *args, **kwargs
+        )
 
     @classmethod
     def _normalize_search_time_window(cls, *args: Any, **kwargs: Any) -> Any:
-        from .services.search_hit_processing_service import MemorySearchHitProcessingService
+        from .services.search_hit_processing_service import (
+            MemorySearchHitProcessingService,
+        )
 
-        return MemorySearchHitProcessingService._normalize_search_time_window(*args, **kwargs)
+        return MemorySearchHitProcessingService._normalize_search_time_window(
+            *args, **kwargs
+        )
 
     @staticmethod
     def _retrieval_result_hit(*args: Any, **kwargs: Any) -> Any:
-        from .services.search_hit_processing_service import MemorySearchHitProcessingService
+        from .services.search_hit_processing_service import (
+            MemorySearchHitProcessingService,
+        )
 
         return MemorySearchHitProcessingService._retrieval_result_hit(*args, **kwargs)
 
     @staticmethod
     def _episode_hit(*args: Any, **kwargs: Any) -> Any:
-        from .services.search_hit_processing_service import MemorySearchHitProcessingService
+        from .services.search_hit_processing_service import (
+            MemorySearchHitProcessingService,
+        )
 
         return MemorySearchHitProcessingService._episode_hit(*args, **kwargs)
 
     @staticmethod
     def _summary(*args: Any, **kwargs: Any) -> Any:
-        from .services.search_hit_processing_service import MemorySearchHitProcessingService
+        from .services.search_hit_processing_service import (
+            MemorySearchHitProcessingService,
+        )
 
         return MemorySearchHitProcessingService._summary(*args, **kwargs)
 
     @staticmethod
     def _filter_hits(*args: Any, **kwargs: Any) -> Any:
-        from .services.search_hit_processing_service import MemorySearchHitProcessingService
+        from .services.search_hit_processing_service import (
+            MemorySearchHitProcessingService,
+        )
 
         return MemorySearchHitProcessingService._filter_hits(*args, **kwargs)
 
@@ -1706,9 +1974,13 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
     def _fuzzy_modify_cfg_allow_global_scope(self, *args: Any, **kwargs: Any) -> Any:
         return fuzzy_modify_cfg_allow_global_scope(self.config)
 
-    def _apply_v5_relation_action(self, *, action: str, hashes: List[str], strength: float = 1.0) -> Dict[str, Any]:
+    def _apply_v5_relation_action(
+        self, *, action: str, hashes: List[str], strength: float = 1.0
+    ) -> Dict[str, Any]:
         service = self._v5_admin_service
-        return type(service)._apply_v5_relation_action(service, action=action, hashes=hashes, strength=strength)
+        return type(service)._apply_v5_relation_action(
+            service, action=action, hashes=hashes, strength=strength
+        )
 
     async def _ensure_vector_for_text(
         self,
@@ -1782,16 +2054,22 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
         )
 
     @staticmethod
-    def _profile_evidence_type_from_source(source: str, metadata: Optional[Dict[str, Any]] = None) -> str:
+    def _profile_evidence_type_from_source(
+        source: str, metadata: Optional[Dict[str, Any]] = None
+    ) -> str:
         return profile_evidence_type_from_source(source, metadata)
 
     @staticmethod
     def _profile_relation_content(relation: Dict[str, Any]) -> str:
         return profile_relation_content(relation)
 
-    def _build_profile_relation_evidence_item(self, relation: Dict[str, Any], *, index: int) -> Dict[str, Any]:
+    def _build_profile_relation_evidence_item(
+        self, relation: Dict[str, Any], *, index: int
+    ) -> Dict[str, Any]:
         service = self._profile_admin_service
-        return type(service)._build_profile_relation_evidence_item(service, relation, index=index)
+        return type(service)._build_profile_relation_evidence_item(
+            service, relation, index=index
+        )
 
     def _build_profile_paragraph_evidence_item(
         self,
@@ -1808,7 +2086,9 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
             fallback_hash=fallback_hash,
         )
 
-    def _build_profile_evidence_items(self, profile: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _build_profile_evidence_items(
+        self, profile: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
         service = self._profile_admin_service
         return type(service)._build_profile_evidence_items(service, profile)
 

@@ -230,6 +230,8 @@ func (x *CreateApiKeyResponse) GetSecret() string {
 type ListApiKeysRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	NamespaceId   string                 `protobuf:"bytes,1,opt,name=namespace_id,json=namespaceId,proto3" json:"namespace_id,omitempty"`
+	PageSize      *uint32                `protobuf:"varint,2,opt,name=page_size,json=pageSize,proto3,oneof" json:"page_size,omitempty"`
+	PageToken     string                 `protobuf:"bytes,3,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -271,9 +273,24 @@ func (x *ListApiKeysRequest) GetNamespaceId() string {
 	return ""
 }
 
+func (x *ListApiKeysRequest) GetPageSize() uint32 {
+	if x != nil && x.PageSize != nil {
+		return *x.PageSize
+	}
+	return 0
+}
+
+func (x *ListApiKeysRequest) GetPageToken() string {
+	if x != nil {
+		return x.PageToken
+	}
+	return ""
+}
+
 type ListApiKeysResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ApiKeys       []*ApiKeyInfo          `protobuf:"bytes,1,rep,name=api_keys,json=apiKeys,proto3" json:"api_keys,omitempty"`
+	NextPageToken string                 `protobuf:"bytes,2,opt,name=next_page_token,json=nextPageToken,proto3" json:"next_page_token,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -313,6 +330,13 @@ func (x *ListApiKeysResponse) GetApiKeys() []*ApiKeyInfo {
 		return x.ApiKeys
 	}
 	return nil
+}
+
+func (x *ListApiKeysResponse) GetNextPageToken() string {
+	if x != nil {
+		return x.NextPageToken
+	}
+	return ""
 }
 
 type RevokeApiKeyRequest struct {
@@ -428,11 +452,17 @@ const file_a_memorix_api_v1_auth_proto_rawDesc = "" +
 	"expires_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\"e\n" +
 	"\x14CreateApiKeyResponse\x125\n" +
 	"\aapi_key\x18\x01 \x01(\v2\x1c.a_memorix.api.v1.ApiKeyInfoR\x06apiKey\x12\x16\n" +
-	"\x06secret\x18\x02 \x01(\tR\x06secret\"7\n" +
+	"\x06secret\x18\x02 \x01(\tR\x06secret\"\x86\x01\n" +
 	"\x12ListApiKeysRequest\x12!\n" +
-	"\fnamespace_id\x18\x01 \x01(\tR\vnamespaceId\"N\n" +
+	"\fnamespace_id\x18\x01 \x01(\tR\vnamespaceId\x12 \n" +
+	"\tpage_size\x18\x02 \x01(\rH\x00R\bpageSize\x88\x01\x01\x12\x1d\n" +
+	"\n" +
+	"page_token\x18\x03 \x01(\tR\tpageTokenB\f\n" +
+	"\n" +
+	"_page_size\"v\n" +
 	"\x13ListApiKeysResponse\x127\n" +
-	"\bapi_keys\x18\x01 \x03(\v2\x1c.a_memorix.api.v1.ApiKeyInfoR\aapiKeys\"O\n" +
+	"\bapi_keys\x18\x01 \x03(\v2\x1c.a_memorix.api.v1.ApiKeyInfoR\aapiKeys\x12&\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"O\n" +
 	"\x13RevokeApiKeyRequest\x12!\n" +
 	"\fnamespace_id\x18\x01 \x01(\tR\vnamespaceId\x12\x15\n" +
 	"\x06key_id\x18\x02 \x01(\tR\x05keyId\"\x16\n" +
@@ -492,6 +522,7 @@ func file_a_memorix_api_v1_auth_proto_init() {
 	if File_a_memorix_api_v1_auth_proto != nil {
 		return
 	}
+	file_a_memorix_api_v1_auth_proto_msgTypes[3].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

@@ -29,6 +29,7 @@ from a_memorix import (
 from a_memorix.api.v1 import (
     auth_pb2,
     common_pb2,
+    job_pb2,
     memory_pb2,
     namespace_pb2,
 )
@@ -53,6 +54,12 @@ class MemoryRuntime:
     def is_runtime_ready(self) -> bool:
         return self.ready
 
+    def runtime_capability_status(self) -> dict[str, object]:
+        return {
+            "capabilities": {"metadata": True, "sparse": True},
+            "degraded": False,
+        }
+
     async def contains_external_memory(self, external_id: str) -> bool:
         return external_id in self.memories
 
@@ -71,11 +78,60 @@ class MemoryRuntime:
         memory_id = f"memory:{external_id}"
         self.memories[external_id] = {
             "memory_id": memory_id,
+            "external_id": external_id,
+            "source_type": str(kwargs["source_type"]),
             "content": str(kwargs["text"]),
             "source": str(kwargs["source_type"]),
             "metadata": dict(kwargs.get("metadata", {})),
         }
         return {"stored_ids": [memory_id], "skipped_ids": []}
+
+    async def get_memory_record(
+        self,
+        *,
+        memory_id: str = "",
+        external_id: str = "",
+    ) -> dict[str, object] | None:
+        if external_id:
+            return self.memories.get(external_id)
+        return next(
+            (
+                value
+                for value in self.memories.values()
+                if value["memory_id"] == memory_id
+            ),
+            None,
+        )
+
+    async def memory_delete_admin(self, **kwargs: Any) -> dict[str, object]:
+        memory_id = str((kwargs.get("selector") or {}).get("hash", ""))
+        external_id = next(
+            (
+                key
+                for key, value in self.memories.items()
+                if value["memory_id"] == memory_id
+            ),
+            "",
+        )
+        deleted = self.memories.pop(external_id, None) if external_id else None
+        return {
+            "operation_id": "delete-memory" if deleted else "",
+            "deleted_paragraph_count": int(deleted is not None),
+            "error": "" if deleted else "memory not found",
+        }
+
+    async def memory_source_admin(self, **kwargs: Any) -> dict[str, object]:
+        source = str(kwargs.get("source", ""))
+        targets = [
+            key for key, value in self.memories.items() if value["source"] == source
+        ]
+        for key in targets:
+            self.memories.pop(key)
+        return {
+            "operation_id": "delete-source" if targets else "",
+            "deleted_count": len(targets),
+            "deleted_paragraph_count": len(targets),
+        }
 
     async def search_memory(self, request) -> dict[str, object]:
         hits = [
@@ -185,6 +241,40 @@ async def test_grpc_auth_errors_and_memory_semantics(
             await admin.create_namespace(
                 namespace_pb2.CreateNamespaceRequest(namespace_id="tenant-b")
             )
+            first_page = await admin.list_namespaces(
+                namespace_pb2.ListNamespacesRequest(page_size=1)
+            )
+            assert len(first_page.namespaces) == 1
+            assert first_page.next_page_token
+
+            await admin.disable_namespace(
+                namespace_pb2.DisableNamespaceRequest(namespace_id="tenant-a")
+            )
+            configured = await admin.update_namespace_config(
+                namespace_pb2.UpdateNamespaceConfigRequest(
+                    namespace_id="tenant-a",
+                    expected_config_version=1,
+                    config=namespace_pb2.NamespaceConfig(
+                        llm=namespace_pb2.ProviderReference(
+                            provider_id="openai-compatible",
+                            model_id="test-model",
+                            secret_ref="secret://tenant-a/llm",
+                        ),
+                        features=namespace_pb2.NamespaceFeatureConfig(
+                            episodes=False,
+                            person_profiles=False,
+                            sparse_retrieval=True,
+                            relation_vectors=False,
+                            allow_metadata_only_write=True,
+                        ),
+                    ),
+                )
+            )
+            assert configured.namespace.config_version == 2
+            assert configured.namespace.config.llm.secret_ref == "secret://tenant-a/llm"
+            await admin.enable_namespace(
+                namespace_pb2.EnableNamespaceRequest(namespace_id="tenant-a")
+            )
             created = await admin.create_api_key(
                 auth_pb2.CreateApiKeyRequest(namespace_id="tenant-a", label="agent")
             )
@@ -227,6 +317,63 @@ async def test_grpc_auth_errors_and_memory_semantics(
                 assert [item.content for item in result.hits] == [
                     "Protocol parity memory"
                 ]
+
+                capabilities = await tenant.get_namespace_capabilities(
+                    namespace_pb2.GetNamespaceCapabilitiesRequest(
+                        namespace_id="tenant-a"
+                    )
+                )
+                assert capabilities.capabilities.capabilities["get_memory"]
+
+                batch = await tenant.batch_ingest_text(
+                    memory_pb2.BatchIngestTextRequest(
+                        context=context,
+                        items=[
+                            memory_pb2.IngestTextInput(
+                                external_id="document:batch",
+                                source_type="document",
+                                text="Batch protocol memory",
+                            )
+                        ],
+                    ),
+                    idempotency_key="batch-1",
+                )
+                assert batch.succeeded == 1
+                fetched = await tenant.get_memory(
+                    memory_pb2.GetMemoryRequest(
+                        context=context,
+                        external_id="document:1",
+                    )
+                )
+                assert fetched.memory.content == "Protocol parity memory"
+                deleted = await tenant.delete_memory(
+                    memory_pb2.DeleteMemoryRequest(
+                        context=context,
+                        external_id="document:1",
+                    )
+                )
+                assert list(deleted.deleted_memory_ids) == ["memory:document:1"]
+
+                submitted = await tenant.submit_delete_by_source(
+                    job_pb2.SubmitDeleteBySourceRequest(
+                        context=context,
+                        source="document",
+                    )
+                )
+                for _ in range(100):
+                    job = await tenant.get_job(
+                        job_pb2.GetJobRequest(
+                            namespace_id="tenant-a",
+                            job_id=submitted.job.job_id,
+                        )
+                    )
+                    if job.job.status not in {
+                        job_pb2.JOB_STATUS_PENDING,
+                        job_pb2.JOB_STATUS_RUNNING,
+                    }:
+                        break
+                    await asyncio.sleep(0.01)
+                assert job.job.status == job_pb2.JOB_STATUS_SUCCEEDED
 
                 with pytest.raises(RemoteAMemorixError) as invalid_limit:
                     await tenant.search_memory(
@@ -366,6 +513,41 @@ async def test_gateway_http_json_matches_grpc(tmp_path: Path) -> None:
             )
             assert status == 200, http_search
 
+            status, fetched = await asyncio.to_thread(
+                _http_json,
+                "POST",
+                f"{base_url}/v1/namespaces/http-tenant/memories:get",
+                {
+                    "context": {"namespaceId": "http-tenant"},
+                    "externalId": "document:http",
+                },
+                namespace_key,
+            )
+            assert status == 200
+            assert fetched["memory"]["content"] == "Shared HTTP and gRPC result"
+
+            status, batch = await asyncio.to_thread(
+                _http_json,
+                "POST",
+                f"{base_url}/v1/namespaces/http-tenant/memories:batchIngest",
+                {
+                    "context": {
+                        "namespaceId": "http-tenant",
+                        "idempotencyKey": "http-batch-1",
+                    },
+                    "items": [
+                        {
+                            "externalId": "document:http-batch",
+                            "sourceType": "document",
+                            "text": "HTTP batch result",
+                        }
+                    ],
+                },
+                namespace_key,
+            )
+            assert status == 200
+            assert batch["succeeded"] == 1
+
             status, invalid_limit = await asyncio.to_thread(
                 _http_json,
                 "POST",
@@ -415,7 +597,17 @@ async def test_mcp_adapter_is_bound_to_one_namespace(tmp_path: Path) -> None:
     async with Client(server) as client:
         tools = await client.list_tools()
         schemas = {tool.name: tool.input_schema for tool in tools.tools}
-        assert set(schemas) == {"ingest_text", "namespace_health", "search_memory"}
+        assert set(schemas) == {
+            "batch_ingest_text",
+            "delete_by_source",
+            "delete_memory",
+            "get_job",
+            "get_memory",
+            "ingest_text",
+            "list_jobs",
+            "namespace_health",
+            "search_memory",
+        }
         assert all(
             "namespace_id" not in schema.get("properties", {})
             for schema in schemas.values()

@@ -28,6 +28,28 @@ message NamespaceQuota {
   optional uint64 max_storage_bytes = 2;
 }
 
+message ProviderReference {
+  string provider_id = 1;
+  string model_id = 2;
+  string secret_ref = 3;
+}
+
+message NamespaceFeatureConfig {
+  optional bool episodes = 1;
+  optional bool person_profiles = 2;
+  optional bool sparse_retrieval = 3;
+  optional bool relation_vectors = 4;
+  optional bool allow_metadata_only_write = 5;
+}
+
+message NamespaceConfig {
+  ProviderReference embedding = 1;
+  ProviderReference llm = 2;
+  ProviderReference identity_resolver = 3;
+  ProviderReference message_source = 4;
+  NamespaceFeatureConfig features = 5;
+}
+
 message NamespaceInfo {
   string namespace_id = 1;
   NamespaceStatus status = 2;
@@ -37,6 +59,8 @@ message NamespaceInfo {
   uint64 version = 6;
   NamespaceQuota quota = 7;
   google.protobuf.Timestamp purge_after = 8;
+  uint64 config_version = 9;
+  NamespaceConfig config = 10;
 }
 
 message NamespaceResourceUsage {
@@ -55,6 +79,7 @@ message NamespaceHealth {
 message CreateNamespaceRequest {
   string namespace_id = 1;
   NamespaceQuota quota = 2;
+  NamespaceConfig config = 3;
 }
 
 message CreateNamespaceResponse {
@@ -69,10 +94,42 @@ message GetNamespaceResponse {
   NamespaceInfo namespace = 1;
 }
 
-message ListNamespacesRequest {}
+message ListNamespacesRequest {
+  optional uint32 page_size = 1;
+  string page_token = 2;
+}
 
 message ListNamespacesResponse {
   repeated NamespaceInfo namespaces = 1;
+  string next_page_token = 2;
+}
+
+message UpdateNamespaceConfigRequest {
+  string namespace_id = 1;
+  NamespaceConfig config = 2;
+  optional uint64 expected_config_version = 3;
+}
+
+message UpdateNamespaceConfigResponse {
+  NamespaceInfo namespace = 1;
+}
+
+message GetNamespaceCapabilitiesRequest {
+  string namespace_id = 1;
+}
+
+message NamespaceCapabilities {
+  string namespace_id = 1;
+  uint64 config_version = 2;
+  map<string, bool> capabilities = 3;
+  repeated string operations = 4;
+  repeated string search_modes = 5;
+  bool degraded = 6;
+  repeated string unavailable = 7;
+}
+
+message GetNamespaceCapabilitiesResponse {
+  NamespaceCapabilities capabilities = 1;
 }
 
 message DisableNamespaceRequest {
@@ -135,6 +192,17 @@ service NamespaceService {
 
   rpc ListNamespaces(ListNamespacesRequest) returns (ListNamespacesResponse) {
     option (google.api.http) = {get: "/v1/namespaces"};
+  }
+
+  rpc UpdateNamespaceConfig(UpdateNamespaceConfigRequest) returns (UpdateNamespaceConfigResponse) {
+    option (google.api.http) = {
+      patch: "/v1/namespaces/{namespace_id}/config"
+      body: "*"
+    };
+  }
+
+  rpc GetNamespaceCapabilities(GetNamespaceCapabilitiesRequest) returns (GetNamespaceCapabilitiesResponse) {
+    option (google.api.http) = {get: "/v1/namespaces/{namespace_id}/capabilities"};
   }
 
   rpc DisableNamespace(DisableNamespaceRequest) returns (DisableNamespaceResponse) {

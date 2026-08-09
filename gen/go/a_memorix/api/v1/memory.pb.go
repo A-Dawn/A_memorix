@@ -382,6 +382,764 @@ func (x *IngestTextResponse) GetDetail() string {
 	return ""
 }
 
+type IngestTextInput struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ExternalId    string                 `protobuf:"bytes,1,opt,name=external_id,json=externalId,proto3" json:"external_id,omitempty"`
+	SourceType    string                 `protobuf:"bytes,2,opt,name=source_type,json=sourceType,proto3" json:"source_type,omitempty"`
+	Text          string                 `protobuf:"bytes,3,opt,name=text,proto3" json:"text,omitempty"`
+	PersonIds     []string               `protobuf:"bytes,4,rep,name=person_ids,json=personIds,proto3" json:"person_ids,omitempty"`
+	Participants  []string               `protobuf:"bytes,5,rep,name=participants,proto3" json:"participants,omitempty"`
+	ObservedAt    *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=observed_at,json=observedAt,proto3" json:"observed_at,omitempty"`
+	ValidFrom     *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=valid_from,json=validFrom,proto3" json:"valid_from,omitempty"`
+	ValidTo       *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=valid_to,json=validTo,proto3" json:"valid_to,omitempty"`
+	Tags          []string               `protobuf:"bytes,9,rep,name=tags,proto3" json:"tags,omitempty"`
+	Metadata      *structpb.Struct       `protobuf:"bytes,10,opt,name=metadata,proto3" json:"metadata,omitempty"`
+	Entities      []string               `protobuf:"bytes,11,rep,name=entities,proto3" json:"entities,omitempty"`
+	Relations     []*RelationInput       `protobuf:"bytes,12,rep,name=relations,proto3" json:"relations,omitempty"`
+	RespectFilter *bool                  `protobuf:"varint,13,opt,name=respect_filter,json=respectFilter,proto3,oneof" json:"respect_filter,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IngestTextInput) Reset() {
+	*x = IngestTextInput{}
+	mi := &file_a_memorix_api_v1_memory_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IngestTextInput) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IngestTextInput) ProtoMessage() {}
+
+func (x *IngestTextInput) ProtoReflect() protoreflect.Message {
+	mi := &file_a_memorix_api_v1_memory_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IngestTextInput.ProtoReflect.Descriptor instead.
+func (*IngestTextInput) Descriptor() ([]byte, []int) {
+	return file_a_memorix_api_v1_memory_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *IngestTextInput) GetExternalId() string {
+	if x != nil {
+		return x.ExternalId
+	}
+	return ""
+}
+
+func (x *IngestTextInput) GetSourceType() string {
+	if x != nil {
+		return x.SourceType
+	}
+	return ""
+}
+
+func (x *IngestTextInput) GetText() string {
+	if x != nil {
+		return x.Text
+	}
+	return ""
+}
+
+func (x *IngestTextInput) GetPersonIds() []string {
+	if x != nil {
+		return x.PersonIds
+	}
+	return nil
+}
+
+func (x *IngestTextInput) GetParticipants() []string {
+	if x != nil {
+		return x.Participants
+	}
+	return nil
+}
+
+func (x *IngestTextInput) GetObservedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ObservedAt
+	}
+	return nil
+}
+
+func (x *IngestTextInput) GetValidFrom() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ValidFrom
+	}
+	return nil
+}
+
+func (x *IngestTextInput) GetValidTo() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ValidTo
+	}
+	return nil
+}
+
+func (x *IngestTextInput) GetTags() []string {
+	if x != nil {
+		return x.Tags
+	}
+	return nil
+}
+
+func (x *IngestTextInput) GetMetadata() *structpb.Struct {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
+}
+
+func (x *IngestTextInput) GetEntities() []string {
+	if x != nil {
+		return x.Entities
+	}
+	return nil
+}
+
+func (x *IngestTextInput) GetRelations() []*RelationInput {
+	if x != nil {
+		return x.Relations
+	}
+	return nil
+}
+
+func (x *IngestTextInput) GetRespectFilter() bool {
+	if x != nil && x.RespectFilter != nil {
+		return *x.RespectFilter
+	}
+	return false
+}
+
+type BatchIngestTextRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Context       *RequestContext        `protobuf:"bytes,1,opt,name=context,proto3" json:"context,omitempty"`
+	Items         []*IngestTextInput     `protobuf:"bytes,2,rep,name=items,proto3" json:"items,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BatchIngestTextRequest) Reset() {
+	*x = BatchIngestTextRequest{}
+	mi := &file_a_memorix_api_v1_memory_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BatchIngestTextRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BatchIngestTextRequest) ProtoMessage() {}
+
+func (x *BatchIngestTextRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_a_memorix_api_v1_memory_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BatchIngestTextRequest.ProtoReflect.Descriptor instead.
+func (*BatchIngestTextRequest) Descriptor() ([]byte, []int) {
+	return file_a_memorix_api_v1_memory_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *BatchIngestTextRequest) GetContext() *RequestContext {
+	if x != nil {
+		return x.Context
+	}
+	return nil
+}
+
+func (x *BatchIngestTextRequest) GetItems() []*IngestTextInput {
+	if x != nil {
+		return x.Items
+	}
+	return nil
+}
+
+type BatchIngestItemResult struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Index uint32                 `protobuf:"varint,1,opt,name=index,proto3" json:"index,omitempty"`
+	// Types that are valid to be assigned to Result:
+	//
+	//	*BatchIngestItemResult_Response
+	//	*BatchIngestItemResult_Error
+	Result        isBatchIngestItemResult_Result `protobuf_oneof:"result"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BatchIngestItemResult) Reset() {
+	*x = BatchIngestItemResult{}
+	mi := &file_a_memorix_api_v1_memory_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BatchIngestItemResult) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BatchIngestItemResult) ProtoMessage() {}
+
+func (x *BatchIngestItemResult) ProtoReflect() protoreflect.Message {
+	mi := &file_a_memorix_api_v1_memory_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BatchIngestItemResult.ProtoReflect.Descriptor instead.
+func (*BatchIngestItemResult) Descriptor() ([]byte, []int) {
+	return file_a_memorix_api_v1_memory_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *BatchIngestItemResult) GetIndex() uint32 {
+	if x != nil {
+		return x.Index
+	}
+	return 0
+}
+
+func (x *BatchIngestItemResult) GetResult() isBatchIngestItemResult_Result {
+	if x != nil {
+		return x.Result
+	}
+	return nil
+}
+
+func (x *BatchIngestItemResult) GetResponse() *IngestTextResponse {
+	if x != nil {
+		if x, ok := x.Result.(*BatchIngestItemResult_Response); ok {
+			return x.Response
+		}
+	}
+	return nil
+}
+
+func (x *BatchIngestItemResult) GetError() *ErrorDetail {
+	if x != nil {
+		if x, ok := x.Result.(*BatchIngestItemResult_Error); ok {
+			return x.Error
+		}
+	}
+	return nil
+}
+
+type isBatchIngestItemResult_Result interface {
+	isBatchIngestItemResult_Result()
+}
+
+type BatchIngestItemResult_Response struct {
+	Response *IngestTextResponse `protobuf:"bytes,2,opt,name=response,proto3,oneof"`
+}
+
+type BatchIngestItemResult_Error struct {
+	Error *ErrorDetail `protobuf:"bytes,3,opt,name=error,proto3,oneof"`
+}
+
+func (*BatchIngestItemResult_Response) isBatchIngestItemResult_Result() {}
+
+func (*BatchIngestItemResult_Error) isBatchIngestItemResult_Result() {}
+
+type BatchIngestTextResponse struct {
+	state         protoimpl.MessageState   `protogen:"open.v1"`
+	Results       []*BatchIngestItemResult `protobuf:"bytes,1,rep,name=results,proto3" json:"results,omitempty"`
+	Succeeded     uint32                   `protobuf:"varint,2,opt,name=succeeded,proto3" json:"succeeded,omitempty"`
+	Failed        uint32                   `protobuf:"varint,3,opt,name=failed,proto3" json:"failed,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BatchIngestTextResponse) Reset() {
+	*x = BatchIngestTextResponse{}
+	mi := &file_a_memorix_api_v1_memory_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BatchIngestTextResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BatchIngestTextResponse) ProtoMessage() {}
+
+func (x *BatchIngestTextResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_a_memorix_api_v1_memory_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BatchIngestTextResponse.ProtoReflect.Descriptor instead.
+func (*BatchIngestTextResponse) Descriptor() ([]byte, []int) {
+	return file_a_memorix_api_v1_memory_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *BatchIngestTextResponse) GetResults() []*BatchIngestItemResult {
+	if x != nil {
+		return x.Results
+	}
+	return nil
+}
+
+func (x *BatchIngestTextResponse) GetSucceeded() uint32 {
+	if x != nil {
+		return x.Succeeded
+	}
+	return 0
+}
+
+func (x *BatchIngestTextResponse) GetFailed() uint32 {
+	if x != nil {
+		return x.Failed
+	}
+	return 0
+}
+
+type GetMemoryRequest struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Context *RequestContext        `protobuf:"bytes,1,opt,name=context,proto3" json:"context,omitempty"`
+	// Types that are valid to be assigned to Selector:
+	//
+	//	*GetMemoryRequest_MemoryId
+	//	*GetMemoryRequest_ExternalId
+	Selector      isGetMemoryRequest_Selector `protobuf_oneof:"selector"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetMemoryRequest) Reset() {
+	*x = GetMemoryRequest{}
+	mi := &file_a_memorix_api_v1_memory_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetMemoryRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetMemoryRequest) ProtoMessage() {}
+
+func (x *GetMemoryRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_a_memorix_api_v1_memory_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetMemoryRequest.ProtoReflect.Descriptor instead.
+func (*GetMemoryRequest) Descriptor() ([]byte, []int) {
+	return file_a_memorix_api_v1_memory_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *GetMemoryRequest) GetContext() *RequestContext {
+	if x != nil {
+		return x.Context
+	}
+	return nil
+}
+
+func (x *GetMemoryRequest) GetSelector() isGetMemoryRequest_Selector {
+	if x != nil {
+		return x.Selector
+	}
+	return nil
+}
+
+func (x *GetMemoryRequest) GetMemoryId() string {
+	if x != nil {
+		if x, ok := x.Selector.(*GetMemoryRequest_MemoryId); ok {
+			return x.MemoryId
+		}
+	}
+	return ""
+}
+
+func (x *GetMemoryRequest) GetExternalId() string {
+	if x != nil {
+		if x, ok := x.Selector.(*GetMemoryRequest_ExternalId); ok {
+			return x.ExternalId
+		}
+	}
+	return ""
+}
+
+type isGetMemoryRequest_Selector interface {
+	isGetMemoryRequest_Selector()
+}
+
+type GetMemoryRequest_MemoryId struct {
+	MemoryId string `protobuf:"bytes,2,opt,name=memory_id,json=memoryId,proto3,oneof"`
+}
+
+type GetMemoryRequest_ExternalId struct {
+	ExternalId string `protobuf:"bytes,3,opt,name=external_id,json=externalId,proto3,oneof"`
+}
+
+func (*GetMemoryRequest_MemoryId) isGetMemoryRequest_Selector() {}
+
+func (*GetMemoryRequest_ExternalId) isGetMemoryRequest_Selector() {}
+
+type MemoryRecord struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	MemoryId      string                 `protobuf:"bytes,1,opt,name=memory_id,json=memoryId,proto3" json:"memory_id,omitempty"`
+	ExternalId    string                 `protobuf:"bytes,2,opt,name=external_id,json=externalId,proto3" json:"external_id,omitempty"`
+	SourceType    string                 `protobuf:"bytes,3,opt,name=source_type,json=sourceType,proto3" json:"source_type,omitempty"`
+	Source        string                 `protobuf:"bytes,4,opt,name=source,proto3" json:"source,omitempty"`
+	Content       string                 `protobuf:"bytes,5,opt,name=content,proto3" json:"content,omitempty"`
+	Metadata      *structpb.Struct       `protobuf:"bytes,6,opt,name=metadata,proto3" json:"metadata,omitempty"`
+	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	ObservedAt    *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=observed_at,json=observedAt,proto3" json:"observed_at,omitempty"`
+	ValidFrom     *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=valid_from,json=validFrom,proto3" json:"valid_from,omitempty"`
+	ValidTo       *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=valid_to,json=validTo,proto3" json:"valid_to,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MemoryRecord) Reset() {
+	*x = MemoryRecord{}
+	mi := &file_a_memorix_api_v1_memory_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MemoryRecord) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MemoryRecord) ProtoMessage() {}
+
+func (x *MemoryRecord) ProtoReflect() protoreflect.Message {
+	mi := &file_a_memorix_api_v1_memory_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MemoryRecord.ProtoReflect.Descriptor instead.
+func (*MemoryRecord) Descriptor() ([]byte, []int) {
+	return file_a_memorix_api_v1_memory_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *MemoryRecord) GetMemoryId() string {
+	if x != nil {
+		return x.MemoryId
+	}
+	return ""
+}
+
+func (x *MemoryRecord) GetExternalId() string {
+	if x != nil {
+		return x.ExternalId
+	}
+	return ""
+}
+
+func (x *MemoryRecord) GetSourceType() string {
+	if x != nil {
+		return x.SourceType
+	}
+	return ""
+}
+
+func (x *MemoryRecord) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
+}
+
+func (x *MemoryRecord) GetContent() string {
+	if x != nil {
+		return x.Content
+	}
+	return ""
+}
+
+func (x *MemoryRecord) GetMetadata() *structpb.Struct {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
+}
+
+func (x *MemoryRecord) GetCreatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return nil
+}
+
+func (x *MemoryRecord) GetUpdatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.UpdatedAt
+	}
+	return nil
+}
+
+func (x *MemoryRecord) GetObservedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ObservedAt
+	}
+	return nil
+}
+
+func (x *MemoryRecord) GetValidFrom() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ValidFrom
+	}
+	return nil
+}
+
+func (x *MemoryRecord) GetValidTo() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ValidTo
+	}
+	return nil
+}
+
+type GetMemoryResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Memory        *MemoryRecord          `protobuf:"bytes,1,opt,name=memory,proto3" json:"memory,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetMemoryResponse) Reset() {
+	*x = GetMemoryResponse{}
+	mi := &file_a_memorix_api_v1_memory_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetMemoryResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetMemoryResponse) ProtoMessage() {}
+
+func (x *GetMemoryResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_a_memorix_api_v1_memory_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetMemoryResponse.ProtoReflect.Descriptor instead.
+func (*GetMemoryResponse) Descriptor() ([]byte, []int) {
+	return file_a_memorix_api_v1_memory_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *GetMemoryResponse) GetMemory() *MemoryRecord {
+	if x != nil {
+		return x.Memory
+	}
+	return nil
+}
+
+type DeleteMemoryRequest struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Context *RequestContext        `protobuf:"bytes,1,opt,name=context,proto3" json:"context,omitempty"`
+	// Types that are valid to be assigned to Selector:
+	//
+	//	*DeleteMemoryRequest_MemoryId
+	//	*DeleteMemoryRequest_ExternalId
+	Selector      isDeleteMemoryRequest_Selector `protobuf_oneof:"selector"`
+	Reason        string                         `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteMemoryRequest) Reset() {
+	*x = DeleteMemoryRequest{}
+	mi := &file_a_memorix_api_v1_memory_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteMemoryRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteMemoryRequest) ProtoMessage() {}
+
+func (x *DeleteMemoryRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_a_memorix_api_v1_memory_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteMemoryRequest.ProtoReflect.Descriptor instead.
+func (*DeleteMemoryRequest) Descriptor() ([]byte, []int) {
+	return file_a_memorix_api_v1_memory_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *DeleteMemoryRequest) GetContext() *RequestContext {
+	if x != nil {
+		return x.Context
+	}
+	return nil
+}
+
+func (x *DeleteMemoryRequest) GetSelector() isDeleteMemoryRequest_Selector {
+	if x != nil {
+		return x.Selector
+	}
+	return nil
+}
+
+func (x *DeleteMemoryRequest) GetMemoryId() string {
+	if x != nil {
+		if x, ok := x.Selector.(*DeleteMemoryRequest_MemoryId); ok {
+			return x.MemoryId
+		}
+	}
+	return ""
+}
+
+func (x *DeleteMemoryRequest) GetExternalId() string {
+	if x != nil {
+		if x, ok := x.Selector.(*DeleteMemoryRequest_ExternalId); ok {
+			return x.ExternalId
+		}
+	}
+	return ""
+}
+
+func (x *DeleteMemoryRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+type isDeleteMemoryRequest_Selector interface {
+	isDeleteMemoryRequest_Selector()
+}
+
+type DeleteMemoryRequest_MemoryId struct {
+	MemoryId string `protobuf:"bytes,2,opt,name=memory_id,json=memoryId,proto3,oneof"`
+}
+
+type DeleteMemoryRequest_ExternalId struct {
+	ExternalId string `protobuf:"bytes,3,opt,name=external_id,json=externalId,proto3,oneof"`
+}
+
+func (*DeleteMemoryRequest_MemoryId) isDeleteMemoryRequest_Selector() {}
+
+func (*DeleteMemoryRequest_ExternalId) isDeleteMemoryRequest_Selector() {}
+
+type DeleteMemoryResponse struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	OperationId      string                 `protobuf:"bytes,1,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
+	DeletedCount     uint32                 `protobuf:"varint,2,opt,name=deleted_count,json=deletedCount,proto3" json:"deleted_count,omitempty"`
+	DeletedMemoryIds []string               `protobuf:"bytes,3,rep,name=deleted_memory_ids,json=deletedMemoryIds,proto3" json:"deleted_memory_ids,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *DeleteMemoryResponse) Reset() {
+	*x = DeleteMemoryResponse{}
+	mi := &file_a_memorix_api_v1_memory_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteMemoryResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteMemoryResponse) ProtoMessage() {}
+
+func (x *DeleteMemoryResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_a_memorix_api_v1_memory_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteMemoryResponse.ProtoReflect.Descriptor instead.
+func (*DeleteMemoryResponse) Descriptor() ([]byte, []int) {
+	return file_a_memorix_api_v1_memory_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *DeleteMemoryResponse) GetOperationId() string {
+	if x != nil {
+		return x.OperationId
+	}
+	return ""
+}
+
+func (x *DeleteMemoryResponse) GetDeletedCount() uint32 {
+	if x != nil {
+		return x.DeletedCount
+	}
+	return 0
+}
+
+func (x *DeleteMemoryResponse) GetDeletedMemoryIds() []string {
+	if x != nil {
+		return x.DeletedMemoryIds
+	}
+	return nil
+}
+
 type SearchMemoryRequest struct {
 	state                 protoimpl.MessageState `protogen:"open.v1"`
 	Context               *RequestContext        `protobuf:"bytes,1,opt,name=context,proto3" json:"context,omitempty"`
@@ -399,7 +1157,7 @@ type SearchMemoryRequest struct {
 
 func (x *SearchMemoryRequest) Reset() {
 	*x = SearchMemoryRequest{}
-	mi := &file_a_memorix_api_v1_memory_proto_msgTypes[3]
+	mi := &file_a_memorix_api_v1_memory_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -411,7 +1169,7 @@ func (x *SearchMemoryRequest) String() string {
 func (*SearchMemoryRequest) ProtoMessage() {}
 
 func (x *SearchMemoryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_a_memorix_api_v1_memory_proto_msgTypes[3]
+	mi := &file_a_memorix_api_v1_memory_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -424,7 +1182,7 @@ func (x *SearchMemoryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SearchMemoryRequest.ProtoReflect.Descriptor instead.
 func (*SearchMemoryRequest) Descriptor() ([]byte, []int) {
-	return file_a_memorix_api_v1_memory_proto_rawDescGZIP(), []int{3}
+	return file_a_memorix_api_v1_memory_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *SearchMemoryRequest) GetContext() *RequestContext {
@@ -505,7 +1263,7 @@ type MemoryHit struct {
 
 func (x *MemoryHit) Reset() {
 	*x = MemoryHit{}
-	mi := &file_a_memorix_api_v1_memory_proto_msgTypes[4]
+	mi := &file_a_memorix_api_v1_memory_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -517,7 +1275,7 @@ func (x *MemoryHit) String() string {
 func (*MemoryHit) ProtoMessage() {}
 
 func (x *MemoryHit) ProtoReflect() protoreflect.Message {
-	mi := &file_a_memorix_api_v1_memory_proto_msgTypes[4]
+	mi := &file_a_memorix_api_v1_memory_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -530,7 +1288,7 @@ func (x *MemoryHit) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemoryHit.ProtoReflect.Descriptor instead.
 func (*MemoryHit) Descriptor() ([]byte, []int) {
-	return file_a_memorix_api_v1_memory_proto_rawDescGZIP(), []int{4}
+	return file_a_memorix_api_v1_memory_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *MemoryHit) GetMemoryId() string {
@@ -598,7 +1356,7 @@ type SearchMemoryResponse struct {
 
 func (x *SearchMemoryResponse) Reset() {
 	*x = SearchMemoryResponse{}
-	mi := &file_a_memorix_api_v1_memory_proto_msgTypes[5]
+	mi := &file_a_memorix_api_v1_memory_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -610,7 +1368,7 @@ func (x *SearchMemoryResponse) String() string {
 func (*SearchMemoryResponse) ProtoMessage() {}
 
 func (x *SearchMemoryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_a_memorix_api_v1_memory_proto_msgTypes[5]
+	mi := &file_a_memorix_api_v1_memory_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -623,7 +1381,7 @@ func (x *SearchMemoryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SearchMemoryResponse.ProtoReflect.Descriptor instead.
 func (*SearchMemoryResponse) Descriptor() ([]byte, []int) {
-	return file_a_memorix_api_v1_memory_proto_rawDescGZIP(), []int{5}
+	return file_a_memorix_api_v1_memory_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *SearchMemoryResponse) GetSummary() string {
@@ -725,7 +1483,80 @@ const file_a_memorix_api_v1_memory_proto_rawDesc = "" +
 	"skippedIds\x12$\n" +
 	"\x0efact_claim_ids\x18\x03 \x03(\tR\ffactClaimIds\x12\x1a\n" +
 	"\bwarnings\x18\x04 \x03(\tR\bwarnings\x12\x16\n" +
-	"\x06detail\x18\x05 \x01(\tR\x06detail\"\xc4\x03\n" +
+	"\x06detail\x18\x05 \x01(\tR\x06detail\"\xbc\x04\n" +
+	"\x0fIngestTextInput\x12\x1f\n" +
+	"\vexternal_id\x18\x01 \x01(\tR\n" +
+	"externalId\x12\x1f\n" +
+	"\vsource_type\x18\x02 \x01(\tR\n" +
+	"sourceType\x12\x12\n" +
+	"\x04text\x18\x03 \x01(\tR\x04text\x12\x1d\n" +
+	"\n" +
+	"person_ids\x18\x04 \x03(\tR\tpersonIds\x12\"\n" +
+	"\fparticipants\x18\x05 \x03(\tR\fparticipants\x12;\n" +
+	"\vobserved_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"observedAt\x129\n" +
+	"\n" +
+	"valid_from\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\tvalidFrom\x125\n" +
+	"\bvalid_to\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\avalidTo\x12\x12\n" +
+	"\x04tags\x18\t \x03(\tR\x04tags\x123\n" +
+	"\bmetadata\x18\n" +
+	" \x01(\v2\x17.google.protobuf.StructR\bmetadata\x12\x1a\n" +
+	"\bentities\x18\v \x03(\tR\bentities\x12=\n" +
+	"\trelations\x18\f \x03(\v2\x1f.a_memorix.api.v1.RelationInputR\trelations\x12*\n" +
+	"\x0erespect_filter\x18\r \x01(\bH\x00R\rrespectFilter\x88\x01\x01B\x11\n" +
+	"\x0f_respect_filter\"\x8d\x01\n" +
+	"\x16BatchIngestTextRequest\x12:\n" +
+	"\acontext\x18\x01 \x01(\v2 .a_memorix.api.v1.RequestContextR\acontext\x127\n" +
+	"\x05items\x18\x02 \x03(\v2!.a_memorix.api.v1.IngestTextInputR\x05items\"\xb2\x01\n" +
+	"\x15BatchIngestItemResult\x12\x14\n" +
+	"\x05index\x18\x01 \x01(\rR\x05index\x12B\n" +
+	"\bresponse\x18\x02 \x01(\v2$.a_memorix.api.v1.IngestTextResponseH\x00R\bresponse\x125\n" +
+	"\x05error\x18\x03 \x01(\v2\x1d.a_memorix.api.v1.ErrorDetailH\x00R\x05errorB\b\n" +
+	"\x06result\"\x92\x01\n" +
+	"\x17BatchIngestTextResponse\x12A\n" +
+	"\aresults\x18\x01 \x03(\v2'.a_memorix.api.v1.BatchIngestItemResultR\aresults\x12\x1c\n" +
+	"\tsucceeded\x18\x02 \x01(\rR\tsucceeded\x12\x16\n" +
+	"\x06failed\x18\x03 \x01(\rR\x06failed\"\x9c\x01\n" +
+	"\x10GetMemoryRequest\x12:\n" +
+	"\acontext\x18\x01 \x01(\v2 .a_memorix.api.v1.RequestContextR\acontext\x12\x1d\n" +
+	"\tmemory_id\x18\x02 \x01(\tH\x00R\bmemoryId\x12!\n" +
+	"\vexternal_id\x18\x03 \x01(\tH\x00R\n" +
+	"externalIdB\n" +
+	"\n" +
+	"\bselector\"\xf9\x03\n" +
+	"\fMemoryRecord\x12\x1b\n" +
+	"\tmemory_id\x18\x01 \x01(\tR\bmemoryId\x12\x1f\n" +
+	"\vexternal_id\x18\x02 \x01(\tR\n" +
+	"externalId\x12\x1f\n" +
+	"\vsource_type\x18\x03 \x01(\tR\n" +
+	"sourceType\x12\x16\n" +
+	"\x06source\x18\x04 \x01(\tR\x06source\x12\x18\n" +
+	"\acontent\x18\x05 \x01(\tR\acontent\x123\n" +
+	"\bmetadata\x18\x06 \x01(\v2\x17.google.protobuf.StructR\bmetadata\x129\n" +
+	"\n" +
+	"created_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
+	"\n" +
+	"updated_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12;\n" +
+	"\vobserved_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"observedAt\x129\n" +
+	"\n" +
+	"valid_from\x18\n" +
+	" \x01(\v2\x1a.google.protobuf.TimestampR\tvalidFrom\x125\n" +
+	"\bvalid_to\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\avalidTo\"K\n" +
+	"\x11GetMemoryResponse\x126\n" +
+	"\x06memory\x18\x01 \x01(\v2\x1e.a_memorix.api.v1.MemoryRecordR\x06memory\"\xb7\x01\n" +
+	"\x13DeleteMemoryRequest\x12:\n" +
+	"\acontext\x18\x01 \x01(\v2 .a_memorix.api.v1.RequestContextR\acontext\x12\x1d\n" +
+	"\tmemory_id\x18\x02 \x01(\tH\x00R\bmemoryId\x12!\n" +
+	"\vexternal_id\x18\x03 \x01(\tH\x00R\n" +
+	"externalId\x12\x16\n" +
+	"\x06reason\x18\x04 \x01(\tR\x06reasonB\n" +
+	"\n" +
+	"\bselector\"\x8c\x01\n" +
+	"\x14DeleteMemoryResponse\x12!\n" +
+	"\foperation_id\x18\x01 \x01(\tR\voperationId\x12#\n" +
+	"\rdeleted_count\x18\x02 \x01(\rR\fdeletedCount\x12,\n" +
+	"\x12deleted_memory_ids\x18\x03 \x03(\tR\x10deletedMemoryIds\"\xc4\x03\n" +
 	"\x13SearchMemoryRequest\x12:\n" +
 	"\acontext\x18\x01 \x01(\v2 .a_memorix.api.v1.RequestContextR\acontext\x12\x14\n" +
 	"\x05query\x18\x02 \x01(\tR\x05query\x12\x19\n" +
@@ -763,10 +1594,13 @@ const file_a_memorix_api_v1_memory_proto_rawDesc = "" +
 	"\x10SEARCH_MODE_TIME\x10\x02\x12\x16\n" +
 	"\x12SEARCH_MODE_HYBRID\x10\x03\x12\x17\n" +
 	"\x13SEARCH_MODE_EPISODE\x10\x04\x12\x19\n" +
-	"\x15SEARCH_MODE_AGGREGATE\x10\x052\xcd\x02\n" +
+	"\x15SEARCH_MODE_AGGREGATE\x10\x052\xb5\x06\n" +
 	"\rMemoryService\x12\x99\x01\n" +
 	"\n" +
-	"IngestText\x12#.a_memorix.api.v1.IngestTextRequest\x1a$.a_memorix.api.v1.IngestTextResponse\"@\x82\xd3\xe4\x93\x02::\x01*\"5/v1/namespaces/{context.namespace_id}/memories:ingest\x12\x9f\x01\n" +
+	"IngestText\x12#.a_memorix.api.v1.IngestTextRequest\x1a$.a_memorix.api.v1.IngestTextResponse\"@\x82\xd3\xe4\x93\x02::\x01*\"5/v1/namespaces/{context.namespace_id}/memories:ingest\x12\xad\x01\n" +
+	"\x0fBatchIngestText\x12(.a_memorix.api.v1.BatchIngestTextRequest\x1a).a_memorix.api.v1.BatchIngestTextResponse\"E\x82\xd3\xe4\x93\x02?:\x01*\":/v1/namespaces/{context.namespace_id}/memories:batchIngest\x12\x93\x01\n" +
+	"\tGetMemory\x12\".a_memorix.api.v1.GetMemoryRequest\x1a#.a_memorix.api.v1.GetMemoryResponse\"=\x82\xd3\xe4\x93\x027:\x01*\"2/v1/namespaces/{context.namespace_id}/memories:get\x12\x9f\x01\n" +
+	"\fDeleteMemory\x12%.a_memorix.api.v1.DeleteMemoryRequest\x1a&.a_memorix.api.v1.DeleteMemoryResponse\"@\x82\xd3\xe4\x93\x02::\x01*\"5/v1/namespaces/{context.namespace_id}/memories:delete\x12\x9f\x01\n" +
 	"\fSearchMemory\x12%.a_memorix.api.v1.SearchMemoryRequest\x1a&.a_memorix.api.v1.SearchMemoryResponse\"@\x82\xd3\xe4\x93\x02::\x01*\"5/v1/namespaces/{context.namespace_id}/memories:searchB\xc1\x01\n" +
 	"\x14com.a_memorix.api.v1B\vMemoryProtoP\x01Z>github.com/MaiM-with-u/A_memorix/gen/go/a_memorix/api/v1;apiv1\xa2\x02\x03AAX\xaa\x02\x0fAMemorix.Api.V1\xca\x02\x0fAMemorix\\Api\\V1\xe2\x02\x1bAMemorix\\Api\\V1\\GPBMetadata\xea\x02\x11AMemorix::Api::V1b\x06proto3"
 
@@ -783,42 +1617,77 @@ func file_a_memorix_api_v1_memory_proto_rawDescGZIP() []byte {
 }
 
 var file_a_memorix_api_v1_memory_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_a_memorix_api_v1_memory_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_a_memorix_api_v1_memory_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_a_memorix_api_v1_memory_proto_goTypes = []any{
-	(SearchMode)(0),               // 0: a_memorix.api.v1.SearchMode
-	(*RelationInput)(nil),         // 1: a_memorix.api.v1.RelationInput
-	(*IngestTextRequest)(nil),     // 2: a_memorix.api.v1.IngestTextRequest
-	(*IngestTextResponse)(nil),    // 3: a_memorix.api.v1.IngestTextResponse
-	(*SearchMemoryRequest)(nil),   // 4: a_memorix.api.v1.SearchMemoryRequest
-	(*MemoryHit)(nil),             // 5: a_memorix.api.v1.MemoryHit
-	(*SearchMemoryResponse)(nil),  // 6: a_memorix.api.v1.SearchMemoryResponse
-	(*structpb.Struct)(nil),       // 7: google.protobuf.Struct
-	(*RequestContext)(nil),        // 8: a_memorix.api.v1.RequestContext
-	(*timestamppb.Timestamp)(nil), // 9: google.protobuf.Timestamp
+	(SearchMode)(0),                 // 0: a_memorix.api.v1.SearchMode
+	(*RelationInput)(nil),           // 1: a_memorix.api.v1.RelationInput
+	(*IngestTextRequest)(nil),       // 2: a_memorix.api.v1.IngestTextRequest
+	(*IngestTextResponse)(nil),      // 3: a_memorix.api.v1.IngestTextResponse
+	(*IngestTextInput)(nil),         // 4: a_memorix.api.v1.IngestTextInput
+	(*BatchIngestTextRequest)(nil),  // 5: a_memorix.api.v1.BatchIngestTextRequest
+	(*BatchIngestItemResult)(nil),   // 6: a_memorix.api.v1.BatchIngestItemResult
+	(*BatchIngestTextResponse)(nil), // 7: a_memorix.api.v1.BatchIngestTextResponse
+	(*GetMemoryRequest)(nil),        // 8: a_memorix.api.v1.GetMemoryRequest
+	(*MemoryRecord)(nil),            // 9: a_memorix.api.v1.MemoryRecord
+	(*GetMemoryResponse)(nil),       // 10: a_memorix.api.v1.GetMemoryResponse
+	(*DeleteMemoryRequest)(nil),     // 11: a_memorix.api.v1.DeleteMemoryRequest
+	(*DeleteMemoryResponse)(nil),    // 12: a_memorix.api.v1.DeleteMemoryResponse
+	(*SearchMemoryRequest)(nil),     // 13: a_memorix.api.v1.SearchMemoryRequest
+	(*MemoryHit)(nil),               // 14: a_memorix.api.v1.MemoryHit
+	(*SearchMemoryResponse)(nil),    // 15: a_memorix.api.v1.SearchMemoryResponse
+	(*structpb.Struct)(nil),         // 16: google.protobuf.Struct
+	(*RequestContext)(nil),          // 17: a_memorix.api.v1.RequestContext
+	(*timestamppb.Timestamp)(nil),   // 18: google.protobuf.Timestamp
+	(*ErrorDetail)(nil),             // 19: a_memorix.api.v1.ErrorDetail
 }
 var file_a_memorix_api_v1_memory_proto_depIdxs = []int32{
-	7,  // 0: a_memorix.api.v1.RelationInput.metadata:type_name -> google.protobuf.Struct
-	8,  // 1: a_memorix.api.v1.IngestTextRequest.context:type_name -> a_memorix.api.v1.RequestContext
-	9,  // 2: a_memorix.api.v1.IngestTextRequest.observed_at:type_name -> google.protobuf.Timestamp
-	9,  // 3: a_memorix.api.v1.IngestTextRequest.valid_from:type_name -> google.protobuf.Timestamp
-	9,  // 4: a_memorix.api.v1.IngestTextRequest.valid_to:type_name -> google.protobuf.Timestamp
-	7,  // 5: a_memorix.api.v1.IngestTextRequest.metadata:type_name -> google.protobuf.Struct
+	16, // 0: a_memorix.api.v1.RelationInput.metadata:type_name -> google.protobuf.Struct
+	17, // 1: a_memorix.api.v1.IngestTextRequest.context:type_name -> a_memorix.api.v1.RequestContext
+	18, // 2: a_memorix.api.v1.IngestTextRequest.observed_at:type_name -> google.protobuf.Timestamp
+	18, // 3: a_memorix.api.v1.IngestTextRequest.valid_from:type_name -> google.protobuf.Timestamp
+	18, // 4: a_memorix.api.v1.IngestTextRequest.valid_to:type_name -> google.protobuf.Timestamp
+	16, // 5: a_memorix.api.v1.IngestTextRequest.metadata:type_name -> google.protobuf.Struct
 	1,  // 6: a_memorix.api.v1.IngestTextRequest.relations:type_name -> a_memorix.api.v1.RelationInput
-	8,  // 7: a_memorix.api.v1.SearchMemoryRequest.context:type_name -> a_memorix.api.v1.RequestContext
-	0,  // 8: a_memorix.api.v1.SearchMemoryRequest.mode:type_name -> a_memorix.api.v1.SearchMode
-	9,  // 9: a_memorix.api.v1.SearchMemoryRequest.time_start:type_name -> google.protobuf.Timestamp
-	9,  // 10: a_memorix.api.v1.SearchMemoryRequest.time_end:type_name -> google.protobuf.Timestamp
-	7,  // 11: a_memorix.api.v1.MemoryHit.metadata:type_name -> google.protobuf.Struct
-	5,  // 12: a_memorix.api.v1.SearchMemoryResponse.hits:type_name -> a_memorix.api.v1.MemoryHit
-	2,  // 13: a_memorix.api.v1.MemoryService.IngestText:input_type -> a_memorix.api.v1.IngestTextRequest
-	4,  // 14: a_memorix.api.v1.MemoryService.SearchMemory:input_type -> a_memorix.api.v1.SearchMemoryRequest
-	3,  // 15: a_memorix.api.v1.MemoryService.IngestText:output_type -> a_memorix.api.v1.IngestTextResponse
-	6,  // 16: a_memorix.api.v1.MemoryService.SearchMemory:output_type -> a_memorix.api.v1.SearchMemoryResponse
-	15, // [15:17] is the sub-list for method output_type
-	13, // [13:15] is the sub-list for method input_type
-	13, // [13:13] is the sub-list for extension type_name
-	13, // [13:13] is the sub-list for extension extendee
-	0,  // [0:13] is the sub-list for field type_name
+	18, // 7: a_memorix.api.v1.IngestTextInput.observed_at:type_name -> google.protobuf.Timestamp
+	18, // 8: a_memorix.api.v1.IngestTextInput.valid_from:type_name -> google.protobuf.Timestamp
+	18, // 9: a_memorix.api.v1.IngestTextInput.valid_to:type_name -> google.protobuf.Timestamp
+	16, // 10: a_memorix.api.v1.IngestTextInput.metadata:type_name -> google.protobuf.Struct
+	1,  // 11: a_memorix.api.v1.IngestTextInput.relations:type_name -> a_memorix.api.v1.RelationInput
+	17, // 12: a_memorix.api.v1.BatchIngestTextRequest.context:type_name -> a_memorix.api.v1.RequestContext
+	4,  // 13: a_memorix.api.v1.BatchIngestTextRequest.items:type_name -> a_memorix.api.v1.IngestTextInput
+	3,  // 14: a_memorix.api.v1.BatchIngestItemResult.response:type_name -> a_memorix.api.v1.IngestTextResponse
+	19, // 15: a_memorix.api.v1.BatchIngestItemResult.error:type_name -> a_memorix.api.v1.ErrorDetail
+	6,  // 16: a_memorix.api.v1.BatchIngestTextResponse.results:type_name -> a_memorix.api.v1.BatchIngestItemResult
+	17, // 17: a_memorix.api.v1.GetMemoryRequest.context:type_name -> a_memorix.api.v1.RequestContext
+	16, // 18: a_memorix.api.v1.MemoryRecord.metadata:type_name -> google.protobuf.Struct
+	18, // 19: a_memorix.api.v1.MemoryRecord.created_at:type_name -> google.protobuf.Timestamp
+	18, // 20: a_memorix.api.v1.MemoryRecord.updated_at:type_name -> google.protobuf.Timestamp
+	18, // 21: a_memorix.api.v1.MemoryRecord.observed_at:type_name -> google.protobuf.Timestamp
+	18, // 22: a_memorix.api.v1.MemoryRecord.valid_from:type_name -> google.protobuf.Timestamp
+	18, // 23: a_memorix.api.v1.MemoryRecord.valid_to:type_name -> google.protobuf.Timestamp
+	9,  // 24: a_memorix.api.v1.GetMemoryResponse.memory:type_name -> a_memorix.api.v1.MemoryRecord
+	17, // 25: a_memorix.api.v1.DeleteMemoryRequest.context:type_name -> a_memorix.api.v1.RequestContext
+	17, // 26: a_memorix.api.v1.SearchMemoryRequest.context:type_name -> a_memorix.api.v1.RequestContext
+	0,  // 27: a_memorix.api.v1.SearchMemoryRequest.mode:type_name -> a_memorix.api.v1.SearchMode
+	18, // 28: a_memorix.api.v1.SearchMemoryRequest.time_start:type_name -> google.protobuf.Timestamp
+	18, // 29: a_memorix.api.v1.SearchMemoryRequest.time_end:type_name -> google.protobuf.Timestamp
+	16, // 30: a_memorix.api.v1.MemoryHit.metadata:type_name -> google.protobuf.Struct
+	14, // 31: a_memorix.api.v1.SearchMemoryResponse.hits:type_name -> a_memorix.api.v1.MemoryHit
+	2,  // 32: a_memorix.api.v1.MemoryService.IngestText:input_type -> a_memorix.api.v1.IngestTextRequest
+	5,  // 33: a_memorix.api.v1.MemoryService.BatchIngestText:input_type -> a_memorix.api.v1.BatchIngestTextRequest
+	8,  // 34: a_memorix.api.v1.MemoryService.GetMemory:input_type -> a_memorix.api.v1.GetMemoryRequest
+	11, // 35: a_memorix.api.v1.MemoryService.DeleteMemory:input_type -> a_memorix.api.v1.DeleteMemoryRequest
+	13, // 36: a_memorix.api.v1.MemoryService.SearchMemory:input_type -> a_memorix.api.v1.SearchMemoryRequest
+	3,  // 37: a_memorix.api.v1.MemoryService.IngestText:output_type -> a_memorix.api.v1.IngestTextResponse
+	7,  // 38: a_memorix.api.v1.MemoryService.BatchIngestText:output_type -> a_memorix.api.v1.BatchIngestTextResponse
+	10, // 39: a_memorix.api.v1.MemoryService.GetMemory:output_type -> a_memorix.api.v1.GetMemoryResponse
+	12, // 40: a_memorix.api.v1.MemoryService.DeleteMemory:output_type -> a_memorix.api.v1.DeleteMemoryResponse
+	15, // 41: a_memorix.api.v1.MemoryService.SearchMemory:output_type -> a_memorix.api.v1.SearchMemoryResponse
+	37, // [37:42] is the sub-list for method output_type
+	32, // [32:37] is the sub-list for method input_type
+	32, // [32:32] is the sub-list for extension type_name
+	32, // [32:32] is the sub-list for extension extendee
+	0,  // [0:32] is the sub-list for field type_name
 }
 
 func init() { file_a_memorix_api_v1_memory_proto_init() }
@@ -830,13 +1699,26 @@ func file_a_memorix_api_v1_memory_proto_init() {
 	file_a_memorix_api_v1_memory_proto_msgTypes[0].OneofWrappers = []any{}
 	file_a_memorix_api_v1_memory_proto_msgTypes[1].OneofWrappers = []any{}
 	file_a_memorix_api_v1_memory_proto_msgTypes[3].OneofWrappers = []any{}
+	file_a_memorix_api_v1_memory_proto_msgTypes[5].OneofWrappers = []any{
+		(*BatchIngestItemResult_Response)(nil),
+		(*BatchIngestItemResult_Error)(nil),
+	}
+	file_a_memorix_api_v1_memory_proto_msgTypes[7].OneofWrappers = []any{
+		(*GetMemoryRequest_MemoryId)(nil),
+		(*GetMemoryRequest_ExternalId)(nil),
+	}
+	file_a_memorix_api_v1_memory_proto_msgTypes[10].OneofWrappers = []any{
+		(*DeleteMemoryRequest_MemoryId)(nil),
+		(*DeleteMemoryRequest_ExternalId)(nil),
+	}
+	file_a_memorix_api_v1_memory_proto_msgTypes[12].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_a_memorix_api_v1_memory_proto_rawDesc), len(file_a_memorix_api_v1_memory_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   6,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

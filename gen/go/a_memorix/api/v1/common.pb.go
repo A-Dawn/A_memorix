@@ -139,6 +139,7 @@ type ErrorDetail struct {
 	TraceId       string                 `protobuf:"bytes,3,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`
 	Retryable     bool                   `protobuf:"varint,4,opt,name=retryable,proto3" json:"retryable,omitempty"`
 	Details       *structpb.Struct       `protobuf:"bytes,5,opt,name=details,proto3" json:"details,omitempty"`
+	Message       string                 `protobuf:"bytes,6,opt,name=message,proto3" json:"message,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -208,6 +209,13 @@ func (x *ErrorDetail) GetDetails() *structpb.Struct {
 	return nil
 }
 
+func (x *ErrorDetail) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
 var File_a_memorix_api_v1_common_proto protoreflect.FileDescriptor
 
 const file_a_memorix_api_v1_common_proto_rawDesc = "" +
@@ -223,14 +231,15 @@ const file_a_memorix_api_v1_common_proto_rawDesc = "" +
 	"\n" +
 	"request_id\x18\a \x01(\tR\trequestId\x12\x19\n" +
 	"\btrace_id\x18\b \x01(\tR\atraceId\x12'\n" +
-	"\x0fidempotency_key\x18\t \x01(\tR\x0eidempotencyKey\"\xac\x01\n" +
+	"\x0fidempotency_key\x18\t \x01(\tR\x0eidempotencyKey\"\xc6\x01\n" +
 	"\vErrorDetail\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\tR\x04code\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x02 \x01(\tR\trequestId\x12\x19\n" +
 	"\btrace_id\x18\x03 \x01(\tR\atraceId\x12\x1c\n" +
 	"\tretryable\x18\x04 \x01(\bR\tretryable\x121\n" +
-	"\adetails\x18\x05 \x01(\v2\x17.google.protobuf.StructR\adetailsB\xc1\x01\n" +
+	"\adetails\x18\x05 \x01(\v2\x17.google.protobuf.StructR\adetails\x12\x18\n" +
+	"\amessage\x18\x06 \x01(\tR\amessageB\xc1\x01\n" +
 	"\x14com.a_memorix.api.v1B\vCommonProtoP\x01Z>github.com/MaiM-with-u/A_memorix/gen/go/a_memorix/api/v1;apiv1\xa2\x02\x03AAX\xaa\x02\x0fAMemorix.Api.V1\xca\x02\x0fAMemorix\\Api\\V1\xe2\x02\x1bAMemorix\\Api\\V1\\GPBMetadata\xea\x02\x11AMemorix::Api::V1b\x06proto3"
 
 var (

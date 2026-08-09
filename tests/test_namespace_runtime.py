@@ -12,6 +12,9 @@ from pydantic import ValidationError
 from a_memorix import (
     AMemorixEngine,
     CreateNamespaceRequest,
+    DeleteMemoryRequest,
+    GetMemoryRequest,
+    IngestTextRequest,
     InvalidArgumentError,
     MigrationRequiredError,
     NamespaceCapacityError,
@@ -485,5 +488,29 @@ async def test_real_kernels_isolate_identical_external_and_user_ids(tmp_path: Pa
         async with engine.runtime(_context("tenant-b")) as second:
             assert second.metadata_store is not None
             assert second.metadata_store.get_external_memory_ref("document:first-only") is None
+
+        application_context = _context("tenant-a")
+        ingested = await engine.ingest_text(
+            IngestTextRequest(
+                context=application_context,
+                external_id="document:managed",
+                source_type="document",
+                text="Managed through the generic application API.",
+            )
+        )
+        fetched = await engine.get_memory(
+            GetMemoryRequest(
+                context=application_context,
+                external_id="document:managed",
+            )
+        )
+        assert fetched.memory.memory_id == ingested.stored_ids[0]
+        deleted = await engine.delete_memory(
+            DeleteMemoryRequest(
+                context=application_context,
+                external_id="document:managed",
+            )
+        )
+        assert deleted.deleted_memory_ids == (fetched.memory.memory_id,)
     finally:
         await engine.shutdown()

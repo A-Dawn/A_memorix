@@ -100,7 +100,7 @@ $env:GOPROXY = "https://proxy.golang.org,direct"
 go run ./cmd/a-memorix-gateway --listen 127.0.0.1:8080 --grpc-target 127.0.0.1:50051
 ```
 
-客户端通过 `Authorization: Bearer <token>` 访问。管理员令牌用于 namespace 和密钥管理；namespace API Key 只能访问自己所属的 namespace，密钥明文只在创建时返回，控制库仅保存 SHA-256 摘要。网关会把认证、请求 ID、追踪 ID 和幂等键转交给 gRPC 服务。
+客户端通过 `Authorization: Bearer <token>` 访问。管理员令牌用于 namespace 和密钥管理；namespace API Key 只能访问自己所属的 namespace，密钥明文只在创建时返回，控制库仅保存 SHA-256 摘要。网关会把认证、请求 ID、追踪 ID 和幂等键转交给 gRPC 服务。v1 已提供 namespace 配置与能力发现、单条和批量写入、检索、直接读取、单条删除，以及按来源删除 Job。
 
 当前网关到 gRPC 的连接面向同机回环部署，使用明文连接。远程部署需要在反向代理处终止 TLS，或扩展网关的后端 TLS 配置，不能直接暴露默认监听方式。
 
@@ -133,7 +133,7 @@ server = create_fixed_namespace_mcp(
 server.run(transport="stdio")
 ```
 
-当前支持的公开运行方式是进程内或 stdio。MCP 适配器本身不提供远程认证，不应把返回的服务对象直接公开为未鉴权的 HTTP 服务。
+当前支持的公开运行方式是进程内或 stdio。MCP 工具覆盖写入、批量写入、检索、直接读取、删除和 Job 查询，所有工具固定使用创建服务时绑定的 namespace。MCP 适配器本身不提供远程认证，不应把返回的服务对象直接公开为未鉴权的 HTTP 服务。
 
 ## 宿主接口
 

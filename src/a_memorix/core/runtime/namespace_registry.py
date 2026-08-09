@@ -21,6 +21,7 @@ from a_memorix.contracts import (
     NamespaceStateError,
     NamespaceStatus,
     RequestContext,
+    UpdateNamespaceConfigRequest,
 )
 from a_memorix.ports import Clock, SystemClock
 from a_memorix.contracts.context import validate_namespace_id
@@ -89,7 +90,9 @@ class NamespaceRuntimeRegistry:
     async def start(self) -> None:
         if self._started:
             if self._closed:
-                raise RuntimeError("namespace registry cannot be restarted after shutdown")
+                raise RuntimeError(
+                    "namespace registry cannot be restarted after shutdown"
+                )
             return
         self._layout.initialize()
         self._started = True
@@ -106,7 +109,9 @@ class NamespaceRuntimeRegistry:
                 elif record.info.status is NamespaceStatus.PURGING:
                     self._store.remove_purging(record.info.namespace_id)
             except BaseException as exc:
-                self._failures[record.info.namespace_id] = f"control-plane recovery failed: {exc}"
+                self._failures[record.info.namespace_id] = (
+                    f"control-plane recovery failed: {exc}"
+                )
         if self._idle_timeout_seconds > 0:
             self._reaper_task = asyncio.create_task(
                 self._idle_reaper(),
@@ -157,7 +162,9 @@ class NamespaceRuntimeRegistry:
         self._require_running()
         async with self._namespace_lock(request.namespace_id):
             storage_key = uuid4().hex
-            record = self._store.create(request, storage_key=storage_key, now=self._clock.time())
+            record = self._store.create(
+                request, storage_key=storage_key, now=self._clock.time()
+            )
             created_directory = False
             try:
                 self._layout.create_active(record.storage_key)
@@ -180,7 +187,9 @@ class NamespaceRuntimeRegistry:
                         self._layout.purge(storage_key)
                     self._store.remove_purging(request.namespace_id)
                 except BaseException as cleanup_error:
-                    self._failures[request.namespace_id] = f"namespace creation cleanup failed: {cleanup_error}"
+                    self._failures[request.namespace_id] = (
+                        f"namespace creation cleanup failed: {cleanup_error}"
+                    )
                 raise
             self._failures.pop(request.namespace_id, None)
             return record.info
@@ -193,6 +202,22 @@ class NamespaceRuntimeRegistry:
     def list_namespaces(self) -> list[NamespaceInfo]:
         self._require_running()
         return [record.info for record in self._store.list_records()]
+
+    async def update_namespace_config(
+        self,
+        request: UpdateNamespaceConfigRequest,
+    ) -> NamespaceInfo:
+        self._require_running()
+        namespace_id = validate_namespace_id(request.namespace_id)
+        async with self._namespace_lock(namespace_id):
+            record = self._store.update_config(
+                namespace_id,
+                config=request.config,
+                expected_config_version=request.expected_config_version,
+                now=self._clock.time(),
+            )
+            self._failures.pop(namespace_id, None)
+            return record.info
 
     async def disable_namespace(self, namespace_id: str) -> NamespaceInfo:
         self._require_running()
@@ -254,7 +279,8 @@ class NamespaceRuntimeRegistry:
                         expected={NamespaceStatus.ACTIVE, NamespaceStatus.INACTIVE},
                         target=NamespaceStatus.QUARANTINED,
                         now=self._clock.time(),
-                        purge_after=self._clock.time() + self._quarantine_retention_seconds,
+                        purge_after=self._clock.time()
+                        + self._quarantine_retention_seconds,
                     )
                 except BaseException:
                     await self._resume_requests(namespace_id, entry)
@@ -285,7 +311,9 @@ class NamespaceRuntimeRegistry:
                     expected={NamespaceStatus.ACTIVE},
                     target=NamespaceStatus.QUARANTINED,
                     now=self._clock.time(),
-                    purge_after=purge_after.timestamp() if purge_after is not None else None,
+                    purge_after=purge_after.timestamp()
+                    if purge_after is not None
+                    else None,
                 )
                 raise
             self._failures.pop(namespace_id, None)
@@ -298,7 +326,11 @@ class NamespaceRuntimeRegistry:
             record = self._store.get_record(namespace_id)
             if record.info.status is NamespaceStatus.QUARANTINED:
                 purge_after = record.info.purge_after
-                if not force and purge_after is not None and purge_after.timestamp() > self._clock.time():
+                if (
+                    not force
+                    and purge_after is not None
+                    and purge_after.timestamp() > self._clock.time()
+                ):
                     return False
                 record = self._store.transition(
                     namespace_id,
@@ -376,7 +408,8 @@ class NamespaceRuntimeRegistry:
                 last_error = f"runtime health check failed: {exc}"
         quota = record.info.quota
         over_storage_quota = bool(
-            quota.max_storage_bytes is not None and storage_bytes > quota.max_storage_bytes
+            quota.max_storage_bytes is not None
+            and storage_bytes > quota.max_storage_bytes
         )
         if over_storage_quota:
             runtime_state = NamespaceRuntimeState.DEGRADED
@@ -386,7 +419,8 @@ class NamespaceRuntimeRegistry:
         healthy = bool(
             not last_error
             and record.info.status is not NamespaceStatus.PURGING
-            and runtime_state in {
+            and runtime_state
+            in {
                 NamespaceRuntimeState.CLOSED,
                 NamespaceRuntimeState.READY,
             }
@@ -490,15 +524,21 @@ class NamespaceRuntimeRegistry:
                 runtime: NamespaceRuntime | None = None
                 try:
                     created = self._runtime_factory(record.info, data_dir)
-                    candidate = await created if hasattr(created, "__await__") else created
+                    candidate = (
+                        await created if hasattr(created, "__await__") else created
+                    )
                     if not isinstance(candidate, NamespaceRuntime):
-                        raise TypeError("runtime factory returned an incompatible object")
+                        raise TypeError(
+                            "runtime factory returned an incompatible object"
+                        )
                     runtime = candidate
                     await runtime.initialize()
                     if self._closed or self._shutting_down:
                         await runtime.shutdown()
                         runtime = None
-                        raise RuntimeError("namespace registry shut down during initialization")
+                        raise RuntimeError(
+                            "namespace registry shut down during initialization"
+                        )
                 except BaseException as exc:
                     failure = f"runtime initialization failed: {exc}"
                     if runtime is not None:
@@ -572,7 +612,9 @@ class NamespaceRuntimeRegistry:
                 entry.accepting_requests = False
             return entry
 
-    async def _resume_requests(self, namespace_id: str, entry: _RuntimeEntry | None) -> None:
+    async def _resume_requests(
+        self, namespace_id: str, entry: _RuntimeEntry | None
+    ) -> None:
         if entry is None:
             return
         async with self._registry_lock:
