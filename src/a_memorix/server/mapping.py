@@ -10,6 +10,7 @@ from pydantic import TypeAdapter
 
 from a_memorix.api.v1 import (
     auth_pb2,
+    backup_pb2,
     common_pb2,
     job_pb2,
     memory_pb2,
@@ -34,6 +35,7 @@ from a_memorix.contracts import (
     JobType,
     MemoryHit,
     MemoryRecord,
+    NamespaceBackupInfo,
     NamespaceCapabilities,
     NamespaceConfig,
     NamespaceFeatureConfig,
@@ -396,6 +398,23 @@ def api_key_info_to_proto(value: ApiKeyInfo) -> auth_pb2.ApiKeyInfo:
     if value.last_used_at is not None:
         result.last_used_at.CopyFrom(timestamp_to_proto(value.last_used_at))
     return result
+
+
+def namespace_backup_info_to_proto(
+    value: NamespaceBackupInfo,
+) -> backup_pb2.NamespaceBackupInfo:
+    return backup_pb2.NamespaceBackupInfo(
+        backup_id=value.backup_id,
+        source_namespace_id=value.source_namespace_id,
+        created_at=timestamp_to_proto(value.created_at),
+        format_version=value.format_version,
+        producer_version=value.producer_version,
+        source_config_version=value.source_config_version,
+        archive_size_bytes=value.archive_size_bytes,
+        data_size_bytes=value.data_size_bytes,
+        file_count=value.file_count,
+        sha256=value.sha256,
+    )
 
 
 def ingest_response_to_proto(value: IngestTextResponse) -> memory_pb2.IngestTextResponse:

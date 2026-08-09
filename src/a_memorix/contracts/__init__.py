@@ -2,6 +2,16 @@
 
 from .context import NamespaceId, RequestContext
 from .auth import ApiKeyInfo, CreatedApiKey
+from .backups import (
+    NAMESPACE_BACKUP_FORMAT,
+    NAMESPACE_BACKUP_FORMAT_VERSION,
+    NamespaceBackupChunk,
+    NamespaceBackupFile,
+    NamespaceBackupInfo,
+    NamespaceBackupManifest,
+    NamespaceBackupUpload,
+    RestoreNamespaceBackupRequest,
+)
 from .errors import (
     AMemorixError,
     CapabilityUnavailableError,
@@ -82,7 +92,14 @@ __all__ = [
     "MigrationRequiredError",
     "MemoryHit",
     "MemoryRecord",
+    "NAMESPACE_BACKUP_FORMAT",
+    "NAMESPACE_BACKUP_FORMAT_VERSION",
     "NotFoundError",
+    "NamespaceBackupChunk",
+    "NamespaceBackupFile",
+    "NamespaceBackupInfo",
+    "NamespaceBackupManifest",
+    "NamespaceBackupUpload",
     "NamespaceCapacityError",
     "NamespaceCapabilities",
     "NamespaceConfig",
@@ -101,6 +118,7 @@ __all__ = [
     "NamespaceStatus",
     "RequestContext",
     "RelationInput",
+    "RestoreNamespaceBackupRequest",
     "ProviderReference",
     "RemoteAMemorixError",
     "SearchMemoryRequest",

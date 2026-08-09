@@ -11,6 +11,11 @@
 | 阶段0：冻结和归档 | 已完成 | `docs/PHASE0_BASELINE_20260805.md` |
 | 阶段1：修复发布阻断项 | 已完成 | `docs/PHASE1_RELEASE_BLOCKERS_20260805.md` |
 | 阶段2：建立通用开发主线 | 已完成 | `docs/PHASE2_GENERIC_MAINLINE_20260805.md` |
+| 阶段2.1：收紧通用运行时边界 | 已完成 | `docs/PHASE2_1_RUNTIME_BOUNDARIES_20260808.md` |
+| 阶段3：Host Port与Namespace Runtime | 已完成 | `docs/PHASE3_NAMESPACE_RUNTIME_20260809.md` |
+| 阶段4：统一协议层 | 已完成 | `docs/PHASE4_UNIFIED_PROTOCOL_20260809.md` |
+| 阶段4.1：通用应用契约补全 | 已完成 | `docs/PHASE4_1_GENERIC_APPLICATION_20260809.md` |
+| 阶段5：打包和运维能力 | 进行中 | 阶段5.1备份恢复已完成，见`docs/PHASE5_1_NAMESPACE_BACKUP_20260809.md` |
 
 ## 1. 目标
 
@@ -685,6 +690,8 @@ MaiBot 只保留以下测试：
 
 退出条件：全新环境可以通过 pip 或容器启动服务，创建 namespace，写入、检索、备份并恢复数据。
 
+阶段5.1已经完成离线备份格式、受控归档、分块传输、恢复启动清理和跨协议契约。CLI、可观测性、OCI 镜像及全新环境验收继续在阶段5后续任务中完成。
+
 ### 阶段 6：官方 Agent 分支
 
 工作内容：
@@ -736,7 +743,7 @@ Alpha 验证接口和 namespace 模型，Beta 冻结公共 contracts，RC 只接
 
 以下事项不阻塞核心抽取，但必须在对应阶段前形成 ADR：
 
-- 备份的一致性协议和远程对象存储支持
+- 远程对象存储保留策略和凭据接入方式
 - 是否提供嵌入式无服务模式的长期兼容承诺
 - 官方扩展签名和撤回机制
 
@@ -756,6 +763,7 @@ RPC、HTTP 映射、认证方案和写入准入已经由阶段4及 [ADR 0001](AD
 - [x] 以 Protobuf、gRPC 和 gRPC-Gateway 实现 HTTP/RPC v1
 - [x] 实现固定 namespace MCP 适配
 - [x] 构建 Python gRPC SDK 和跨协议契约测试
+- [x] 实现 namespace 离线备份、分块传输和恢复
 - [ ] 构建完整 CLI、发布 Wheel/sdist 和 OCI 镜像
 - [ ] 建立官方集成分支约束
 - [ ] 创建扩展仓库规范

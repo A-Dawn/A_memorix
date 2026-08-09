@@ -28,6 +28,7 @@ from a_memorix import (
 )
 from a_memorix.api.v1 import (
     auth_pb2,
+    backup_pb2,
     common_pb2,
     job_pb2,
     memory_pb2,
@@ -177,9 +178,14 @@ def test_proto_is_the_source_of_http_routes() -> None:
     ]
     create_rule = create.GetOptions().Extensions[annotations_pb2.http]
     ingest_rule = ingest.GetOptions().Extensions[annotations_pb2.http]
+    backup = backup_pb2.DESCRIPTOR.services_by_name["BackupService"].methods_by_name[
+        "CreateNamespaceBackup"
+    ]
+    backup_rule = backup.GetOptions().Extensions[annotations_pb2.http]
 
     assert create_rule.post == "/v1/namespaces"
     assert ingest_rule.post == "/v1/namespaces/{context.namespace_id}/memories:ingest"
+    assert backup_rule.post == "/v1/namespaces/{namespace_id}/backups"
 
 
 @pytest.mark.asyncio
@@ -403,6 +409,64 @@ async def test_grpc_auth_errors_and_memory_semantics(
                 assert invalid.value.code is ErrorCode.INVALID_ARGUMENT
                 assert invalid.value.request_id == "grpc-request-2"
 
+            await admin.disable_namespace(
+                namespace_pb2.DisableNamespaceRequest(namespace_id="tenant-a")
+            )
+            async with AMemorixClient(server.target, api_key=created.secret) as tenant:
+                with pytest.raises(RemoteAMemorixError) as forbidden_backup:
+                    await tenant.create_namespace_backup(
+                        backup_pb2.CreateNamespaceBackupRequest(
+                            namespace_id="tenant-a"
+                        )
+                    )
+                assert forbidden_backup.value.code is ErrorCode.FORBIDDEN
+
+            created_backup = await admin.create_namespace_backup(
+                backup_pb2.CreateNamespaceBackupRequest(namespace_id="tenant-a")
+            )
+            listed_backups = await admin.list_namespace_backups(
+                backup_pb2.ListNamespaceBackupsRequest(source_namespace_id="tenant-a")
+            )
+            assert [item.backup_id for item in listed_backups.backups] == [
+                created_backup.backup.backup_id
+            ]
+            downloaded = bytearray()
+            offset = 0
+            while True:
+                chunk = await admin.download_namespace_backup(
+                    backup_pb2.DownloadNamespaceBackupRequest(
+                        backup_id=created_backup.backup.backup_id,
+                        offset=offset,
+                        max_bytes=257,
+                    )
+                )
+                downloaded.extend(chunk.data)
+                offset = chunk.next_offset
+                if chunk.complete:
+                    break
+            upload = await admin.begin_namespace_backup_upload()
+            uploaded = await admin.upload_namespace_backup_chunk(
+                backup_pb2.UploadNamespaceBackupChunkRequest(
+                    upload_id=upload.upload_id,
+                    data=bytes(downloaded),
+                )
+            )
+            assert uploaded.next_offset == len(downloaded)
+            completed = await admin.complete_namespace_backup_upload(
+                backup_pb2.CompleteNamespaceBackupUploadRequest(
+                    upload_id=upload.upload_id,
+                    expected_sha256=created_backup.backup.sha256,
+                )
+            )
+            assert completed.backup.backup_id == created_backup.backup.backup_id
+            restored = await admin.restore_namespace_from_backup(
+                backup_pb2.RestoreNamespaceFromBackupRequest(
+                    backup_id=created_backup.backup.backup_id,
+                    target_namespace_id="tenant-restored",
+                )
+            )
+            assert restored.namespace.status == namespace_pb2.NAMESPACE_STATUS_INACTIVE
+
             await admin.revoke_api_key(
                 auth_pb2.RevokeApiKeyRequest(
                     namespace_id="tenant-a",
@@ -578,6 +642,73 @@ async def test_gateway_http_json_matches_grpc(tmp_path: Path) -> None:
             assert [item["content"] for item in http_search["hits"]] == [
                 item.content for item in grpc_search.hits
             ]
+
+            status, _ = await asyncio.to_thread(
+                _http_json,
+                "POST",
+                f"{base_url}/v1/namespaces/http-tenant:disable",
+                None,
+                ADMIN_TOKEN,
+            )
+            assert status == 200
+            status, http_backup = await asyncio.to_thread(
+                _http_json,
+                "POST",
+                f"{base_url}/v1/namespaces/http-tenant/backups",
+                None,
+                ADMIN_TOKEN,
+            )
+            assert status == 200, http_backup
+            backup_id = str(http_backup["backup"]["backupId"])
+            status, backup_content = await asyncio.to_thread(
+                _http_json,
+                "GET",
+                f"{base_url}/v1/backups/{backup_id}/content?maxBytes=1048576",
+                None,
+                ADMIN_TOKEN,
+            )
+            assert status == 200, backup_content
+            assert backup_content["backup"]["backupId"] == backup_id
+            assert backup_content["data"]
+            status, upload_started = await asyncio.to_thread(
+                _http_json,
+                "POST",
+                f"{base_url}/v1/backup-uploads",
+                None,
+                ADMIN_TOKEN,
+            )
+            assert status == 200, upload_started
+            upload_id = str(upload_started["uploadId"])
+            status, upload_progress = await asyncio.to_thread(
+                _http_json,
+                "PUT",
+                f"{base_url}/v1/backup-uploads/{upload_id}",
+                {"offset": "0", "data": backup_content["data"]},
+                ADMIN_TOKEN,
+            )
+            assert status == 200, upload_progress
+            status, upload_completed = await asyncio.to_thread(
+                _http_json,
+                "POST",
+                f"{base_url}/v1/backup-uploads/{upload_id}:complete",
+                {"expectedSha256": http_backup["backup"]["sha256"]},
+                ADMIN_TOKEN,
+            )
+            assert status == 200, upload_completed
+            assert upload_completed["backup"]["backupId"] == backup_id
+            status, restored_backup = await asyncio.to_thread(
+                _http_json,
+                "POST",
+                f"{base_url}/v1/backups/{backup_id}:restore",
+                {"targetNamespaceId": "http-restored"},
+                ADMIN_TOKEN,
+            )
+            assert status == 200, restored_backup
+            assert restored_backup["namespace"]["namespaceId"] == "http-restored"
+            assert (
+                restored_backup["namespace"]["status"]
+                == "NAMESPACE_STATUS_INACTIVE"
+            )
         finally:
             if gateway is not None:
                 gateway.terminate()

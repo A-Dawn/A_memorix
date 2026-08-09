@@ -11,6 +11,8 @@ import grpc
 from a_memorix.api.v1 import (
     auth_pb2,
     auth_pb2_grpc,
+    backup_pb2,
+    backup_pb2_grpc,
     job_pb2,
     job_pb2_grpc,
     memory_pb2,
@@ -18,7 +20,11 @@ from a_memorix.api.v1 import (
     namespace_pb2,
     namespace_pb2_grpc,
 )
-from a_memorix.contracts import InvalidArgumentError, RequestContext
+from a_memorix.contracts import (
+    InvalidArgumentError,
+    RequestContext,
+    RestoreNamespaceBackupRequest,
+)
 from a_memorix.engine import AMemorixEngine
 
 from .auth import AuthPrincipal, GrpcAuthPolicy
@@ -36,6 +42,7 @@ from .mapping import (
     ingest_request_from_proto,
     ingest_response_to_proto,
     job_info_to_proto,
+    namespace_backup_info_to_proto,
     namespace_capabilities_to_proto,
     namespace_health_to_proto,
     namespace_info_to_proto,
@@ -192,6 +199,139 @@ class NamespaceGrpcService(_ServiceBase, namespace_pb2_grpc.NamespaceServiceServ
             health = await self._engine.namespace_health(request.namespace_id)
             return namespace_pb2.GetNamespaceHealthResponse(
                 health=namespace_health_to_proto(health)
+            )
+
+        return await self._invoke(context, operation)
+
+
+class BackupGrpcService(_ServiceBase, backup_pb2_grpc.BackupServiceServicer):
+    async def CreateNamespaceBackup(self, request, context):
+        async def operation() -> backup_pb2.CreateNamespaceBackupResponse:
+            self._auth.require_admin(context)
+            backup = await self._engine.create_namespace_backup(request.namespace_id)
+            return backup_pb2.CreateNamespaceBackupResponse(
+                backup=namespace_backup_info_to_proto(backup)
+            )
+
+        return await self._invoke(context, operation)
+
+    async def GetNamespaceBackup(self, request, context):
+        async def operation() -> backup_pb2.GetNamespaceBackupResponse:
+            self._auth.require_admin(context)
+            backup = await self._engine.get_namespace_backup(request.backup_id)
+            return backup_pb2.GetNamespaceBackupResponse(
+                backup=namespace_backup_info_to_proto(backup)
+            )
+
+        return await self._invoke(context, operation)
+
+    async def ListNamespaceBackups(self, request, context):
+        async def operation() -> backup_pb2.ListNamespaceBackupsResponse:
+            self._auth.require_admin(context)
+            backups, next_page_token = (
+                await self._engine.list_namespace_backups_page(
+                    source_namespace_id=request.source_namespace_id,
+                    page_size=(
+                        request.page_size if request.HasField("page_size") else 50
+                    ),
+                    page_token=request.page_token,
+                )
+            )
+            return backup_pb2.ListNamespaceBackupsResponse(
+                backups=[namespace_backup_info_to_proto(item) for item in backups],
+                next_page_token=next_page_token,
+            )
+
+        return await self._invoke(context, operation)
+
+    async def DeleteNamespaceBackup(self, request, context):
+        async def operation() -> backup_pb2.DeleteNamespaceBackupResponse:
+            self._auth.require_admin(context)
+            await self._engine.delete_namespace_backup(request.backup_id)
+            return backup_pb2.DeleteNamespaceBackupResponse()
+
+        return await self._invoke(context, operation)
+
+    async def DownloadNamespaceBackup(self, request, context):
+        async def operation() -> backup_pb2.DownloadNamespaceBackupResponse:
+            self._auth.require_admin(context)
+            chunk = await self._engine.download_namespace_backup(
+                request.backup_id,
+                offset=request.offset if request.HasField("offset") else 0,
+                max_bytes=(
+                    request.max_bytes if request.HasField("max_bytes") else 256 * 1024
+                ),
+            )
+            return backup_pb2.DownloadNamespaceBackupResponse(
+                backup=namespace_backup_info_to_proto(chunk.backup),
+                offset=chunk.offset,
+                data=chunk.data,
+                next_offset=chunk.next_offset,
+                complete=chunk.complete,
+            )
+
+        return await self._invoke(context, operation)
+
+    async def BeginNamespaceBackupUpload(self, request, context):
+        del request
+
+        async def operation() -> backup_pb2.BeginNamespaceBackupUploadResponse:
+            self._auth.require_admin(context)
+            upload = await self._engine.begin_namespace_backup_upload()
+            return backup_pb2.BeginNamespaceBackupUploadResponse(
+                upload_id=upload.upload_id,
+                next_offset=upload.next_offset,
+            )
+
+        return await self._invoke(context, operation)
+
+    async def UploadNamespaceBackupChunk(self, request, context):
+        async def operation() -> backup_pb2.UploadNamespaceBackupChunkResponse:
+            self._auth.require_admin(context)
+            upload = await self._engine.upload_namespace_backup_chunk(
+                request.upload_id,
+                offset=request.offset,
+                data=request.data,
+            )
+            return backup_pb2.UploadNamespaceBackupChunkResponse(
+                upload_id=upload.upload_id,
+                next_offset=upload.next_offset,
+            )
+
+        return await self._invoke(context, operation)
+
+    async def CompleteNamespaceBackupUpload(self, request, context):
+        async def operation() -> backup_pb2.CompleteNamespaceBackupUploadResponse:
+            self._auth.require_admin(context)
+            backup = await self._engine.complete_namespace_backup_upload(
+                request.upload_id,
+                expected_sha256=request.expected_sha256,
+            )
+            return backup_pb2.CompleteNamespaceBackupUploadResponse(
+                backup=namespace_backup_info_to_proto(backup)
+            )
+
+        return await self._invoke(context, operation)
+
+    async def AbortNamespaceBackupUpload(self, request, context):
+        async def operation() -> backup_pb2.AbortNamespaceBackupUploadResponse:
+            self._auth.require_admin(context)
+            await self._engine.abort_namespace_backup_upload(request.upload_id)
+            return backup_pb2.AbortNamespaceBackupUploadResponse()
+
+        return await self._invoke(context, operation)
+
+    async def RestoreNamespaceFromBackup(self, request, context):
+        async def operation() -> backup_pb2.RestoreNamespaceFromBackupResponse:
+            self._auth.require_admin(context)
+            namespace = await self._engine.restore_namespace_from_backup(
+                RestoreNamespaceBackupRequest(
+                    backup_id=request.backup_id,
+                    target_namespace_id=request.target_namespace_id,
+                )
+            )
+            return backup_pb2.RestoreNamespaceFromBackupResponse(
+                namespace=namespace_info_to_proto(namespace)
             )
 
         return await self._invoke(context, operation)
@@ -458,6 +598,10 @@ def register_services(
 ) -> None:
     namespace_pb2_grpc.add_NamespaceServiceServicer_to_server(
         NamespaceGrpcService(engine, auth),
+        server,
+    )
+    backup_pb2_grpc.add_BackupServiceServicer_to_server(
+        BackupGrpcService(engine, auth),
         server,
     )
     auth_pb2_grpc.add_AuthServiceServicer_to_server(
