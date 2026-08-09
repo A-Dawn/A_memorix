@@ -242,6 +242,8 @@ twine check dist/*
 
 项目默认采用 [GNU AGPL-3.0-only](LICENSE)。任何协议变更或其他许可安排都必须发送邮件至 `contact@luminarc.tech` 申请，只有收到书面批准后才产生例外。具体规则见 [LICENSING.md](LICENSING.md)。
 
+外部贡献采用非独占的 [A_memorix CLA](CLA.md)。贡献者保留代码版权，项目获得维护、公开发布和提供其他许可所需的授权。贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
 安全漏洞和疑似恶意扩展请通过`security@luminarc.tech`私密报告，具体要求见[安全策略](SECURITY.md)。
 
 社区扩展仓库已经支持 Manifest、审核状态和第一批自动检查；授予已验证状态所需的安装、API、Namespace 隔离和供应链检查仍需继续建设。
