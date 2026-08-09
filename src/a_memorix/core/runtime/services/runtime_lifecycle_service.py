@@ -266,7 +266,7 @@ class MemoryRuntimeLifecycleService(KernelServiceBase):
 
         runtime_config = self._build_runtime_config()
         self._runtime_bundle = kernel_module.build_search_runtime(
-            plugin_config=runtime_config,
+            runtime_config=runtime_config,
             logger_obj=kernel_module.logger,
             owner_tag="sdk_kernel",
             log_prefix="[sdk]",
@@ -282,9 +282,13 @@ class MemoryRuntimeLifecycleService(KernelServiceBase):
             logger.warning(self._runtime_bundle.error or "检索通道不可用，元数据核心仍保持运行")
 
         self._refresh_runtime_dependents(preserve_managers=True)
-        self.import_task_manager = kernel_module.ImportTaskManager(self._runtime_facade)
+        self.import_task_manager = kernel_module.ImportTaskManager(
+            self._runtime_facade,
+            llm_provider=self.llm_provider,
+        )
         self.retrieval_tuning_manager = kernel_module.RetrievalTuningManager(
             self._runtime_facade,
+            llm_provider=self.llm_provider,
             import_write_blocked_provider=self.import_task_manager.is_write_blocked,
         )
 

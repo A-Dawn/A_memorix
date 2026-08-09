@@ -20,15 +20,11 @@ BranchRunner = Callable[[], Awaitable[Dict[str, Any]]]
 class AggregateQueryService:
     """聚合查询执行服务（search/time/episode）。"""
 
-    def __init__(self, plugin_config: Optional[Any] = None):
-        self.plugin_config = plugin_config or {}
+    def __init__(self, runtime_config: Optional[Dict[str, Any]] = None):
+        self.runtime_config = runtime_config or {}
 
     def _cfg(self, key: str, default: Any = None) -> Any:
-        getter = getattr(self.plugin_config, "get_config", None)
-        if callable(getter):
-            return getter(key, default)
-
-        current: Any = self.plugin_config
+        current: Any = self.runtime_config
         for part in key.split("."):
             if isinstance(current, dict) and part in current:
                 current = current[part]

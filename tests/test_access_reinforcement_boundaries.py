@@ -59,6 +59,13 @@ async def test_search_execution_has_no_access_lifecycle_side_effect() -> None:
     reinforced: list[list[str]] = []
 
     class FakeRuntime:
+        graph_store = None
+        metadata_store = None
+
+        async def execute_request_with_dedup(self, request_key: str, executor: Any) -> tuple[bool, Any]:
+            del request_key
+            return False, await executor()
+
         async def reinforce_access(self, relation_hashes: list[str]) -> None:
             reinforced.append(list(relation_hashes))
 
@@ -70,8 +77,7 @@ async def test_search_execution_has_no_access_lifecycle_side_effect() -> None:
     result = await SearchExecutionService.execute(
         retriever=FakeRetriever(),
         threshold_filter=None,
-        plugin_config={
-            "plugin_instance": FakeRuntime(),
+        runtime_config={
             "retrieval": {
                 "search": {
                     "smart_fallback": {"enabled": False},
@@ -79,6 +85,7 @@ async def test_search_execution_has_no_access_lifecycle_side_effect() -> None:
                 }
             },
         },
+        runtime_services=FakeRuntime(),
         request=SearchExecutionRequest(
             caller="access-boundary-test",
             query="候选",

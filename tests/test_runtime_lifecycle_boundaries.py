@@ -112,14 +112,22 @@ async def test_runtime_lifecycle_initialize_preserves_startup_sequence(
             return {"ok": True, "backend": "fake", "doc_count": 1, "duration_ms": 0.0}
 
     class FakeImportTaskManager:
-        def __init__(self, facade: Any) -> None:
+        def __init__(self, facade: Any, *, llm_provider: Any) -> None:
+            del facade, llm_provider
             events.append("import_task_manager")
 
         def is_write_blocked(self) -> bool:
             return False
 
     class FakeRetrievalTuningManager:
-        def __init__(self, facade: Any, *, import_write_blocked_provider: Any) -> None:
+        def __init__(
+            self,
+            facade: Any,
+            *,
+            import_write_blocked_provider: Any,
+            llm_provider: Any,
+        ) -> None:
+            del facade, import_write_blocked_provider, llm_provider
             events.append("retrieval_tuning_manager")
 
     def fail_startup_migration(data_dir: Path) -> None:
@@ -597,7 +605,7 @@ async def test_search_execution_once_preserves_request_semantics(
         query="绿茶",
         top_k=7,
         request=request,
-        plugin_config={"memory": {"enabled": True}},
+        runtime_config={"memory": {"enabled": True}},
         source="chat_summary:session-1",
         time_from="2026-01-01",
         time_to="2026-01-02",
@@ -607,7 +615,7 @@ async def test_search_execution_once_preserves_request_semantics(
     execution_request = captured["request"]
     assert captured["retriever"] is kernel.retriever
     assert captured["threshold_filter"] is kernel.threshold_filter
-    assert captured["plugin_config"] == {"memory": {"enabled": True}}
+    assert captured["runtime_config"] == {"memory": {"enabled": True}}
     assert captured["enforce_chat_filter"] is True
     assert "reinforce_access" not in captured
     assert execution_request.caller == "boundary-test"

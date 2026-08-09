@@ -26,10 +26,6 @@ from a_memorix.core.utils.search_execution_service import (
 )
 
 
-class _PluginStub:
-    pass
-
-
 def test_search_request_key_distinguishes_scope_resource_sets() -> None:
     first_scope = RetrievalScope(
         key="chat:shared",
@@ -87,7 +83,7 @@ async def test_search_execution_uses_candidate_budget_before_threshold_filter() 
     result = await SearchExecutionService.execute(
         retriever=Retriever(),
         threshold_filter=ThresholdFilter(),
-        plugin_config={
+        runtime_config={
             "retrieval": {
                 "search": {
                     "smart_fallback": {"enabled": False},
@@ -136,8 +132,7 @@ class _ConcurrentRequestRetriever:
 @pytest.mark.asyncio
 async def test_search_execution_keeps_ppr_switch_request_local() -> None:
     retriever = _ConcurrentRequestRetriever()
-    plugin_config = {
-        "plugin_instance": _PluginStub(),
+    runtime_config = {
         "retrieval": {
             "search": {
                 "smart_fallback": {"enabled": False},
@@ -150,7 +145,7 @@ async def test_search_execution_keeps_ppr_switch_request_local() -> None:
         result = await SearchExecutionService.execute(
             retriever=retriever,
             threshold_filter=None,
-            plugin_config=plugin_config,
+            runtime_config=runtime_config,
             request=SearchExecutionRequest(
                 caller="test",
                 query=query,

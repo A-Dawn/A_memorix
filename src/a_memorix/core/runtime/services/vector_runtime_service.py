@@ -893,7 +893,7 @@ class MemoryVectorRuntimeService(KernelServiceBase):
             self._refresh_relation_write_service()
         self._update_dual_vector_auto_migration_stage("runtime_rebuild")
         self._runtime_bundle = build_search_runtime(
-            plugin_config=self._build_runtime_config(),
+            runtime_config=self._build_runtime_config(),
             logger_obj=logger,
             owner_tag="sdk_kernel",
             log_prefix="[sdk]",

@@ -35,26 +35,22 @@ class EpisodeService:
         self,
         *,
         metadata_store: Any,
-        plugin_config: Optional[Any] = None,
+        runtime_config: Optional[Dict[str, Any]] = None,
         segmentation_service: Optional[EpisodeSegmentationService] = None,
     ):
         self.metadata_store = metadata_store
-        self.plugin_config = plugin_config or {}
+        self.runtime_config = runtime_config or {}
         self.segmentation_service = segmentation_service or EpisodeSegmentationService(
-            plugin_config=self._config_dict(),
+            runtime_config=self._config_dict(),
         )
 
     def _config_dict(self) -> Dict[str, Any]:
-        if isinstance(self.plugin_config, dict):
-            return self.plugin_config
+        if isinstance(self.runtime_config, dict):
+            return self.runtime_config
         return {}
 
     def _cfg(self, key: str, default: Any = None) -> Any:
-        getter = getattr(self.plugin_config, "get_config", None)
-        if callable(getter):
-            return getter(key, default)
-
-        current: Any = self.plugin_config
+        current: Any = self.runtime_config
         for part in key.split("."):
             if isinstance(current, dict) and part in current:
                 current = current[part]

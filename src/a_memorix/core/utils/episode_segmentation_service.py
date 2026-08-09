@@ -32,8 +32,8 @@ class EpisodeSegmentationService:
 
     SEGMENTATION_VERSION = "episode_mvp_v1"
 
-    def __init__(self, plugin_config: Optional[dict] = None, llm_provider: LLMProvider | None = None):
-        self.plugin_config = plugin_config or {}
+    def __init__(self, runtime_config: Optional[dict] = None, llm_provider: LLMProvider | None = None):
+        self.runtime_config = runtime_config or {}
         self.llm_provider = llm_provider
 
     @staticmethod
@@ -63,7 +63,7 @@ class EpisodeSegmentationService:
             )
 
     def _cfg(self, key: str, default: Any = None) -> Any:
-        current: Any = self.plugin_config
+        current: Any = self.runtime_config
         for part in key.split("."):
             if isinstance(current, dict) and part in current:
                 current = current[part]

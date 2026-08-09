@@ -43,30 +43,15 @@ def _safe_dict(value: Any) -> Dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _resolve_debug_enabled(plugin_config: Optional[dict]) -> bool:
-    advanced = _get_config_value(plugin_config, "advanced", {})
+def _resolve_debug_enabled(runtime_config: Optional[dict]) -> bool:
+    advanced = _get_config_value(runtime_config, "advanced", {})
     if isinstance(advanced, dict):
         return bool(advanced.get("debug", False))
-    return bool(_get_config_value(plugin_config, "debug", False))
+    return bool(_get_config_value(runtime_config, "debug", False))
 
 
-def _resolve_vector_pools_ready(plugin_config: Optional[dict]) -> bool:
-    configured = _get_config_value(plugin_config, "runtime.vector_pools_ready", None)
-    if configured is not None:
-        return bool(configured)
-
-    plugin_instance = _get_config_value(plugin_config, "plugin_instance")
-    checker = getattr(plugin_instance, "_dual_vector_pools_enabled", None)
-    if callable(checker):
-        return bool(checker())
-
-    try:
-        from ...runtime_registry import get_runtime_components
-
-        instances = get_runtime_components()
-    except Exception:
-        instances = {}
-    return bool(instances.get("vector_pools_ready")) if isinstance(instances, dict) else False
+def _resolve_vector_pools_ready(runtime_config: Optional[dict]) -> bool:
+    return bool(_get_config_value(runtime_config, "runtime.vector_pools_ready", False))
 
 
 @dataclass
@@ -90,52 +75,18 @@ class SearchRuntimeBundle:
         return self.retriever is not None and self.metadata_store is not None
 
 
-def _resolve_runtime_components(plugin_config: Optional[dict]) -> SearchRuntimeBundle:
+def _resolve_runtime_components(runtime_config: Optional[dict]) -> SearchRuntimeBundle:
     bundle = SearchRuntimeBundle(
-        vector_store=_get_config_value(plugin_config, "vector_store"),
-        paragraph_vector_store=_get_config_value(plugin_config, "paragraph_vector_store"),
-        graph_vector_store=_get_config_value(plugin_config, "graph_vector_store"),
-        legacy_vector_store=_get_config_value(plugin_config, "legacy_vector_store"),
-        graph_store=_get_config_value(plugin_config, "graph_store"),
-        metadata_store=_get_config_value(plugin_config, "metadata_store"),
-        embedding_manager=_get_config_value(plugin_config, "embedding_manager"),
-        sparse_index=_get_config_value(plugin_config, "sparse_index"),
+        vector_store=_get_config_value(runtime_config, "vector_store"),
+        paragraph_vector_store=_get_config_value(runtime_config, "paragraph_vector_store"),
+        graph_vector_store=_get_config_value(runtime_config, "graph_vector_store"),
+        legacy_vector_store=_get_config_value(runtime_config, "legacy_vector_store"),
+        graph_store=_get_config_value(runtime_config, "graph_store"),
+        metadata_store=_get_config_value(runtime_config, "metadata_store"),
+        embedding_manager=_get_config_value(runtime_config, "embedding_manager"),
+        sparse_index=_get_config_value(runtime_config, "sparse_index"),
     )
 
-    missing_required = any(getattr(bundle, key) is None for key in _REQUIRED_COMPONENT_KEYS)
-    if not missing_required:
-        if bundle.paragraph_vector_store is None:
-            bundle.paragraph_vector_store = bundle.vector_store
-        if bundle.graph_vector_store is None:
-            bundle.graph_vector_store = bundle.vector_store
-        return bundle
-
-    try:
-        from ...runtime_registry import get_runtime_components
-
-        instances = get_runtime_components()
-    except Exception:
-        instances = {}
-
-    if not isinstance(instances, dict) or not instances:
-        return bundle
-
-    if bundle.vector_store is None:
-        bundle.vector_store = instances.get("vector_store")
-    if bundle.paragraph_vector_store is None:
-        bundle.paragraph_vector_store = instances.get("paragraph_vector_store")
-    if bundle.graph_vector_store is None:
-        bundle.graph_vector_store = instances.get("graph_vector_store")
-    if bundle.legacy_vector_store is None:
-        bundle.legacy_vector_store = instances.get("legacy_vector_store")
-    if bundle.graph_store is None:
-        bundle.graph_store = instances.get("graph_store")
-    if bundle.metadata_store is None:
-        bundle.metadata_store = instances.get("metadata_store")
-    if bundle.embedding_manager is None:
-        bundle.embedding_manager = instances.get("embedding_manager")
-    if bundle.sparse_index is None:
-        bundle.sparse_index = instances.get("sparse_index")
     if bundle.paragraph_vector_store is None:
         bundle.paragraph_vector_store = bundle.vector_store
     if bundle.graph_vector_store is None:
@@ -144,7 +95,7 @@ def _resolve_runtime_components(plugin_config: Optional[dict]) -> SearchRuntimeB
 
 
 def build_search_runtime(
-    plugin_config: Optional[dict],
+    runtime_config: Optional[dict],
     logger_obj: Optional[Any],
     owner_tag: str,
     *,
@@ -157,19 +108,19 @@ def build_search_runtime(
     prefix = str(log_prefix or "").strip()
     prefix_text = f"{prefix} " if prefix else ""
 
-    runtime = _resolve_runtime_components(plugin_config)
+    runtime = _resolve_runtime_components(runtime_config)
     if any(getattr(runtime, key) is None for key in _REQUIRED_COMPONENT_KEYS):
         runtime.error = "元数据核心未初始化"
         log.warning(f"{prefix_text}[{owner}] 元数据核心未初始化，无法构建检索运行时")
         return runtime
 
-    sparse_cfg_raw = _safe_dict(_get_config_value(plugin_config, "retrieval.sparse", {}) or {})
-    fusion_cfg_raw = _safe_dict(_get_config_value(plugin_config, "retrieval.fusion", {}) or {})
-    relation_intent_cfg_raw = _safe_dict(_get_config_value(plugin_config, "retrieval.search.relation_intent", {}) or {})
-    graph_recall_cfg_raw = _safe_dict(_get_config_value(plugin_config, "retrieval.search.graph_recall", {}) or {})
-    posterior_graph_cfg_raw = _safe_dict(_get_config_value(plugin_config, "retrieval.search.posterior_graph", {}) or {})
-    vector_pools_cfg_raw = _safe_dict(_get_config_value(plugin_config, "retrieval.vector_pools", {}) or {})
-    vector_pools_ready = _resolve_vector_pools_ready(plugin_config)
+    sparse_cfg_raw = _safe_dict(_get_config_value(runtime_config, "retrieval.sparse", {}) or {})
+    fusion_cfg_raw = _safe_dict(_get_config_value(runtime_config, "retrieval.fusion", {}) or {})
+    relation_intent_cfg_raw = _safe_dict(_get_config_value(runtime_config, "retrieval.search.relation_intent", {}) or {})
+    graph_recall_cfg_raw = _safe_dict(_get_config_value(runtime_config, "retrieval.search.graph_recall", {}) or {})
+    posterior_graph_cfg_raw = _safe_dict(_get_config_value(runtime_config, "retrieval.search.posterior_graph", {}) or {})
+    vector_pools_cfg_raw = _safe_dict(_get_config_value(runtime_config, "retrieval.vector_pools", {}) or {})
+    vector_pools_ready = _resolve_vector_pools_ready(runtime_config)
     if str(vector_pools_cfg_raw.get("mode", "dual") or "dual").strip().lower() == "dual" and not vector_pools_ready:
         vector_pools_cfg_raw = dict(vector_pools_cfg_raw)
         vector_pools_cfg_raw["mode"] = "single"
@@ -213,21 +164,21 @@ def build_search_runtime(
 
     try:
         config = DualPathRetrieverConfig(
-            top_k_paragraphs=_get_config_value(plugin_config, "retrieval.top_k_paragraphs", 20),
-            top_k_relations=_get_config_value(plugin_config, "retrieval.top_k_relations", 10),
-            top_k_final=_get_config_value(plugin_config, "retrieval.top_k_final", 10),
-            alpha=_get_config_value(plugin_config, "retrieval.alpha", 0.5),
-            enable_ppr=_get_config_value(plugin_config, "retrieval.enable_ppr", True),
-            ppr_alpha=_get_config_value(plugin_config, "retrieval.ppr_alpha", 0.85),
-            ppr_timeout_seconds=_get_config_value(plugin_config, "retrieval.ppr_timeout_seconds", 1.5),
-            ppr_concurrency_limit=_get_config_value(plugin_config, "retrieval.ppr_concurrency_limit", 4),
-            ppr_local_enabled=_get_config_value(plugin_config, "retrieval.ppr_local_enabled", True),
-            ppr_local_max_nodes=_get_config_value(plugin_config, "retrieval.ppr_local_max_nodes", 256),
-            ppr_local_hops=_get_config_value(plugin_config, "retrieval.ppr_local_hops", 2),
-            ppr_local_min_graph_nodes=_get_config_value(plugin_config, "retrieval.ppr_local_min_graph_nodes", 128),
-            enable_parallel=_get_config_value(plugin_config, "retrieval.enable_parallel", True),
+            top_k_paragraphs=_get_config_value(runtime_config, "retrieval.top_k_paragraphs", 20),
+            top_k_relations=_get_config_value(runtime_config, "retrieval.top_k_relations", 10),
+            top_k_final=_get_config_value(runtime_config, "retrieval.top_k_final", 10),
+            alpha=_get_config_value(runtime_config, "retrieval.alpha", 0.5),
+            enable_ppr=_get_config_value(runtime_config, "retrieval.enable_ppr", True),
+            ppr_alpha=_get_config_value(runtime_config, "retrieval.ppr_alpha", 0.85),
+            ppr_timeout_seconds=_get_config_value(runtime_config, "retrieval.ppr_timeout_seconds", 1.5),
+            ppr_concurrency_limit=_get_config_value(runtime_config, "retrieval.ppr_concurrency_limit", 4),
+            ppr_local_enabled=_get_config_value(runtime_config, "retrieval.ppr_local_enabled", True),
+            ppr_local_max_nodes=_get_config_value(runtime_config, "retrieval.ppr_local_max_nodes", 256),
+            ppr_local_hops=_get_config_value(runtime_config, "retrieval.ppr_local_hops", 2),
+            ppr_local_min_graph_nodes=_get_config_value(runtime_config, "retrieval.ppr_local_min_graph_nodes", 128),
+            enable_parallel=_get_config_value(runtime_config, "retrieval.enable_parallel", True),
             retrieval_strategy=RetrievalStrategy.DUAL_PATH,
-            debug=_resolve_debug_enabled(plugin_config),
+            debug=_resolve_debug_enabled(runtime_config),
             sparse=sparse_cfg,
             fusion=fusion_cfg,
             relation_intent=relation_intent_cfg,
@@ -253,11 +204,11 @@ def build_search_runtime(
 
         threshold_config = ThresholdConfig(
             method=ThresholdMethod.ADAPTIVE,
-            min_threshold=_get_config_value(plugin_config, "threshold.min_threshold", 0.29),
-            max_threshold=_get_config_value(plugin_config, "threshold.max_threshold", 0.95),
-            percentile=_get_config_value(plugin_config, "threshold.percentile", 75.0),
-            std_multiplier=_get_config_value(plugin_config, "threshold.std_multiplier", 1.5),
-            min_results=_get_config_value(plugin_config, "threshold.min_results", 4),
+            min_threshold=_get_config_value(runtime_config, "threshold.min_threshold", 0.29),
+            max_threshold=_get_config_value(runtime_config, "threshold.max_threshold", 0.95),
+            percentile=_get_config_value(runtime_config, "threshold.percentile", 75.0),
+            std_multiplier=_get_config_value(runtime_config, "threshold.std_multiplier", 1.5),
+            min_results=_get_config_value(runtime_config, "threshold.min_results", 4),
         )
         runtime.threshold_filter = DynamicThresholdFilter(threshold_config)
         runtime.error = ""
@@ -276,14 +227,14 @@ class SearchRuntimeInitializer:
 
     @staticmethod
     def build_search_runtime(
-        plugin_config: Optional[dict],
+        runtime_config: Optional[dict],
         logger_obj: Optional[Any],
         owner_tag: str,
         *,
         log_prefix: str = "",
     ) -> SearchRuntimeBundle:
         return build_search_runtime(
-            plugin_config=plugin_config,
+            runtime_config=runtime_config,
             logger_obj=logger_obj,
             owner_tag=owner_tag,
             log_prefix=log_prefix,

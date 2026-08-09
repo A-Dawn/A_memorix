@@ -102,7 +102,7 @@ async def test_auto_chat_summary_requires_paragraph_hash(
 def test_interval_sweep_keeps_overlapping_ranges_in_one_group() -> None:
     episode_service = EpisodeService(
         metadata_store=object(),
-        plugin_config={
+        runtime_config={
             "episode": {
                 "max_paragraphs_per_call": 20,
                 "max_chars_per_call": 6000,
@@ -141,7 +141,7 @@ async def test_source_rebuild_reuses_unchanged_groups_and_only_recomputes_new_ta
     segmentation_service = _FakeSegmentationService()
     episode_service = EpisodeService(
         metadata_store=metadata_store,
-        plugin_config={
+        runtime_config={
             "episode": {
                 "max_paragraphs_per_call": 2,
                 "max_chars_per_call": 6000,

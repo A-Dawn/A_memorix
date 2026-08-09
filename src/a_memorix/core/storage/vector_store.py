@@ -1776,7 +1776,7 @@ class VectorStore:
         faiss.normalize_L2(query_local)
 
         # 查询路径仅负责检索，不在此触发训练/回放。
-        # 训练/回放前置到 warmup_index()，并由插件启动阶段触发。
+        # 训练和回放前置到 warmup_index()，由运行时启动阶段触发。
         # Faiss 索引在并发 search 下可能出现阻塞，这里串行化检索调用保证稳定性。
         with self._lock:
             self._raise_if_cleanup_checkpoint_broken_unlocked()

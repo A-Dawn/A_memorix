@@ -5,8 +5,10 @@
 导入到 A_memorix 的存储组件中。
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Tuple
 from weakref import WeakValueDictionary
 
 import asyncio
@@ -35,7 +37,10 @@ from .model_routing import (
 from .metadata import coerce_metadata_dict
 from .relation_write_service import RelationWriteService
 from .runtime_payloads import optional_float
-from .runtime_self_check import ensure_runtime_self_check, run_embedding_runtime_self_check
+from .runtime_self_check import run_embedding_runtime_self_check
+
+if TYPE_CHECKING:
+    from ..runtime.runtime_services import RuntimeServices
 
 logger = get_logger("A_Memorix.SummaryImporter")
 
@@ -181,59 +186,54 @@ class SummaryImporter:
         graph_store: GraphStore,
         metadata_store: MetadataStore,
         embedding_manager: EmbeddingAPIAdapter,
-        plugin_config: dict,
+        runtime_config: dict,
         llm_provider: LLMProvider | None = None,
         message_source: MessageSource | None = None,
+        runtime_services: RuntimeServices | None = None,
     ):
         self.vector_store = vector_store
         self.graph_store = graph_store
         self.metadata_store = metadata_store
         self.embedding_manager = embedding_manager
-        self.plugin_config = plugin_config
+        self.runtime_config = runtime_config
         self.llm_provider = llm_provider
         self.message_source = message_source
+        self.runtime_services = runtime_services
         self._import_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
         self.relation_write_service: Optional[RelationWriteService] = (
-            plugin_config.get("relation_write_service") if isinstance(plugin_config, dict) else None
+            runtime_config.get("relation_write_service") if isinstance(runtime_config, dict) else None
         )
 
-    def _plugin_instance(self) -> Any:
-        return self.plugin_config.get("plugin_instance") if isinstance(self.plugin_config, dict) else None
-
     def _allow_metadata_only_write(self) -> bool:
-        plugin_instance = self._plugin_instance()
-        getter = getattr(plugin_instance, "get_config", None)
-        if callable(getter):
-            return bool(getter("embedding.fallback.allow_metadata_only_write", True))
-        if isinstance(self.plugin_config, dict):
-            embedding_cfg = self.plugin_config.get("embedding", {}) or {}
+        if self.runtime_services is not None:
+            return self.runtime_services.allow_metadata_only_write()
+        if isinstance(self.runtime_config, dict):
+            embedding_cfg = self.runtime_config.get("embedding", {}) or {}
             fallback_cfg = embedding_cfg.get("fallback", {}) if isinstance(embedding_cfg, dict) else {}
             if isinstance(fallback_cfg, dict):
                 return bool(fallback_cfg.get("allow_metadata_only_write", True))
         return True
 
     def _dual_vector_pools_enabled(self) -> bool:
-        plugin_instance = self._plugin_instance()
-        checker = getattr(plugin_instance, "_dual_vector_pools_enabled", None)
-        if callable(checker):
-            return bool(checker())
-        if isinstance(self.plugin_config, dict):
-            retrieval_cfg = self.plugin_config.get("retrieval", {}) or {}
+        if self.runtime_services is not None:
+            return self.runtime_services.dual_vector_pools_enabled()
+        if isinstance(self.runtime_config, dict):
+            retrieval_cfg = self.runtime_config.get("retrieval", {}) or {}
             vector_pools_cfg = retrieval_cfg.get("vector_pools", {}) if isinstance(retrieval_cfg, dict) else {}
             configured_mode = (
                 str(vector_pools_cfg.get("mode", "dual") or "dual").strip().lower()
                 if isinstance(vector_pools_cfg, dict)
                 else "dual"
             )
-            runtime_cfg = self.plugin_config.get("runtime", {}) or {}
+            runtime_cfg = self.runtime_config.get("runtime", {}) or {}
             if isinstance(runtime_cfg, dict) and "vector_pools_ready" in runtime_cfg:
                 return configured_mode == "dual" and bool(runtime_cfg.get("vector_pools_ready"))
             return configured_mode == "dual"
         return False
 
     def _graph_vector_store(self) -> VectorStore:
-        if self._dual_vector_pools_enabled() and isinstance(self.plugin_config, dict):
-            store = self.plugin_config.get("graph_vector_store")
+        if self._dual_vector_pools_enabled() and isinstance(self.runtime_config, dict):
+            store = self.runtime_config.get("graph_vector_store")
             if store is not None:
                 return store
         return self.vector_store
@@ -340,7 +340,7 @@ class SummaryImporter:
 
         # vNext 要求该字段为 List[str]；当配置缺失时回退到 ["auto"]，
         # 避免默认值本身触发类型校验异常。
-        raw_cfg = self.plugin_config.get("summarization", {}).get("model_name", ["auto"])
+        raw_cfg = self.runtime_config.get("summarization", {}).get("model_name", ["auto"])
         selectors = self._normalize_summary_model_selectors(raw_cfg)
         default_task_name, default_task_cfg = self._pick_default_summary_task(available_tasks)
 
@@ -429,7 +429,7 @@ class SummaryImporter:
         if isinstance(metadata, dict):
             raw_value = metadata.get("summary_review_count")
         if raw_value is None:
-            raw_value = self.plugin_config.get("summarization", {}).get("history_review_count", 2)
+            raw_value = self.runtime_config.get("summarization", {}).get("history_review_count", 2)
         try:
             return max(0, int(raw_value or 0))
         except Exception:
@@ -585,10 +585,10 @@ class SummaryImporter:
 
             # 1. 获取配置
             if context_length is None:
-                context_length = self.plugin_config.get("summarization", {}).get("context_length", 50)
+                context_length = self.runtime_config.get("summarization", {}).get("context_length", 50)
 
             if include_personality is None:
-                include_personality = self.plugin_config.get("summarization", {}).get("include_personality", True)
+                include_personality = self.runtime_config.get("summarization", {}).get("include_personality", True)
 
             # 2. 获取历史消息
             query_time_end = time.time() if time_end is None else float(time_end)
@@ -617,7 +617,7 @@ class SummaryImporter:
             )
 
             # 3. 准备提示词内容
-            agent_config = self.plugin_config.get("agent", {}) if isinstance(self.plugin_config, dict) else {}
+            agent_config = self.runtime_config.get("agent", {}) if isinstance(self.runtime_config, dict) else {}
             bot_name = str(agent_config.get("name", "Agent") or "Agent")
             personality_context = ""
             if include_personality:
@@ -713,12 +713,11 @@ class SummaryImporter:
             return SummaryImportResult(False, f"错误: {str(e)}")
 
     async def _ensure_runtime_self_check(self) -> Tuple[bool, str]:
-        plugin_instance = self.plugin_config.get("plugin_instance") if isinstance(self.plugin_config, dict) else None
-        if plugin_instance is not None:
-            report = await ensure_runtime_self_check(plugin_instance)
+        if self.runtime_services is not None:
+            report = await self.runtime_services.ensure_runtime_self_check()
         else:
             report = await run_embedding_runtime_self_check(
-                config=self.plugin_config,
+                config=self.runtime_config,
                 vector_store=self.vector_store,
                 embedding_manager=self.embedding_manager,
             )
@@ -764,11 +763,9 @@ class SummaryImporter:
     ) -> str:
         """将数据写入存储"""
         external_id = str((metadata or {}).get("external_id", "") or "").strip()
-        plugin_instance = self._plugin_instance()
-        common_ingest = getattr(plugin_instance, "ingest_text", None)
-        if external_id and callable(common_ingest):
+        if external_id and self.runtime_services is not None:
             normalized_relations = _normalize_relation_items(relations)
-            result = await common_ingest(
+            result = await self.runtime_services.ingest_text(
                 external_id=external_id,
                 source_type="chat_summary",
                 text=summary,
@@ -790,7 +787,7 @@ class SummaryImporter:
             raise RuntimeError(f"公共 ingest 未返回摘要段落: external_id={external_id}")
 
         # 获取默认知识类型
-        type_str = self.plugin_config.get("summarization", {}).get("default_knowledge_type", "narrative")
+        type_str = self.runtime_config.get("summarization", {}).get("default_knowledge_type", "narrative")
         try:
             knowledge_type = resolve_stored_knowledge_type(type_str, content=summary)
         except ValueError:
@@ -806,9 +803,8 @@ class SummaryImporter:
             time_meta=time_meta,
         )
 
-        vector_writer = getattr(plugin_instance, "write_paragraph_vector_or_enqueue", None)
-        if callable(vector_writer):
-            result = await vector_writer(
+        if self.runtime_services is not None:
+            result = await self.runtime_services.write_paragraph_vector_or_enqueue(
                 paragraph_hash=hash_value,
                 content=summary,
                 context="summary_import",
@@ -838,7 +834,7 @@ class SummaryImporter:
             await self._ensure_entity_vectors(entity_vector_items)
 
         # 导入关系
-        rv_cfg = self.plugin_config.get("retrieval", {}).get("relation_vectorization", {})
+        rv_cfg = self.runtime_config.get("retrieval", {}).get("relation_vectorization", {})
         if not isinstance(rv_cfg, dict):
             rv_cfg = {}
         write_vector = bool(rv_cfg.get("enabled", False)) and bool(rv_cfg.get("write_on_import", True))

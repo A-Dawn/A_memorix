@@ -159,20 +159,6 @@ class _DummyGraphStore:
         return nullcontext()
 
 
-class _DualReadyPlugin:
-    def __init__(self) -> None:
-        self.enabled = True
-
-    def _dual_vector_pools_enabled(self) -> bool:
-        return self.enabled
-
-    @staticmethod
-    def get_config(key: str, default: Any = None) -> Any:
-        if key == "embedding.fallback.allow_metadata_only_write":
-            return True
-        return default
-
-
 @pytest.mark.asyncio
 async def test_summary_importer_writes_entities_to_graph_pool_when_dual_ready() -> None:
     metadata_store = _DummyMetadataStore()
@@ -185,8 +171,7 @@ async def test_summary_importer_writes_entities_to_graph_pool_when_dual_ready() 
         graph_store=graph_store,
         metadata_store=metadata_store,  # type: ignore[arg-type]
         embedding_manager=embedding_manager,  # type: ignore[arg-type]
-        plugin_config={
-            "plugin_instance": _DualReadyPlugin(),
+        runtime_config={
             "graph_vector_store": graph_vector_store,
             "runtime": {"vector_pools_ready": True},
             "retrieval": {
@@ -267,7 +252,7 @@ def test_person_profile_fallback_retriever_uses_dual_vector_pools_when_ready() -
         paragraph_vector_store=_DummyVectorStore(),  # type: ignore[arg-type]
         graph_vector_store=_DummyVectorStore(),  # type: ignore[arg-type]
         embedding_manager=_DummyEmbeddingManager(),  # type: ignore[arg-type]
-        plugin_config={
+        runtime_config={
             "runtime": {"vector_pools_ready": True},
             "retrieval": {
                 "vector_pools": {"mode": "dual", "graph_top_k": 32},

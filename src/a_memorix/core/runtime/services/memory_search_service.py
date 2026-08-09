@@ -116,7 +116,7 @@ class MemorySearchService(KernelServiceBase):
             request=request,
             time_from=time_window.query_start,
             time_to=time_window.query_end,
-            plugin_config=runtime_config,
+            runtime_config=runtime_config,
             scope=scope,
             enforce_chat_filter=bool(request.respect_filter),
         )
@@ -183,7 +183,7 @@ class MemorySearchService(KernelServiceBase):
             query=query,
             top_k=limit,
             request=request,
-            plugin_config=self._build_runtime_config(),
+            runtime_config=self._build_runtime_config(),
             enforce_chat_filter=False,
             scope=scope,
         )
@@ -214,7 +214,7 @@ class MemorySearchService(KernelServiceBase):
             request=request,
             time_from=time_window.query_start,
             time_to=time_window.query_end,
-            plugin_config=self._build_runtime_config(),
+            runtime_config=self._build_runtime_config(),
             enforce_chat_filter=False,
             scope=scope,
         )
@@ -258,7 +258,7 @@ class MemorySearchService(KernelServiceBase):
         query: str,
         top_k: int,
         request: KernelSearchRequest,
-        plugin_config: dict,
+        runtime_config: dict,
         source: Optional[str],
         time_from: Optional[str] = None,
         time_to: Optional[str] = None,
@@ -273,7 +273,7 @@ class MemorySearchService(KernelServiceBase):
         return await SearchExecutionService.execute(
             retriever=self.retriever,
             threshold_filter=self.threshold_filter,
-            plugin_config=plugin_config,
+            runtime_config=runtime_config,
             request=SearchExecutionRequest(
                 caller=caller,
                 stream_id=str(request.chat_id or "") or None,
@@ -291,6 +291,7 @@ class MemorySearchService(KernelServiceBase):
                 use_threshold=True,
                 enable_ppr=bool(self._cfg("retrieval.enable_ppr", True)),
             ),
+            runtime_services=self._runtime_facade,
             enforce_chat_filter=enforce_chat_filter,
         )
 
@@ -302,7 +303,7 @@ class MemorySearchService(KernelServiceBase):
         query: str,
         top_k: int,
         request: KernelSearchRequest,
-        plugin_config: dict,
+        runtime_config: dict,
         time_from: Optional[str] = None,
         time_to: Optional[str] = None,
         enforce_chat_filter: bool,
@@ -319,7 +320,7 @@ class MemorySearchService(KernelServiceBase):
             query=query,
             top_k=top_k,
             request=request,
-            plugin_config=plugin_config,
+            runtime_config=runtime_config,
             source=None,
             time_from=time_from,
             time_to=time_to,

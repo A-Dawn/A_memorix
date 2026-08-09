@@ -46,7 +46,7 @@ def _service(store: Any, *, max_paragraphs: int = 20) -> tuple[EpisodeService, _
     return (
         EpisodeService(
             metadata_store=store,
-            plugin_config={
+            runtime_config={
                 "episode": {
                     "max_paragraphs_per_call": max_paragraphs,
                     "max_chars_per_call": 6000,
@@ -456,7 +456,7 @@ def test_source_grouping_is_batch_order_independent_and_removes_fragmentation() 
 def test_interval_sweep_frontier_survives_model_call_chunk_boundary() -> None:
     service = EpisodeService(
         metadata_store=object(),
-        plugin_config={
+        runtime_config={
             "episode": {
                 "max_paragraphs_per_call": 2,
                 "max_chars_per_call": 6000,

@@ -216,6 +216,11 @@ def _build_manager(
     legacy_vector_store = _DummyVectorStore()
     paragraph_vector_store = _DummyVectorStore()
     graph_vector_store = _DummyVectorStore()
+
+    async def ensure_runtime_self_check(*, force: bool = False) -> dict[str, object]:
+        del force
+        return {"healthy": True}
+
     plugin = SimpleNamespace(
         data_dir=effective_data_dir,
         metadata_store=metadata_store,
@@ -226,8 +231,11 @@ def _build_manager(
         embedding_manager=embedding_manager or _DummyEmbeddingManager(),
         relation_write_service=None,
         get_config=lambda key, default=None: config.get(key, default),
-        _is_embedding_degraded=lambda: False,
-        _allow_metadata_only_write=lambda: True,
+        is_runtime_ready=lambda: True,
+        dual_vector_pools_enabled=lambda: vector_pool_mode == "dual",
+        is_embedding_degraded=lambda: False,
+        allow_metadata_only_write=lambda: True,
+        ensure_runtime_self_check=ensure_runtime_self_check,
     )
     manager = ImportTaskManager(plugin)
     return manager, metadata_store
@@ -314,7 +322,6 @@ def test_import_aliases_are_fixed_under_data_dir(tmp_path: Path) -> None:
     assert manager.get_path_aliases() == {
         "raw": str((data_dir / "imports" / "source" / "raw").resolve()),
         "lpmm": str((data_dir / "imports" / "source" / "lpmm").resolve()),
-        "maibot": str((data_dir / "imports" / "source" / "maibot").resolve()),
         "converted": str((data_dir / "imports" / "converted").resolve()),
     }
     assert all(Path(path).is_dir() for path in manager.get_path_aliases().values())
@@ -369,26 +376,6 @@ async def test_staged_upload_must_stay_under_import_root(tmp_path: Path, monkeyp
             [{"staged_path": str(outside_file), "filename": "outside.txt"}],
             {"strategy_override": "factual"},
         )
-
-
-def test_maibot_migration_allows_live_db_or_import_directory(tmp_path: Path) -> None:
-    data_dir = tmp_path / "a-memorix"
-    plugin = SimpleNamespace(
-        data_dir=data_dir,
-        get_config=lambda key, default=None: str(data_dir) if key == "storage.data_dir" else default,
-    )
-    manager = ImportTaskManager(plugin)
-    import_db = data_dir / "imports" / "source" / "maibot" / "history.db"
-
-    default_params = manager._normalize_migration_params({})
-    relative_params = manager._normalize_migration_params({"source_db": "history.db"})
-    absolute_params = manager._normalize_migration_params({"source_db": str(import_db)})
-
-    assert Path(default_params["source_db"]) == manager._default_maibot_source_db().resolve()
-    assert Path(relative_params["source_db"]) == import_db.resolve()
-    assert Path(absolute_params["source_db"]) == import_db.resolve()
-    with pytest.raises(ValueError, match="必须位于导入目录"):
-        manager._normalize_migration_params({"source_db": str(tmp_path / "outside.db")})
 
 
 @pytest.mark.asyncio
@@ -737,8 +724,8 @@ async def test_paragraph_vector_write_is_idempotent_after_concurrent_encode() ->
         ),
     )
 
-    assert manager.plugin.vector_store.ids == ["paragraph-same"]
-    assert manager.plugin.vector_store.add_count == 1
+    assert manager.runtime.vector_store.ids == ["paragraph-same"]
+    assert manager.runtime.vector_store.add_count == 1
     assert {result["detail"] for result in results} <= {
         "",
         "vector_already_exists_after_encode",
@@ -757,9 +744,9 @@ async def test_dual_pool_paragraph_vector_write_uses_paragraph_store() -> None:
     )
 
     assert result["vector_written"] is True
-    assert manager.plugin.paragraph_vector_store.ids == ["paragraph-dual"]
-    assert manager.plugin.vector_store.ids == []
-    assert manager.plugin.graph_vector_store.ids == []
+    assert manager.runtime.paragraph_vector_store.ids == ["paragraph-dual"]
+    assert manager.runtime.vector_store.ids == []
+    assert manager.runtime.graph_vector_store.ids == []
 
 
 @pytest.mark.asyncio
@@ -787,7 +774,7 @@ async def test_relation_vector_value_error_marks_failed_when_vector_missing() ->
     relation_hash = await manager._add_relation("Alice", "持有", "地图", source_paragraph="paragraph-1")
 
     assert relation_hash == "relation-1"
-    assert "relation-1" not in manager.plugin.vector_store
+    assert "relation-1" not in manager.runtime.vector_store
     assert metadata_store.relation_vector_states[-1][0] == "relation-1"
     assert metadata_store.relation_vector_states[-1][1] == "failed"
     assert metadata_store.relation_vector_states[-1][3] is True
@@ -816,9 +803,9 @@ async def test_dual_pool_import_writes_graph_vectors_to_graph_store() -> None:
     )
 
     assert metadata_store.paragraphs[0]["content"] == "Alice 持有地图"
-    assert manager.plugin.vector_store.ids == []
-    assert manager.plugin.paragraph_vector_store.ids == ["paragraph-1"]
-    assert set(manager.plugin.graph_vector_store.ids) == {
+    assert manager.runtime.vector_store.ids == []
+    assert manager.runtime.paragraph_vector_store.ids == ["paragraph-1"]
+    assert set(manager.runtime.graph_vector_store.ids) == {
         "entity:entity-Alice",
         "entity:entity-地图",
         "entity:entity-线索",
@@ -835,12 +822,12 @@ async def test_dual_pool_import_batches_entity_and_relation_embeddings() -> None
         relation_vectorization_enabled=True,
         vector_pool_mode="dual",
     )
-    manager.plugin.relation_write_service = RelationWriteService(
+    manager.runtime.relation_write_service = RelationWriteService(
         metadata_store=metadata_store,
-        graph_store=manager.plugin.graph_store,
-        vector_store=manager.plugin.vector_store,
+        graph_store=manager.runtime.graph_store,
+        vector_store=manager.runtime.vector_store,
         embedding_manager=embedding_manager,
-        graph_vector_store=manager.plugin.graph_vector_store,
+        graph_vector_store=manager.runtime.graph_vector_store,
         use_typed_relation_ids=True,
     )
     file_record = SimpleNamespace(source_path="", source_kind="paste", name="demo.txt")
@@ -862,7 +849,7 @@ async def test_dual_pool_import_batches_entity_and_relation_embeddings() -> None
     )
 
     assert [len(batch) for batch in embedding_manager.batch_calls] == [5, 2]
-    assert set(manager.plugin.graph_vector_store.ids) == {
+    assert set(manager.runtime.graph_vector_store.ids) == {
         "entity:entity-Alice",
         "entity:entity-地图",
         "entity:entity-Bob",
@@ -891,10 +878,10 @@ async def test_relation_batch_failure_is_limited_to_failed_write_batch() -> None
     )
     service = RelationWriteService(
         metadata_store=metadata_store,
-        graph_store=manager.plugin.graph_store,
-        vector_store=manager.plugin.vector_store,
+        graph_store=manager.runtime.graph_store,
+        vector_store=manager.runtime.vector_store,
         embedding_manager=embedding_manager,
-        graph_vector_store=manager.plugin.graph_vector_store,
+        graph_vector_store=manager.runtime.graph_vector_store,
         use_typed_relation_ids=True,
     )
 
@@ -908,7 +895,7 @@ async def test_relation_batch_failure_is_limited_to_failed_write_batch() -> None
     )
 
     assert [result.vector_state for result in results] == ["ready", "failed", "ready"]
-    assert set(manager.plugin.graph_vector_store.ids) == {
+    assert set(manager.runtime.graph_vector_store.ids) == {
         "relation:relation-1",
         "relation:relation-3",
     }
@@ -955,13 +942,13 @@ async def test_high_concurrency_persist_processed_chunks_keep_all_writes_consist
         timeout=15,
     )
 
-    vector_ids = set(manager.plugin.vector_store.ids)
+    vector_ids = set(manager.runtime.vector_store.ids)
     ready_states = [state for _, state, _, _ in metadata_store.relation_vector_states if state == "ready"]
     failed_states = [state for _, state, _, _ in metadata_store.relation_vector_states if state == "failed"]
 
     assert len(metadata_store.paragraphs) == chunk_count
     assert len(metadata_store.relations) == chunk_count * relations_per_chunk
-    assert len(manager.plugin.graph_store.edges) == chunk_count * relations_per_chunk
+    assert len(manager.runtime.graph_store.edges) == chunk_count * relations_per_chunk
     assert len({paragraph["source"] for paragraph in metadata_store.paragraphs}) == 1
     assert len(vector_ids) == chunk_count * (1 + entities_per_chunk + relations_per_chunk)
     assert len(ready_states) == chunk_count * relations_per_chunk
