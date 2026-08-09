@@ -3,8 +3,8 @@
 Version 1.0, effective 2026-08-10
 
 This Contributor License Agreement (the "Agreement") applies to contributions
-submitted to the A_memorix open-source project maintained through the GitHub
-organization A-Dawn (the "Project"), including the `A_memorix` and
+submitted to the A_memorix open-source project (the "Project"), which is
+maintained through the GitHub account A-Dawn and includes the `A_memorix` and
 `A_memorix-extensions` repositories.
 
 This is a license agreement, not a copyright assignment.
