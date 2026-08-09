@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | 阶段0：冻结和归档 | 已完成 | `docs/PHASE0_BASELINE_20260805.md` |
 | 阶段1：修复发布阻断项 | 已完成 | `docs/PHASE1_RELEASE_BLOCKERS_20260805.md` |
-| 阶段2：建立通用开发主线 | 待开始 | - |
+| 阶段2：建立通用开发主线 | 已完成 | `docs/PHASE2_GENERIC_MAINLINE_20260805.md` |
 
 ## 1. 目标
 

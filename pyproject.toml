@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "a-memorix"
+version = "2.0.0a1"
+description = "A namespace-isolated memory engine for AI agents"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
+authors = [{ name = "A_memorix contributors" }]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+  "jieba>=0.42.1",
+  "json-repair>=0.44.0",
+  "numpy>=1.26.0",
+  "pydantic>=2.0.0",
+  "scipy>=1.11.0",
+]
+
+[project.optional-dependencies]
+vector = ["faiss-cpu>=1.8.0"]
+test = [
+  "pytest>=8.0.0",
+  "pytest-asyncio>=0.24.0",
+]
+build = ["build>=1.2.0"]
+all = [
+  "faiss-cpu>=1.8.0",
+]
+
+[project.urls]
+Repository = "https://github.com/MaiM-with-u/A_memorix"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+asyncio_mode = "auto"
+pythonpath = ["src"]
+testpaths = ["tests"]
