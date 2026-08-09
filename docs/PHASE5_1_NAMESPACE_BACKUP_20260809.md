@@ -1,20 +1,20 @@
-# 阶段5.1：Namespace备份与恢复记录
+# 阶段5.1：Namespace 备份与恢复记录
 
 日期：2026-08-09
 
 ## 完成范围
 
-阶段5.1建立了通用 namespace 的离线备份协议。备份是可跨进程、跨部署传输的`.amxbackup`归档，不依赖服务器任意文件路径。所有网络操作由 Protobuf 定义，通过 gRPC 和 gRPC-Gateway HTTP/JSON 暴露，并要求管理员凭据。
+阶段5.1建立了 Namespace 离线备份格式。备份是可跨进程、跨部署传输的 `.amxbackup` 归档，不依赖服务器上的任意文件路径。所有网络操作由 Protobuf 定义，通过 gRPC 和 gRPC-Gateway HTTP/JSON 提供，并要求管理员凭据。
 
 本阶段采用以下边界：
 
-- 只有`inactive`状态的 namespace 可以创建备份
-- 恢复必须使用不存在的新 namespace ID
-- 恢复完成后的 namespace 保持`inactive`，由管理员检查后显式启用
-- 不允许覆盖或合并已有 namespace
-- 固定 namespace MCP 不暴露备份和恢复工具
+- 只有 `inactive` 状态的 Namespace 可以创建备份
+- 恢复必须使用不存在的新 Namespace ID
+- 恢复完成后的 Namespace 保持 `inactive`，由管理员检查后显式启用
+- 不允许覆盖或合并已有 Namespace
+- 固定 Namespace MCP 不提供备份和恢复工具
 
-MCP 面向 Agent 的日常记忆操作，备份属于宿主控制面。如果把备份工具交给普通 Agent，会放大存储占用和生命周期操作权限，因此该能力只进入 Engine、管理员 gRPC、HTTP/JSON 和 Python SDK。
+MCP 面向 Agent 的日常记忆操作。备份只能由管理员操作，因为把备份工具交给普通 Agent 会扩大其存储占用和生命周期管理权限。因此该功能只进入 Engine、管理员 gRPC、HTTP/JSON 和 Python SDK。
 
 ## 归档格式
 
@@ -25,30 +25,30 @@ manifest.json
 data/<namespace-relative-path>
 ```
 
-清单记录备份 ID、来源 namespace、创建时间、生产者版本、来源配置版本、配额、非敏感配置、文件大小和逐文件 SHA-256。归档外层另有 SHA-256，用于下载、上传和发布物校验。归档条目必须与清单完全一致，重复路径、目录穿越、符号链接、加密条目、大小差异和摘要差异都会被拒绝。
+Manifest 记录备份 ID、来源 Namespace、创建时间、生成程序版本、来源配置版本、配额、非敏感配置、文件大小和逐文件 SHA-256。归档外层另有 SHA-256，用于下载和上传校验。归档条目必须与 Manifest 完全一致，重复路径、目录穿越、符号链接、加密条目、大小差异和摘要差异都会被拒绝。
 
-格式版本不受当前程序支持时返回`migration_required`，不会把新格式误判为普通数据损坏。旧存储数据恢复后仍由现有 namespace 启动迁移和 schema 门禁负责检查。
+格式版本不受当前程序支持时返回 `migration_required`，不会把新格式误判为普通数据损坏。旧存储数据恢复后，仍由现有 Namespace 启动迁移和 Schema 检查负责处理。
 
 ## 数据边界
 
 | 内容 | 是否进入归档 | 说明 |
 | --- | --- | --- |
-| namespace 数据目录 | 是 | 包含元数据、向量、图和 namespace 内部导入状态 |
+| Namespace 数据目录 | 是 | 包含元数据、向量、图和 Namespace 内部导入状态 |
 | 配额和非敏感配置 | 是 | 包含 Provider ID、模型 ID、`secret_ref`和功能开关 |
-| API Key | 否 | 控制库内容，不复制密钥摘要或历史使用记录 |
+| API Key | 否 | Namespace 管理库内容，不复制密钥摘要或历史使用记录 |
 | Job | 否 | 恢复后不重放来源删除等历史任务 |
-| 幂等记录 | 否 | 新 namespace 建立独立的请求历史 |
+| 幂等记录 | 否 | 新 Namespace 建立独立的请求历史 |
 | 实际 Provider 密钥 | 否 | A_memorix 本身不持久化这些密钥 |
 
-`secret_ref`是宿主解析的非敏感引用，不是密钥本身。跨部署恢复后，目标宿主必须能够解析归档中的引用，或者在 namespace 仍停用时更新配置。
+`secret_ref` 是 Agent 程序解析的非敏感引用，不是密钥本身。跨部署恢复后，目标程序必须能够解析归档中的引用，或者在 Namespace 仍停用时更新配置。
 
 ## 一致性与故障恢复
 
-创建备份时持有 namespace 生命周期锁，并验证运行时已经关闭。文件复制在临时归档中完成，每个摘要以实际写入归档的字节计算；归档关闭并计算外层摘要后再原子切换到受控`backups`目录。
+创建备份时持有 Namespace 生命周期锁，并验证 Runtime 已经关闭。文件复制在临时归档中完成，每个摘要以实际写入归档的字节计算；归档关闭并计算外层摘要后，再原子移动到由服务管理的 `backups` 目录。
 
-恢复会先完整验证归档，再提取到`restore-staging`。切换数据目录前写入持久化恢复标记，数据目录完成原子切换并成功写入控制库后才清除标记。若进程在中途退出，下次启动会删除未完成的暂存目录；已切换但尚未登记的无主目录也会回收。控制库已经登记的恢复会保留数据并清理残留标记。
+恢复会先完整验证归档，再提取到 `restore-staging`。切换数据目录前写入持久化恢复标记，数据目录完成原子切换并成功写入 Namespace 管理库后才清除标记。若进程在中途退出，下次启动会删除未完成的暂存目录；已切换但尚未登记的无主目录也会回收。管理库已经登记的恢复会保留数据并清理残留标记。
 
-上传采用顺序分块和精确 offset，每块最大1 MiB。offset 不匹配会返回`conflict`，写入后执行`fsync`。完成上传时再次验证外层摘要、清单和全部文件摘要。相同备份 ID、相同摘要按幂等导入处理；相同 ID、不同内容会被拒绝。
+上传采用顺序分块和精确 offset，每块最大1 MiB。offset 不匹配会返回 `conflict`，写入后执行 `fsync`。完成上传时再次验证外层摘要、Manifest 和全部文件摘要。相同备份 ID、相同摘要按幂等导入处理；相同 ID、不同内容会被拒绝。
 
 ## 管理接口
 
@@ -58,9 +58,9 @@ data/<namespace-relative-path>
 
 ## 当前限制
 
-- 不支持在线快照，调用方必须先停用 namespace
+- 不支持在线快照，调用方必须先停用 Namespace
 - 归档本身不加密，部署方需要保护数据卷并为远程传输启用 TLS
-- 不支持覆盖恢复、增量备份和跨 namespace 合并
+- 不支持覆盖恢复、增量备份和跨 Namespace 合并
 - 归档保留由管理员显式管理，自动保留策略留到阶段5运维配置
 - 精确文件系统配额和对象存储生命周期仍属于后续阶段
 
@@ -68,9 +68,9 @@ data/<namespace-relative-path>
 
 - 数据、配额和非敏感配置往返恢复
 - API Key、Job和幂等控制表不进入归档
-- 活跃 namespace 备份拒绝和已有目标恢复冲突
+- 活跃 Namespace 备份拒绝和已有目标恢复冲突
 - 分块下载、顺序上传、offset 冲突和跨重启读取
 - 归档篡改、摘要不一致和不支持的格式版本
 - 恢复暂存、无主目录和持久化标记的启动恢复
-- 管理员权限、namespace API Key 越权拒绝
+- 管理员权限、Namespace API Key 越权拒绝
 - gRPC、HTTP/JSON、Python SDK 和 Go Gateway 端到端调用

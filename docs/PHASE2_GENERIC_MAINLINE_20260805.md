@@ -1,4 +1,4 @@
-# 阶段2通用开发主线记录
+# 阶段2：A_memorix 2.0 包结构调整记录
 
 记录日期：2026-08-05
 实施仓库：`D:/Dev/rdev/A_memorix`
@@ -7,9 +7,9 @@
 
 ## 实施结果
 
-阶段2把经过阶段1验证的 MaiBot 内嵌实现迁回独立仓库，并建立了 A_memorix 2.x 通用开发主线。新主线采用标准 Python 包结构，不再把 MaiBot 插件目录当作安装入口。
+阶段2把经过阶段1验证的 MaiBot 内嵌实现迁回独立仓库，并建立了 A_memorix 2.x 通用版本。新版本采用标准 Python 包结构，不再把 MaiBot 插件目录当作安装入口。
 
-核心工程契约如下：
+主要工程约定如下：
 
 | 项目 | 约定 |
 | --- | --- |
@@ -26,32 +26,32 @@
 
 源代码迁入 `src/a_memorix/`，测试迁入顶层 `tests/`。仓库增加 `pyproject.toml`，依赖拆为基础依赖、`vector`、`test` 和 `build` extras。
 
-旧的插件入口、MaiBot 命令和工具组件、Web 页面、宿主脚本及1.x专用文档已经从2.x开发主线删除。1.x代码仍可通过 `legacy-v1.0.1` 标签和 `legacy/plugin-v1` 分支追溯。
+旧的插件入口、MaiBot 命令和工具组件、Web 页面、MaiBot 启动脚本及1.x专用文档已经从2.x版本删除。1.x代码仍可通过 `legacy-v1.0.1` 标签和 `legacy/plugin-v1` 分支追溯。
 
-## 宿主解耦
+## 移除 MaiBot 依赖
 
-通用核心新增四类最小宿主接口：
+通用核心新增四类最小 Agent 接入接口：
 
 - `EmbeddingProvider`
 - `LLMProvider`
 - `IdentityResolver`
 - `MessageSource`
 
-Embedding 适配器只依赖批量向量和模型指纹。模型路由、Episode 切分、画像、摘要及反馈修正通过注入接口调用外部模型和消息源。人物身份不再读取 MaiBot 数据库类型，日志也不再使用 MaiBot 日志模块。
+Embedding Adapter 只依赖批量向量和模型指纹。模型路由、Episode 切分、画像、摘要及反馈修正通过注入接口调用外部模型和消息源。人物身份不再读取 MaiBot 数据库类型，日志也不再使用 MaiBot 日志模块。
 
 静态扫描确认 `src/a_memorix` 和 `tests` 中没有 `src.*`、MaiBot 全局配置、聊天管理器、旧模型客户端或人物数据库模型导入。
 
-## 数据目录契约
+## 数据目录规则
 
-`SDKMemoryKernel` 现在必须显式接收 `data_dir`。元数据、图、向量、导入状态和运行时写者锁都从该目录派生，配置中的旧 `storage.data_dir` 不再覆盖构造参数。
+`SDKMemoryKernel` 现在必须显式接收 `data_dir`。元数据、图、向量、导入状态和 Runtime 写者锁都从该目录派生，配置中的旧 `storage.data_dir` 不再覆盖构造参数。
 
-测试中的重启、双池迁移、损坏恢复和导入任务也统一使用该契约。这样可以在进入阶段3前先建立明确的物理隔离边界，避免宿主路径推导重新渗入核心。
+测试中的重启、双池迁移、损坏恢复和导入任务也统一遵守这项规则。这样可以在进入阶段3前建立明确的物理隔离边界，避免 MaiBot 的路径计算方式重新进入核心代码。
 
 ## 延后范围
 
-Episode、画像、摘要等能力已完成依赖层面的通用化，但其领域行为仍带有长期对话场景的既有假设。本阶段保留这些经过验证的实现，不把它们定义为稳定外部协议。更完整的通用语义会结合阶段3的 RequestContext、namespace 和类型化 contract 继续收敛。
+Episode、画像、摘要等功能已移除对 MaiBot 的直接依赖，但其行为仍带有长期对话场景的既有假设。本阶段保留这些经过验证的实现，不把它们定义为稳定的公开 API。更完整的通用语义会结合阶段3的 RequestContext、Namespace 和明确的数据类型继续调整。
 
-阶段2完成时，Web 导入管理器中的 MaiBot 数据迁移路径曾作为迁移期内部能力保留，不进入顶层公开 API。该临时路径已在阶段2.1移除。HTTP、MCP、RPC、Python SDK 稳定接口和社区扩展清单不属于本阶段。
+阶段2完成时，Web 导入管理器中的 MaiBot 数据迁移路径曾作为迁移期内部功能保留，不进入顶层公开 API。该临时路径已在阶段2.1移除。HTTP、MCP、RPC、Python SDK 稳定接口和社区 Adapter Manifest 不属于本阶段。
 
 ## 验证结果
 
@@ -75,10 +75,10 @@ pytest -q
 阶段2退出条件已经满足：
 
 1. `refactor/generic-v2` 分支已经建立。
-2. 标准 `src/` 包结构和 `pyproject.toml` 已落地。
+2. 已采用标准 `src/` 包结构和 `pyproject.toml`。
 3. 包名、版本、Python 下限和许可证元数据已统一。
-4. 数据目录和外部能力改为显式注入。
+4. 数据目录和外部 Provider 改为明确传入。
 5. 通用核心不再导入 MaiBot。
 6. 迁移后的核心测试可在独立仓库运行。
 
-下一阶段实现 Host Port 的稳定 contract、RequestContext 和强隔离 Namespace Runtime。
+下一阶段确定 Host Port 的公开接口、RequestContext，并实现数据与生命周期彼此独立的 Namespace Runtime。

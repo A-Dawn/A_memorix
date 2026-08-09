@@ -78,7 +78,7 @@ MaiBot 工作区中的未提交文件属于既有工作，不在本阶段清理�
 2. `legacy/plugin-v1` 只接受旧版插件必要的安全或构建维护。
 3. MaiBot 暂不进行为了抽取通用层的接口、运行方式和性能重构。
 4. MaiBot 只对向量重启、删除恢复等数据正确性问题保留最小修复通道。
-5. 通用实现、公共 contracts、namespace 运行时和协议层不得继续直接写入 MaiBot 工作树。
+5. 通用实现、公开 API、Namespace Runtime 和协议代码不得继续直接写入 MaiBot 工作树。
 6. MaiBot 当前实现作为行为参考，通用测试迁移后再建立 `integration/maibot`。
 
 ## 复核命令
@@ -97,4 +97,4 @@ git -C ../MaiBot log -1 -- src/A_memorix
 git -C ../MaiBot diff --name-only snapshot/a-memorix-phase0-20260805 -- src/A_memorix
 ```
 
-阶段0完成后，下一阶段从修复向量指纹重启失败开始，然后在独立通用开发分支中抽取 Host Port 和 namespace runtime。
+阶段0完成后，下一阶段从修复向量指纹重启失败开始，再在独立开发分支中整理 Host Port 和 Namespace Runtime。

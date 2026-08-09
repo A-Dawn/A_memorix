@@ -2,34 +2,34 @@
 
 ## [2.0.0a2] - 2026-08-09
 
-本版本完成通用主线的阶段5交付，使服务可以通过 Python 包、命令行、独立网关和双容器部署方式运行。
+本版本完成 A_memorix 2.0 的阶段5开发，使服务可以通过 Python 包、命令行、独立网关和双容器部署方式运行。
 
 ### 运维入口
 
-- 新增统一的 `a-memorix` 命令，覆盖服务启动、远程 namespace 管理、API Key、记忆操作、备份恢复和诊断。
+- 新增统一的 `a-memorix` 命令，覆盖服务启动、远程 Namespace 管理、API Key、记忆操作、备份恢复和诊断。
 - 增加严格 TOML 配置和环境变量覆盖，优先级为命令行、环境变量、显式配置文件、默认值。
-- 管理命令只调用公开 gRPC contract，不直接读取或修改服务数据目录。
+- 管理命令只调用公开 gRPC API，不直接读取或修改服务数据目录。
 - LPMM 转换失败信息增加稳定的 ASCII 错误标识，重定向输出在 Windows 代码页下仍可被自动化可靠识别。
 
 ### 可观测性与安全
 
 - gRPC 服务注册标准健康检查，提供结构化 JSON 访问日志、Prometheus 指标和可选 OTLP Trace。
 - Python 服务、Python 客户端和 Go 网关支持 TLS 与双向 TLS。
-- Go 网关新增后端健康检查端点 `/healthz`，HTTP/JSON 继续由同一份 Protobuf contract 生成。
+- Go 网关新增后端健康检查端点 `/healthz`，HTTP/JSON 继续由同一份 Protobuf 定义生成。
 
 ### 分发
 
 - 拆分基础依赖、RPC、MCP、向量、可观测性和开发 extras。
 - 提供 Wheel、sdist、Python 服务镜像、Go 网关镜像和 Compose 双服务部署。
 - CI 覆盖 Python、Protobuf、Go 和容器构建；版本标签发布 Wheel、sdist、多平台网关二进制与 GHCR 镜像。
-- CI 增加 Windows、无 Faiss 降级链路和公开层严格类型检查；发布标签必须与包版本一致，并通过完整测试和协议门禁后才能生成制品。
-- 最终全量回归共679项通过，2项可选大规模迁移压测按设计跳过。
+- CI 增加 Windows、无 Faiss 降级路径和公开 API 严格类型检查；发布标签必须与包版本一致，并通过完整测试和 Protobuf 兼容性检查后才能生成发布文件。
+- 最终完整测试共679项通过，2项可选大规模迁移压测按设计跳过。
 
-### 扩展契约
+### Agent Adapter
 
-- 发布 Adapter Protocol v1，明确远程适配器与进程内适配器的边界、namespace 隔离要求和版本规则。
+- 发布 Adapter Protocol v1，明确远程 Adapter 与进程内 Adapter 的区别、Namespace 隔离要求和版本规则。
 - 新增严格的 TOML manifest 模型、权限声明、核心版本兼容校验和 JSON Schema 输出。
-- CLI 增加`adapter validate`与`adapter schema`，并提供远程、进程内两类示例和独立扩展索引规范。
+- CLI 增加 `adapter validate` 与 `adapter schema`，并提供远程、进程内两类示例和独立扩展列表规范。
 - 新增私密安全报告策略，安全问题使用`security@luminarc.tech`，与许可申请渠道分离。
 
 ## [2.0.0a1] - 2026-08-05
@@ -40,21 +40,21 @@
 
 - Python 分发名统一为 `a-memorix`，导入包名统一为 `a_memorix`。
 - 采用标准 `src/` 布局和 `pyproject.toml`，最低 Python 版本为3.12。
-- 删除主线中的旧插件入口、MaiBot 命令组件、Web 页面和宿主脚本。
+- 删除 main 中的旧插件入口、MaiBot 命令组件、Web 页面和 MaiBot 启动脚本。
 - 数据目录改为构造时显式注入，不再从 MaiBot 配置或插件路径推导。
 
-### 宿主边界
+### Agent 接入
 
 - 新增 Embedding、LLM、Identity、Message Source 四类异步优先接口。
 - 核心不再导入 `src.*`、MaiBot 全局配置、聊天管理器、模型客户端或人物数据库模型。
-- Episode、画像和摘要保留已验证能力，但更完整的通用语义仍在后续阶段收敛。
+- Episode、画像和摘要保留已经验证的实现，但其输入、输出和生命周期仍需在后续阶段通用化。
 
 ### 验证
 
-- 建立物理隔离的 namespace 运行时、生命周期控制库、配额和 API Key。
-- Protobuf 成为唯一网络 IDL，提供 gRPC、gRPC-Gateway HTTP/JSON、Python SDK 和固定 namespace MCP。
-- namespace 配置、运行时能力发现、持久化幂等、批量写入、直接读删和来源删除 Job 已进入公开 contract。
-- namespace、API Key 和 Job 列表支持游标分页，Protobuf 变更通过 Buf breaking gate。
+- 建立物理隔离的 Namespace Runtime、Namespace 管理库、配额和 API Key。
+- Protobuf 成为唯一网络 IDL，提供 gRPC、gRPC-Gateway HTTP/JSON、Python SDK 和固定 Namespace MCP。
+- Namespace 配置、可用功能查询、持久化幂等、批量写入、直接读删和来源删除 Job 已进入公开 API。
+- Namespace、API Key 和 Job 列表支持游标分页，Protobuf 变更通过 Buf 兼容性检查。
 - 通用测试共656项通过，2项可选大规模压测跳过。
 - 包可在不安装、不导入 MaiBot 的环境中编译、导入和运行测试。
 
