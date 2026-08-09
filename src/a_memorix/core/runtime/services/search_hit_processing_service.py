@@ -645,16 +645,16 @@ class MemorySearchHitProcessingService(KernelServiceBase):
         clean_source = str(source or "").strip()
         if clean_source_type == "chat_summary" or clean_source.startswith("chat_summary:"):
             return "chat_summary"
-        if clean_source_type in {"chat_history", "chat_stream", "maibot.chat_history"}:
+        if clean_source_type in {"chat_history", "chat_stream"}:
             return "chat_stream"
-        if clean_source.startswith("chat_stream:") or clean_source.startswith("maibot.chat_history:"):
+        if clean_source.startswith("chat_stream:"):
             return "chat_stream"
         return ""
 
     @staticmethod
     def _source_stream_id(source: str) -> str:
         token = str(source or "").strip()
-        for prefix in ("chat_summary:", "chat_stream:", "maibot.chat_history:"):
+        for prefix in ("chat_summary:", "chat_stream:"):
             if token.startswith(prefix):
                 return token[len(prefix) :].strip()
         return ""

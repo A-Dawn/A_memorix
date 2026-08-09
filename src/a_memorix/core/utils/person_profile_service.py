@@ -53,7 +53,7 @@ class PersonProfileService:
         graph_vector_store: Optional[VectorStore] = None,
         embedding_manager: Optional[EmbeddingAPIAdapter] = None,
         sparse_index: Any = None,
-        plugin_config: Optional[dict] = None,
+        runtime_config: Optional[dict] = None,
         retriever: Optional[DualPathRetriever] = None,
         identity_resolver: IdentityResolver | None = None,
         llm_provider: LLMProvider | None = None,
@@ -65,16 +65,16 @@ class PersonProfileService:
         self.graph_vector_store = graph_vector_store
         self.embedding_manager = embedding_manager
         self.sparse_index = sparse_index
-        self.plugin_config = plugin_config or {}
+        self.runtime_config = runtime_config or {}
         self.identity_resolver = identity_resolver
         self.llm_provider = llm_provider
         self.retriever = retriever or self._build_retriever()
 
     def _cfg(self, key: str, default: Any = None) -> Any:
         """读取嵌套配置。"""
-        if not isinstance(self.plugin_config, dict):
+        if not isinstance(self.runtime_config, dict):
             return default
-        current: Any = self.plugin_config
+        current: Any = self.runtime_config
         for part in key.split("."):
             if isinstance(current, dict) and part in current:
                 current = current[part]

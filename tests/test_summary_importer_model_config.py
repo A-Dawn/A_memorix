@@ -50,7 +50,7 @@ def test_resolve_summary_model_config_uses_auto_list_when_summarization_missing(
         graph_store=None,
         metadata_store=None,
         embedding_manager=None,
-        plugin_config={},
+        runtime_config={},
         llm_provider=_FakeLLMProvider(_fake_available_models()),
     )
 
@@ -66,7 +66,7 @@ def test_resolve_summary_model_config_auto_falls_back_to_utils_then_planner():
         graph_store=None,
         metadata_store=None,
         embedding_manager=None,
-        plugin_config={},
+        runtime_config={},
         llm_provider=_FakeLLMProvider(
             {
                 "utils": _task("utils-model"),
@@ -96,7 +96,7 @@ def test_resolve_summary_model_config_auto_does_not_fallback_to_replyer():
         graph_store=None,
         metadata_store=None,
         embedding_manager=None,
-        plugin_config={},
+        runtime_config={},
         llm_provider=_FakeLLMProvider(
             {
                 "replyer": _task("replyer-model"),
@@ -114,7 +114,7 @@ def test_resolve_summary_model_config_rejects_legacy_string_selector():
         graph_store=None,
         metadata_store=None,
         embedding_manager=None,
-        plugin_config={"summarization": {"model_name": "auto"}},
+        runtime_config={"summarization": {"model_name": "auto"}},
         llm_provider=_FakeLLMProvider(_fake_available_models()),
     )
 
@@ -128,7 +128,7 @@ def test_resolve_summary_model_config_skips_task_with_invalid_model():
         graph_store=None,
         metadata_store=None,
         embedding_manager=None,
-        plugin_config={
+        runtime_config={
             "summarization": {
                 "model_name": ["memory:not-a-memory-model", "utils:utils-model"],
             }
@@ -192,7 +192,7 @@ async def test_summary_external_id_short_circuits_before_runtime_or_model() -> N
         graph_store=None,
         metadata_store=ExistingSummaryStore(),
         embedding_manager=None,
-        plugin_config={},
+        runtime_config={},
     )
 
     async def fail_self_check():
@@ -228,7 +228,7 @@ def test_summary_external_id_cannot_be_reused_across_streams() -> None:
         graph_store=None,
         metadata_store=ExistingSummaryStore(),
         embedding_manager=None,
-        plugin_config={},
+        runtime_config={},
     )
 
     with pytest.raises(RuntimeError, match="其他聊天流"):
@@ -261,7 +261,7 @@ def test_summary_review_uses_explicit_supersession_instead_of_keywords() -> None
         graph_store=None,
         metadata_store=SummaryStore(),
         embedding_manager=None,
-        plugin_config={},
+        runtime_config={},
     )
 
     context = importer._build_previous_summary_context("stream-1", limit=2)
@@ -277,7 +277,7 @@ async def test_summary_import_serializes_same_stream_concurrency() -> None:
         graph_store=None,
         metadata_store=None,
         embedding_manager=None,
-        plugin_config={},
+        runtime_config={},
     )
     active = 0
     max_active = 0
@@ -309,7 +309,7 @@ async def test_summary_import_serializes_same_external_id_across_streams() -> No
         graph_store=None,
         metadata_store=None,
         embedding_manager=None,
-        plugin_config={},
+        runtime_config={},
     )
     active = 0
     max_active = 0
@@ -368,7 +368,8 @@ async def test_generated_summary_uses_common_ingest_when_external_id_is_availabl
         graph_store=None,
         metadata_store=store,
         embedding_manager=None,
-        plugin_config={"plugin_instance": plugin},
+        runtime_config={},
+        runtime_services=plugin,
     )
 
     paragraph_hash = await importer._execute_import(

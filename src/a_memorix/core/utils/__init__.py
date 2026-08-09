@@ -12,7 +12,6 @@ from .time_parser import (
 )
 from .relation_write_service import RelationWriteService, RelationWriteResult
 from .relation_query import RelationQuerySpec, parse_relation_query_spec
-from .plugin_id_policy import PluginIdPolicy
 
 __all__ = [
     "compute_hash",
@@ -29,5 +28,4 @@ __all__ = [
     "RelationWriteResult",
     "RelationQuerySpec",
     "parse_relation_query_spec",
-    "PluginIdPolicy",
 ]

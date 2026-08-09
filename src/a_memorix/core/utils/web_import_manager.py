@@ -24,8 +24,9 @@ import uuid
 import numpy as np
 
 from a_memorix.logging import get_logger
-from a_memorix.paths import resolve_runtime_path
+from a_memorix.ports import LLMProvider
 
+from ..runtime.runtime_services import RuntimeServices
 from ..storage import (
     GraphStore,
     KnowledgeType,
@@ -56,7 +57,6 @@ from ..utils.model_routing import (
     resolve_text_generation_model_selector,
 )
 from ..utils.relation_write_service import RelationWriteService
-from ..utils.runtime_self_check import ensure_runtime_self_check
 from ..utils.time_parser import normalize_time_meta
 
 logger = get_logger("A_Memorix.WebImportManager")
@@ -393,9 +393,14 @@ class ImportTaskRecord:
 
 
 class ImportTaskManager:
-    def __init__(self, plugin: Any):
-        self.plugin = plugin
-        self.llm_provider = getattr(plugin, "llm_provider", None)
+    def __init__(
+        self,
+        runtime_services: RuntimeServices,
+        *,
+        llm_provider: LLMProvider | None = None,
+    ):
+        self.runtime = runtime_services
+        self.llm_provider = llm_provider
         self._lock = asyncio.Lock()
         self._storage_lock = asyncio.Lock()
 
@@ -470,66 +475,27 @@ class ImportTaskManager:
         return self._resolve_data_dir().parent
 
     def _resolve_data_dir(self) -> Path:
-        return Path(self.plugin.data_dir).resolve()
-
-    def _resolve_migration_script(self) -> Path:
-        return Path(__file__).resolve().parent / "migrate_maibot_memory.py"
-
-    def _default_maibot_source_db(self) -> Path:
-        return self._resolve_repo_root() / "data" / "MaiBot.db"
-
-    def _resolve_maibot_source_db(self, raw_path: str) -> Path:
-        default_source = self._default_maibot_source_db().resolve()
-        text = str(raw_path or "").strip()
-        if not text:
-            return default_source
-
-        candidate = Path(text).expanduser()
-        if candidate.is_absolute():
-            resolved = candidate.resolve()
-        else:
-            repo_candidate = resolve_runtime_path(self._resolve_data_dir(), candidate)
-            if repo_candidate == default_source:
-                return default_source
-            import_root = Path(self._default_path_aliases()["maibot"]).resolve()
-            try:
-                repo_candidate.relative_to(import_root)
-            except ValueError:
-                resolved = self.resolve_path_alias("maibot", text)
-            else:
-                resolved = repo_candidate
-
-        if resolved == default_source:
-            return default_source
-        import_root = Path(self._default_path_aliases()["maibot"]).resolve()
-        try:
-            resolved.relative_to(import_root)
-        except ValueError:
-            raise ValueError(f"自定义 MaiBot 数据库必须位于导入目录: {import_root}") from None
-        return resolved
+        return Path(self.runtime.data_dir).resolve()
 
     def _cfg(self, key: str, default: Any) -> Any:
-        return self.plugin.get_config(key, default)
+        return self.runtime.get_config(key, default)
 
     def _vector_pool_mode(self) -> str:
         mode = str(self._cfg("retrieval.vector_pools.mode", "dual") or "dual").strip().lower()
         return mode if mode in {"single", "dual"} else "single"
 
     def _dual_vector_pools_enabled(self) -> bool:
-        checker = getattr(self.plugin, "_dual_vector_pools_enabled", None)
-        if callable(checker):
-            return bool(checker())
-        return self._vector_pool_mode() == "dual"
+        return self.runtime.dual_vector_pools_enabled()
 
     def _paragraph_vector_store(self) -> Any:
         if self._dual_vector_pools_enabled():
-            return getattr(self.plugin, "paragraph_vector_store", None) or getattr(self.plugin, "vector_store", None)
-        return getattr(self.plugin, "vector_store", None)
+            return self.runtime.paragraph_vector_store or self.runtime.vector_store
+        return self.runtime.vector_store
 
     def _graph_vector_store(self) -> Any:
         if self._dual_vector_pools_enabled():
-            return getattr(self.plugin, "graph_vector_store", None) or getattr(self.plugin, "vector_store", None)
-        return getattr(self.plugin, "vector_store", None)
+            return self.runtime.graph_vector_store or self.runtime.vector_store
+        return self.runtime.vector_store
 
     def _graph_vector_id(self, target_type: str, hash_value: str) -> str:
         token = str(hash_value or "").strip()
@@ -538,8 +504,8 @@ class ImportTaskManager:
         return f"{target_type}:{token}"
 
     def _embedding_write_batch_size(self) -> int:
-        batch_size = max(1, int(getattr(self.plugin.embedding_manager, "batch_size", 32)))
-        max_concurrent = max(1, int(getattr(self.plugin.embedding_manager, "max_concurrent", 1)))
+        batch_size = max(1, int(getattr(self.runtime.embedding_manager, "batch_size", 32)))
+        max_concurrent = max(1, int(getattr(self.runtime.embedding_manager, "max_concurrent", 1)))
         return min(512, batch_size * max_concurrent)
 
     def _vector_stores_for_persistence(self) -> List[Any]:
@@ -547,12 +513,12 @@ class ImportTaskManager:
         if self._dual_vector_pools_enabled():
             stores.extend(
                 [
-                    getattr(self.plugin, "paragraph_vector_store", None),
-                    getattr(self.plugin, "graph_vector_store", None),
+                    self.runtime.paragraph_vector_store,
+                    self.runtime.graph_vector_store,
                 ]
             )
         else:
-            stores.append(getattr(self.plugin, "vector_store", None))
+            stores.append(self.runtime.vector_store)
 
         seen: Set[int] = set()
         unique_stores: List[Any] = []
@@ -569,7 +535,7 @@ class ImportTaskManager:
     def _save_runtime_stores_locked(self) -> None:
         for store in self._vector_stores_for_persistence():
             store.save()
-        self.plugin.graph_store.save()
+        self.runtime.graph_store.save()
 
     def _cfg_int(self, key: str, default: int) -> int:
         return _coerce_int(self._cfg(key, default), default)
@@ -578,29 +544,21 @@ class ImportTaskManager:
         return _coerce_float(self._cfg(key, default), default)
 
     def _allow_metadata_only_write(self) -> bool:
-        return bool(self._cfg("embedding.fallback.allow_metadata_only_write", True))
+        return self.runtime.allow_metadata_only_write()
 
     def _is_embedding_degraded(self) -> bool:
-        checker = getattr(self.plugin, "is_embedding_degraded", None)
-        if callable(checker):
-            try:
-                return bool(checker())
-            except Exception:
-                return False
-        return False
+        return self.runtime.is_embedding_degraded()
 
     def _enqueue_paragraph_backfill(self, paragraph_hash: str, *, error: str = "") -> None:
         if not paragraph_hash:
             return
-        enqueue = getattr(self.plugin, "enqueue_paragraph_vector_backfill", None)
-        if callable(enqueue):
-            try:
-                enqueue(paragraph_hash, error=error)
-                return
-            except Exception as exc:
-                logger.warning(f"回填入队失败（runtime facade）: {exc}")
         try:
-            self.plugin.metadata_store.enqueue_paragraph_vector_backfill(paragraph_hash, error=error)
+            self.runtime.enqueue_paragraph_vector_backfill(paragraph_hash, error=error)
+            return
+        except Exception as exc:
+            logger.warning(f"回填入队失败（runtime services）: {exc}")
+        try:
+            self.runtime.metadata_store.enqueue_paragraph_vector_backfill(paragraph_hash, error=error)
         except Exception as exc:
             logger.warning(f"回填入队失败（metadata_store）: {exc}")
 
@@ -619,7 +577,7 @@ class ImportTaskManager:
         time_meta: Optional[Dict[str, Any]] = None,
     ) -> str:
         async with self._storage_lock:
-            para_hash = self.plugin.metadata_store.add_paragraph(
+            para_hash = self.runtime.metadata_store.add_paragraph(
                 content=content,
                 source=source,
                 metadata=metadata,
@@ -639,7 +597,7 @@ class ImportTaskManager:
     ) -> None:
         async with self._storage_lock:
             try:
-                self.plugin.metadata_store.set_relation_vector_state(
+                self.runtime.metadata_store.set_relation_vector_state(
                     relation_hash,
                     state,
                     error=error,
@@ -668,7 +626,7 @@ class ImportTaskManager:
             }
 
         target_store = self._paragraph_vector_store()
-        if target_store is None or self.plugin.embedding_manager is None:
+        if target_store is None or self.runtime.embedding_manager is None:
             if not self._allow_metadata_only_write():
                 raise RuntimeError("向量写入依赖未初始化")
             await self._enqueue_paragraph_backfill_locked(token, error="vector_runtime_components_missing")
@@ -702,7 +660,7 @@ class ImportTaskManager:
             }
 
         try:
-            emb = await self.plugin.embedding_manager.encode(text)
+            emb = await self.runtime.embedding_manager.encode(text)
             if getattr(emb, "ndim", 1) == 1:
                 emb = emb.reshape(1, -1)
             if token in target_store:
@@ -818,7 +776,6 @@ class ImportTaskManager:
         return {
             "raw": str((import_root / "source" / "raw").resolve()),
             "lpmm": str((import_root / "source" / "lpmm").resolve()),
-            "maibot": str((import_root / "source" / "maibot").resolve()),
             "converted": str((import_root / "converted").resolve()),
         }
 
@@ -1041,7 +998,7 @@ class ImportTaskManager:
         return self._dedupe_sources(sources)
 
     def _source_has_live_paragraphs(self, source: str) -> bool:
-        metadata_store = getattr(self.plugin, "metadata_store", None)
+        metadata_store = self.runtime.metadata_store
         if metadata_store is None:
             return False
 
@@ -1276,8 +1233,6 @@ class ImportTaskManager:
             params = self._normalize_params(payload)
             params["task_kind"] = kind
             return params
-        if kind == "maibot_migration":
-            return self._normalize_migration_params(payload)
         if kind == "raw_scan":
             return self._normalize_raw_scan_params(payload)
         if kind == "lpmm_openie":
@@ -1288,66 +1243,6 @@ class ImportTaskManager:
             return self._normalize_lpmm_convert_params(payload)
         # upload/paste 默认走通用文本导入参数
         return self._normalize_params(payload)
-
-    def _normalize_migration_params(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        source_db = str(self._resolve_maibot_source_db(str(payload.get("source_db") or "")))
-
-        time_from = str(payload.get("time_from") or "").strip() or None
-        time_to = str(payload.get("time_to") or "").strip() or None
-
-        stream_ids = _coerce_list(payload.get("stream_ids"))
-        group_ids = _coerce_list(payload.get("group_ids"))
-        user_ids = _coerce_list(payload.get("user_ids"))
-
-        start_id = _parse_optional_positive_int(payload.get("start_id"), "start_id")
-        end_id = _parse_optional_positive_int(payload.get("end_id"), "end_id")
-        if start_id is not None and end_id is not None and start_id > end_id:
-            raise ValueError("start_id 不能大于 end_id")
-
-        read_batch_size = _parse_optional_positive_int(payload.get("read_batch_size"), "read_batch_size") or 2000
-        commit_window_rows = (
-            _parse_optional_positive_int(payload.get("commit_window_rows"), "commit_window_rows") or 20000
-        )
-        embed_batch_size = _parse_optional_positive_int(payload.get("embed_batch_size"), "embed_batch_size") or 256
-        entity_embed_batch_size = (
-            _parse_optional_positive_int(payload.get("entity_embed_batch_size"), "entity_embed_batch_size") or 512
-        )
-        embed_workers = _parse_optional_positive_int(payload.get("embed_workers"), "embed_workers")
-        max_errors = _parse_optional_non_negative_int(payload.get("max_errors"), "max_errors")
-        if max_errors is None:
-            max_errors = 0
-        log_every = _parse_optional_positive_int(payload.get("log_every"), "log_every") or 5000
-        preview_limit = _parse_optional_positive_int(payload.get("preview_limit"), "preview_limit") or 20
-
-        no_resume = _coerce_bool(payload.get("no_resume"), False)
-        reset_state = _coerce_bool(payload.get("reset_state"), False)
-        dry_run = _coerce_bool(payload.get("dry_run"), False)
-        verify_only = _coerce_bool(payload.get("verify_only"), False)
-
-        return {
-            "task_kind": "maibot_migration",
-            "source_db": source_db,
-            "target_data_dir": str(self._resolve_data_dir()),
-            "time_from": time_from,
-            "time_to": time_to,
-            "stream_ids": stream_ids,
-            "group_ids": group_ids,
-            "user_ids": user_ids,
-            "start_id": start_id,
-            "end_id": end_id,
-            "read_batch_size": read_batch_size,
-            "commit_window_rows": commit_window_rows,
-            "embed_batch_size": embed_batch_size,
-            "entity_embed_batch_size": entity_embed_batch_size,
-            "embed_workers": embed_workers,
-            "max_errors": max_errors,
-            "log_every": log_every,
-            "preview_limit": preview_limit,
-            "no_resume": no_resume,
-            "reset_state": reset_state,
-            "dry_run": dry_run,
-            "verify_only": verify_only,
-        }
 
     def _pending_task_count(self) -> int:
         pending = 0
@@ -1379,8 +1274,6 @@ class ImportTaskManager:
             "max_file_concurrency": self._max_file_concurrency(),
             "max_chunk_concurrency": self._max_chunk_concurrency(),
             "poll_interval_ms": max(200, self._cfg_int("web.import.poll_interval_ms", 1000)),
-            "maibot_source_db_default": str(self._default_maibot_source_db()),
-            "maibot_target_data_dir": str(self._resolve_data_dir()),
             "path_aliases": self.get_path_aliases(),
             "llm_retry": llm_retry,
             "timeout": self._timeout_config(),
@@ -1396,21 +1289,17 @@ class ImportTaskManager:
         return task.status in {"preparing", "running", "cancel_requested"}
 
     def _ensure_ready(self) -> None:
-        required_attrs = ("metadata_store", "vector_store", "graph_store", "embedding_manager")
-
-        def _collect_missing() -> List[str]:
-            missing_local: List[str] = []
-            for attr in required_attrs:
-                if getattr(self.plugin, attr, None) is None:
-                    missing_local.append(attr)
-            return missing_local
-
-        missing = _collect_missing()
+        dependencies = {
+            "metadata_store": self.runtime.metadata_store,
+            "vector_store": self.runtime.vector_store,
+            "graph_store": self.runtime.graph_store,
+            "embedding_manager": self.runtime.embedding_manager,
+        }
+        missing = [name for name, dependency in dependencies.items() if dependency is None]
         if missing:
             raise ValueError(f"导入依赖未初始化: {', '.join(missing)}")
-        ready_checker = getattr(self.plugin, "is_runtime_ready", None)
-        if callable(ready_checker) and not ready_checker():
-            raise ValueError("插件运行时未就绪，请先完成 on_enable 初始化")
+        if not self.runtime.is_runtime_ready():
+            raise ValueError("记忆运行时未就绪")
 
     def _scan_files(
         self,
@@ -1753,43 +1642,6 @@ class ImportTaskManager:
         await self._ensure_worker()
         return task.to_summary()
 
-    async def create_maibot_migration_task(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        if not self._is_enabled():
-            raise ValueError("导入功能已禁用")
-        self._ensure_ready()
-
-        params = self._normalize_migration_params(payload)
-        script_path = self._resolve_migration_script()
-        if not script_path.exists():
-            raise ValueError(f"迁移脚本不存在: {script_path}")
-
-        async with self._lock:
-            if self._pending_task_count() >= self._queue_limit():
-                raise ValueError("任务队列已满，请稍后重试")
-
-            task = ImportTaskRecord(
-                task_id=uuid.uuid4().hex,
-                source="maibot_migration",
-                params=params,
-                status="queued",
-                current_step="queued",
-            )
-            task.files.append(
-                ImportFileRecord(
-                    file_id=uuid.uuid4().hex,
-                    name=f"maibot_migration_{int(_now())}",
-                    source_kind="maibot_migration",
-                    input_mode="text",
-                    inline_content=json.dumps(params, ensure_ascii=False),
-                )
-            )
-            self._tasks[task.task_id] = task
-            self._task_order.appendleft(task.task_id)
-            self._queue.append(task.task_id)
-
-        await self._ensure_worker()
-        return task.to_summary()
-
     async def list_tasks(self, limit: int = 50) -> List[Dict[str, Any]]:
         async with self._lock:
             task_ids = list(self._task_order)[: max(1, int(limit))]
@@ -1956,20 +1808,6 @@ class ImportTaskManager:
                     inline_content=failed_file.inline_content,
                     retry_mode=retry_mode,
                     retry_chunk_indexes=retry_chunk_indexes,
-                )
-            )
-            return True, ""
-
-        if source_kind == "maibot_migration":
-            retry_task.files.append(
-                ImportFileRecord(
-                    file_id=uuid.uuid4().hex,
-                    name=_safe_filename(failed_file.name),
-                    source_kind="maibot_migration",
-                    input_mode="text",
-                    inline_content=failed_file.inline_content,
-                    retry_mode="file_fallback",
-                    retry_chunk_indexes=[],
                 )
             )
             return True, ""
@@ -2273,11 +2111,7 @@ class ImportTaskManager:
             task.updated_at = _now()
 
         task_kind = str(task.params.get("task_kind") or task.source).strip().lower()
-        if task_kind == "maibot_migration":
-            if not task.files:
-                raise RuntimeError("迁移任务缺少文件记录")
-            await self._process_maibot_migration(task_id, task.files[0])
-        elif task_kind == "temporal_backfill":
+        if task_kind == "temporal_backfill":
             if not task.files:
                 raise RuntimeError("回填任务缺少文件记录")
             await self._process_temporal_backfill(task_id, task.files[0])
@@ -2327,7 +2161,7 @@ class ImportTaskManager:
             task.updated_at = _now()
             self._try_write_task_report(task)
             task_kind = str(task.params.get("task_kind") or task.source).strip().lower()
-            write_task_kinds = {"upload", "paste", "raw_scan", "lpmm_openie", "maibot_migration", "lpmm_convert"}
+            write_task_kinds = {"upload", "paste", "raw_scan", "lpmm_openie", "lpmm_convert"}
             has_written_chunks = (task.done_chunks > 0) or any(f.done_chunks > 0 for f in task.files)
             if task_kind in write_task_kinds and has_written_chunks:
                 write_changed_payload = {
@@ -2341,71 +2175,13 @@ class ImportTaskManager:
         if write_changed_payload:
             await self._notify_write_changed(write_changed_payload)
 
-    def _build_maibot_migration_command(self, params: Dict[str, Any]) -> List[str]:
-        script_path = self._resolve_migration_script()
-        if not script_path.exists():
-            raise RuntimeError(f"迁移脚本不存在: {script_path}")
-
-        cmd = [
-            sys.executable,
-            str(script_path),
-            "--source-db",
-            str(params["source_db"]),
-            "--target-data-dir",
-            str(params["target_data_dir"]),
-            "--read-batch-size",
-            str(params["read_batch_size"]),
-            "--commit-window-rows",
-            str(params["commit_window_rows"]),
-            "--embed-batch-size",
-            str(params["embed_batch_size"]),
-            "--entity-embed-batch-size",
-            str(params["entity_embed_batch_size"]),
-            "--max-errors",
-            str(params["max_errors"]),
-            "--log-every",
-            str(params["log_every"]),
-            "--preview-limit",
-            str(params["preview_limit"]),
-            "--yes",
-        ]
-
-        if params.get("embed_workers") is not None:
-            cmd.extend(["--embed-workers", str(params["embed_workers"])])
-        if params.get("start_id") is not None:
-            cmd.extend(["--start-id", str(params["start_id"])])
-        if params.get("end_id") is not None:
-            cmd.extend(["--end-id", str(params["end_id"])])
-        if params.get("time_from"):
-            cmd.extend(["--time-from", str(params["time_from"])])
-        if params.get("time_to"):
-            cmd.extend(["--time-to", str(params["time_to"])])
-
-        for sid in params.get("stream_ids") or []:
-            cmd.extend(["--stream-id", str(sid)])
-        for gid in params.get("group_ids") or []:
-            cmd.extend(["--group-id", str(gid)])
-        for uid in params.get("user_ids") or []:
-            cmd.extend(["--user-id", str(uid)])
-
-        if params.get("reset_state"):
-            cmd.append("--reset-state")
-        if params.get("no_resume"):
-            cmd.append("--no-resume")
-        if params.get("dry_run"):
-            cmd.append("--dry-run")
-        if params.get("verify_only"):
-            cmd.append("--verify-only")
-
-        return cmd
-
-    async def _ensure_maibot_migration_chunk(
+    async def _ensure_task_progress_chunk(
         self,
         task_id: str,
         file_id: str,
         *,
-        chunk_type: str = "maibot_migration",
-        preview: str = "MaiBot chat_history 迁移任务",
+        chunk_type: str,
+        preview: str,
     ) -> str:
         chunk_id = f"{file_id}_{chunk_type}"
         async with self._lock:
@@ -2438,63 +2214,6 @@ class ImportTaskManager:
                 chunk_id = f.chunks[0].chunk_id
         return chunk_id
 
-    async def _refresh_maibot_progress_from_state(
-        self,
-        task_id: str,
-        file_id: str,
-        chunk_id: str,
-        state_path: Path,
-    ) -> None:
-        if not state_path.exists():
-            return
-        try:
-            payload = json.loads(state_path.read_text(encoding="utf-8"))
-        except Exception:
-            return
-
-        stats = payload.get("stats", {}) if isinstance(payload, dict) else {}
-        if not isinstance(stats, dict):
-            stats = {}
-
-        total = max(0, _coerce_int(stats.get("source_matched_total", 0), 0))
-        scanned = max(0, _coerce_int(stats.get("scanned_rows", 0), 0))
-        bad = max(0, _coerce_int(stats.get("bad_rows", 0), 0))
-        done = max(0, scanned - bad)
-        migrated = max(0, _coerce_int(stats.get("migrated_rows", 0), 0))
-        last_id = max(0, _coerce_int(stats.get("last_committed_id", 0), 0))
-
-        if total <= 0:
-            total = max(1, scanned)
-
-        chunk_progress = max(0.0, min(1.0, float(scanned) / float(total))) if total > 0 else 0.0
-        preview = f"scanned={scanned}/{total}, migrated={migrated}, bad={bad}, last_id={last_id}"
-
-        async with self._lock:
-            task = self._tasks.get(task_id)
-            if not task:
-                return
-            f = self._find_file(task, file_id)
-            if not f:
-                return
-            c = self._find_chunk(f, chunk_id)
-            if c:
-                if c.status not in {"completed", "failed", "cancelled"}:
-                    c.status = "writing"
-                    c.step = "migrating"
-                c.progress = chunk_progress
-                c.content_preview = preview
-                c.updated_at = _now()
-            f.total_chunks = total
-            f.done_chunks = done
-            f.failed_chunks = bad
-            f.cancelled_chunks = 0
-            self._recompute_file_progress(f)
-            if f.status not in {"failed", "cancelled"}:
-                f.status = "writing"
-                f.current_step = "migrating"
-            f.updated_at = _now()
-            self._recompute_task_progress(task)
-
     async def _terminate_process(self, process: asyncio.subprocess.Process) -> None:
         if process.returncode is not None:
             return
@@ -2512,154 +2231,6 @@ class ImportTaskManager:
                 logger.debug("迁移子进程已在强制终止前退出")
             except asyncio.TimeoutError:
                 logger.error("迁移子进程强制终止超时")
-
-    async def _reload_stores_after_external_migration(self) -> None:
-        async with self._storage_lock:
-            for store in self._vector_stores_for_persistence():
-                try:
-                    if store.has_data():
-                        store.load()
-                except Exception as e:
-                    logger.warning(f"迁移后重载 VectorStore 失败: {e}")
-            try:
-                if self.plugin.graph_store and self.plugin.graph_store.has_data():
-                    self.plugin.graph_store.load()
-            except Exception as e:
-                logger.warning(f"迁移后重载 GraphStore 失败: {e}")
-
-    async def _process_maibot_migration(self, task_id: str, file_record: ImportFileRecord) -> None:
-        await self._set_file_strategy(task_id, file_record.file_id, "maibot_migration")
-        await self._set_file_state(task_id, file_record.file_id, "preparing", "preparing")
-        chunk_id = await self._ensure_maibot_migration_chunk(
-            task_id,
-            file_record.file_id,
-            chunk_type="maibot_migration",
-            preview="MaiBot chat_history 迁移任务",
-        )
-        await self._set_chunk_state(task_id, file_record.file_id, chunk_id, "writing", "migrating", 0.0)
-
-        task = self._tasks.get(task_id)
-        if not task:
-            await self._set_file_failed(task_id, file_record.file_id, "任务不存在")
-            return
-        params = dict(task.params)
-
-        command = self._build_maibot_migration_command(params)
-        project_root = self._resolve_repo_root()
-        state_path = Path(params["target_data_dir"]) / "migration_state" / "chat_history_resume.json"
-        report_path = Path(params["target_data_dir"]) / "migration_state" / "chat_history_report.json"
-
-        logger.info(f"开始执行 MaiBot 迁移任务: {' '.join(command)}")
-        process = await asyncio.create_subprocess_exec(
-            *command,
-            cwd=str(project_root),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-
-        stdout_lines: List[str] = []
-        stderr_lines: List[str] = []
-
-        async def _drain(stream: Optional[asyncio.StreamReader], target: List[str]) -> None:
-            if stream is None:
-                return
-            while True:
-                line = await stream.readline()
-                if not line:
-                    break
-                text = line.decode("utf-8", errors="replace").strip()
-                if not text:
-                    continue
-                target.append(text)
-                if len(target) > 120:
-                    del target[:-120]
-
-        drain_tasks = [
-            asyncio.create_task(_drain(process.stdout, stdout_lines)),
-            asyncio.create_task(_drain(process.stderr, stderr_lines)),
-        ]
-
-        cancelled = False
-        return_code: Optional[int] = None
-        try:
-            while True:
-                if await self._is_cancel_requested(task_id):
-                    cancelled = True
-                    await self._terminate_process(process)
-                    break
-
-                await self._refresh_maibot_progress_from_state(task_id, file_record.file_id, chunk_id, state_path)
-                try:
-                    return_code = await asyncio.wait_for(
-                        process.wait(),
-                        timeout=self._timeout_config()["process_poll_seconds"],
-                    )
-                    break
-                except asyncio.TimeoutError:
-                    continue
-        finally:
-            await asyncio.gather(*drain_tasks, return_exceptions=True)
-
-        if cancelled:
-            await self._set_chunk_cancelled(task_id, file_record.file_id, chunk_id, "任务已取消")
-            await self._set_file_cancelled(task_id, file_record.file_id, "任务已取消")
-            return
-
-        await self._refresh_maibot_progress_from_state(task_id, file_record.file_id, chunk_id, state_path)
-
-        report: Dict[str, Any] = {}
-        if report_path.exists():
-            try:
-                report = json.loads(report_path.read_text(encoding="utf-8"))
-            except Exception:
-                report = {}
-
-        stats = report.get("stats", {}) if isinstance(report, dict) else {}
-        if not isinstance(stats, dict):
-            stats = {}
-        bad_rows = max(0, _coerce_int(stats.get("bad_rows", 0), 0))
-
-        if return_code in {0, 2}:
-            await self._set_file_state(task_id, file_record.file_id, "saving", "saving")
-            await self._reload_stores_after_external_migration()
-
-            async with self._lock:
-                task2 = self._tasks.get(task_id)
-                if not task2:
-                    return
-                f = self._find_file(task2, file_record.file_id)
-                if not f:
-                    return
-                c = self._find_chunk(f, chunk_id)
-                if c and c.status not in {"cancelled", "failed"}:
-                    c.status = "completed"
-                    c.step = "completed"
-                    c.progress = 1.0
-                    c.updated_at = _now()
-                if f.total_chunks <= 0:
-                    f.total_chunks = 1
-                if f.done_chunks + f.failed_chunks <= 0:
-                    f.done_chunks = f.total_chunks - bad_rows
-                    f.failed_chunks = bad_rows
-                f.done_chunks = max(0, min(f.done_chunks, f.total_chunks))
-                f.failed_chunks = max(0, min(f.failed_chunks, f.total_chunks))
-                f.cancelled_chunks = 0
-                self._recompute_file_progress(f)
-                f.status = "completed"
-                f.current_step = "completed"
-                if bad_rows > 0 and not f.error:
-                    f.error = f"迁移完成，但存在坏行: {bad_rows}"
-                f.updated_at = _now()
-                self._recompute_task_progress(task2)
-            return
-
-        fail_reason = ""
-        if isinstance(report, dict):
-            fail_reason = str(report.get("fail_reason") or "").strip()
-        tail = (stderr_lines[-1] if stderr_lines else "") or (stdout_lines[-1] if stdout_lines else "")
-        detail = fail_reason or tail or f"迁移进程退出码: {return_code}"
-        await self._set_chunk_failed(task_id, file_record.file_id, chunk_id, detail)
-        await self._set_file_failed(task_id, file_record.file_id, detail)
 
     def _resolve_convert_script(self) -> Path:
         return Path(__file__).resolve().parents[2] / "scripts" / "convert_lpmm.py"
@@ -2752,7 +2323,7 @@ class ImportTaskManager:
         """使用当前服务解释器做 convert 依赖预检，避免子进程报错信息不透明。"""
         probe_code = (
             "import importlib\n"
-            "mods=['scipy','pyarrow']\n"
+            "mods=['scipy','pyarrow','networkx']\n"
             "failed=[]\n"
             "for m in mods:\n"
             "    try:\n"
@@ -2788,7 +2359,7 @@ class ImportTaskManager:
     async def _process_lpmm_convert(self, task_id: str, file_record: ImportFileRecord) -> None:
         await self._set_file_strategy(task_id, file_record.file_id, "lpmm_convert")
         await self._set_file_state(task_id, file_record.file_id, "preparing", "preflight")
-        chunk_id = await self._ensure_maibot_migration_chunk(
+        chunk_id = await self._ensure_task_progress_chunk(
             task_id,
             file_record.file_id,
             chunk_type="lpmm_convert",
@@ -2821,6 +2392,22 @@ class ImportTaskManager:
             await self._set_chunk_failed(task_id, file_record.file_id, chunk_id, runtime_detail)
             return
 
+        self_check = await self.runtime.ensure_runtime_self_check()
+        if not bool(self_check.get("ok")):
+            detail = str(self_check.get("message") or self_check.get("code") or "Embedding 自检失败")
+            await self._set_file_failed(task_id, file_record.file_id, detail)
+            await self._set_chunk_failed(task_id, file_record.file_id, chunk_id, detail)
+            return
+        dimension = int(params.get("dimension", 384))
+        embedding_fingerprint = self.runtime.embedding_manager.get_embedding_fingerprint(
+            dimension=dimension,
+        )
+        if str(embedding_fingerprint.get("source", "")).strip().lower() != "observed":
+            detail = "LPMM 转换要求已观测的 Embedding 指纹"
+            await self._set_file_failed(task_id, file_record.file_id, detail)
+            await self._set_chunk_failed(task_id, file_record.file_id, chunk_id, detail)
+            return
+
         required_inputs = ["paragraph.parquet", "entity.parquet"]
         if not any((source_dir / name).exists() for name in required_inputs):
             await self._set_file_failed(
@@ -2846,9 +2433,11 @@ class ImportTaskManager:
             "--data-dir",
             str(self._resolve_data_dir()),
             "--dim",
-            str(params.get("dimension", 384)),
+            str(dimension),
             "--batch-size",
             str(params.get("batch_size", 1024)),
+            "--embedding-fingerprint-json",
+            json.dumps(embedding_fingerprint, ensure_ascii=True, sort_keys=True),
         ]
         process = await asyncio.create_subprocess_exec(
             *cmd,
@@ -2939,7 +2528,7 @@ class ImportTaskManager:
     async def _process_temporal_backfill(self, task_id: str, file_record: ImportFileRecord) -> None:
         await self._set_file_strategy(task_id, file_record.file_id, "temporal_backfill")
         await self._set_file_state(task_id, file_record.file_id, "preparing", "backfilling")
-        chunk_id = await self._ensure_maibot_migration_chunk(
+        chunk_id = await self._ensure_task_progress_chunk(
             task_id,
             file_record.file_id,
             chunk_type="temporal_backfill",
@@ -3616,7 +3205,7 @@ class ImportTaskManager:
         raise ValueError("导入任务的 scope_type 与 chat_id 不一致")
 
     async def _ensure_embedding_runtime_ready(self) -> None:
-        report = await ensure_runtime_self_check(self.plugin)
+        report = await self.runtime.ensure_runtime_self_check()
         if bool(report.get("ok", False)):
             return
         if self._allow_metadata_only_write():
@@ -3707,11 +3296,11 @@ class ImportTaskManager:
 
         async with self._storage_lock:
             entity_hashes: List[Tuple[str, str]] = []
-            with self.plugin.metadata_store.transaction(
+            with self.runtime.metadata_store.transaction(
                 immediate=True
-            ), self.plugin.graph_store.batch_update():
-                self.plugin.graph_store.add_nodes(normalized_names)
-                hashes = self.plugin.metadata_store.add_entities_batch(
+            ), self.runtime.graph_store.batch_update():
+                self.runtime.graph_store.add_nodes(normalized_names)
+                hashes = self.runtime.metadata_store.add_entities_batch(
                     normalized_names,
                     source_paragraph=source_paragraph,
                 )
@@ -3734,7 +3323,7 @@ class ImportTaskManager:
                 if self._is_embedding_degraded():
                     raise RuntimeError("embedding_degraded")
                 embeddings = np.asarray(
-                    await self.plugin.embedding_manager.encode_batch(
+                    await self.runtime.embedding_manager.encode_batch(
                         [item[1][0] for item in batch_items]
                     ),
                     dtype=np.float32,
@@ -3787,7 +3376,7 @@ class ImportTaskManager:
         if not normalized_relations:
             return []
 
-        relation_write_service = self.plugin.relation_write_service
+        relation_write_service = self.runtime.relation_write_service
         if relation_write_service is None or self._is_embedding_degraded():
             relation_hashes: List[str] = []
             for subject, predicate, obj in normalized_relations:
@@ -3812,7 +3401,7 @@ class ImportTaskManager:
             source_paragraph=source_paragraph,
         )
 
-        rv_cfg = self.plugin.get_config("retrieval.relation_vectorization", {}) or {}
+        rv_cfg = self.runtime.get_config("retrieval.relation_vectorization", {}) or {}
         if not isinstance(rv_cfg, dict):
             rv_cfg = {}
         write_vector = bool(rv_cfg.get("enabled", False)) and bool(rv_cfg.get("write_on_import", True))
@@ -3833,26 +3422,26 @@ class ImportTaskManager:
 
         await self._add_entity_with_vector(subject_token, source_paragraph=source_paragraph)
         await self._add_entity_with_vector(object_token, source_paragraph=source_paragraph)
-        rv_cfg = self.plugin.get_config("retrieval.relation_vectorization", {}) or {}
+        rv_cfg = self.runtime.get_config("retrieval.relation_vectorization", {}) or {}
         if not isinstance(rv_cfg, dict):
             rv_cfg = {}
         write_vector = bool(rv_cfg.get("enabled", False)) and bool(rv_cfg.get("write_on_import", True))
 
         async with self._storage_lock:
-            rel_hash = self.plugin.metadata_store.add_relation(
+            rel_hash = self.runtime.metadata_store.add_relation(
                 subject=subject_token,
                 predicate=predicate_token,
                 obj=object_token,
                 confidence=1.0,
                 source_paragraph=source_paragraph,
             )
-            self.plugin.graph_store.add_edges([(subject_token, object_token)], relation_hashes=[rel_hash])
+            self.runtime.graph_store.add_edges([(subject_token, object_token)], relation_hashes=[rel_hash])
             if not write_vector:
                 return rel_hash
             target_store = self._graph_vector_store()
             vector_id = self._graph_vector_id("relation", rel_hash)
             vector_exists = target_store is not None and vector_id in target_store
-            self.plugin.metadata_store.set_relation_vector_state(rel_hash, "ready" if vector_exists else "pending")
+            self.runtime.metadata_store.set_relation_vector_state(rel_hash, "ready" if vector_exists else "pending")
 
         if vector_exists:
             return rel_hash
@@ -3865,7 +3454,7 @@ class ImportTaskManager:
                 predicate_token,
                 object_token,
             )
-            emb = await self.plugin.embedding_manager.encode(vector_text)
+            emb = await self.runtime.embedding_manager.encode(vector_text)
             if vector_id in target_store:
                 await self._set_relation_vector_state_locked(rel_hash, "ready")
                 return rel_hash

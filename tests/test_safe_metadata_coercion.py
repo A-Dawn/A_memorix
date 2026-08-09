@@ -124,7 +124,7 @@ async def test_search_execution_does_not_require_enable_ppr_config():
     result = await SearchExecutionService.execute(
         retriever=retriever,
         threshold_filter=None,
-        plugin_config={
+        runtime_config={
             "retrieval": {
                 "search": {
                     "smart_fallback": {"enabled": False},

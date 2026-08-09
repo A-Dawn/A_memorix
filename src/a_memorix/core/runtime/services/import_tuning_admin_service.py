@@ -35,8 +35,6 @@ class MemoryImportTuningAdminService(KernelServiceBase):
             return {"success": True, "task": await manager.create_lpmm_convert_task(kwargs)}
         if act == "create_temporal_backfill":
             return {"success": True, "task": await manager.create_temporal_backfill_task(kwargs)}
-        if act == "create_maibot_migration":
-            return {"success": True, "task": await manager.create_maibot_migration_task(kwargs)}
         if act == "list":
             items = await manager.list_tasks(limit=max(1, int(kwargs.get("limit", 50) or 50)))
             return {"success": True, "items": items, "count": len(items)}

@@ -23,7 +23,7 @@ Episode、画像和摘要已经与 MaiBot 的模块、配置和数据库类型�
 python -m pip install -e ".[test,vector]"
 ```
 
-分发包名为 `a-memorix`，Python 导入名为 `a_memorix`。正式发布后可通过 `pip install a-memorix` 安装基础包；FAISS 支持位于 `vector` extra。
+分发包名为 `a-memorix`，Python 导入名为 `a_memorix`。正式发布后可通过 `pip install a-memorix` 安装基础包；FAISS 支持位于 `vector` extra，LPMM Parquet 转换支持位于 `lpmm` extra。
 
 ## Python 入口
 
@@ -95,6 +95,6 @@ python -m build
 
 ## 许可证
 
-项目默认采用 [GNU AGPL-3.0-only](LICENSE)。需要其他许可安排的个人或组织必须通过项目维护者的公开邮箱提出申请，只有书面确认后才产生例外。正式稳定版发布前会补充专门的许可说明和固定联系地址。
+项目默认采用 [GNU AGPL-3.0-only](LICENSE)。任何协议变更或其他许可安排都必须发送邮件至 `contact@luminarc.tech` 申请，只有收到书面批准后才产生例外。具体规则见 [LICENSING.md](LICENSING.md)。
 
 外部贡献规则和社区扩展治理将在开放对应仓库前单独发布。

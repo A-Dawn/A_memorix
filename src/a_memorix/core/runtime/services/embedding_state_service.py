@@ -408,7 +408,7 @@ class MemoryEmbeddingStateService(KernelServiceBase):
             from .. import sdk_memory_kernel as kernel_module
 
             runtime_bundle = kernel_module.build_search_runtime(
-                plugin_config=self._build_runtime_config(),
+                runtime_config=self._build_runtime_config(),
                 logger_obj=kernel_module.logger,
                 owner_tag="sdk_kernel_embedding_recovery",
                 log_prefix="[sdk]",

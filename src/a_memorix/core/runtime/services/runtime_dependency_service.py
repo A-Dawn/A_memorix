@@ -34,7 +34,7 @@ class MemoryRuntimeDependencyService(KernelServiceBase):
             if self.retriever is not None
             else None
         )
-        self.aggregate_query_service = kernel_module.AggregateQueryService(plugin_config=runtime_config)
+        self.aggregate_query_service = kernel_module.AggregateQueryService(runtime_config=runtime_config)
         self.person_profile_service = kernel_module.PersonProfileService(
             metadata_store=self.metadata_store,
             graph_store=self.graph_store,
@@ -43,18 +43,18 @@ class MemoryRuntimeDependencyService(KernelServiceBase):
             graph_vector_store=self.graph_vector_store or self.vector_store,
             embedding_manager=self.embedding_manager,
             sparse_index=self.sparse_index,
-            plugin_config=runtime_config,
+            runtime_config=runtime_config,
             retriever=self.retriever,
             identity_resolver=self.identity_resolver,
             llm_provider=self.llm_provider,
         )
         self.episode_segmentation_service = kernel_module.EpisodeSegmentationService(
-            plugin_config=runtime_config,
+            runtime_config=runtime_config,
             llm_provider=self.llm_provider,
         )
         self.episode_service = kernel_module.EpisodeService(
             metadata_store=self.metadata_store,
-            plugin_config=runtime_config,
+            runtime_config=runtime_config,
             segmentation_service=self.episode_segmentation_service,
         )
         self.summary_importer = kernel_module.SummaryImporter(
@@ -62,14 +62,19 @@ class MemoryRuntimeDependencyService(KernelServiceBase):
             graph_store=self.graph_store,
             metadata_store=self.metadata_store,
             embedding_manager=self.embedding_manager,
-            plugin_config=runtime_config,
+            runtime_config=runtime_config,
             llm_provider=self.llm_provider,
             message_source=self.message_source,
+            runtime_services=self._runtime_facade,
         )
         if not preserve_managers:
-            self.import_task_manager = kernel_module.ImportTaskManager(self._runtime_facade)
+            self.import_task_manager = kernel_module.ImportTaskManager(
+                self._runtime_facade,
+                llm_provider=self.llm_provider,
+            )
             self.retrieval_tuning_manager = kernel_module.RetrievalTuningManager(
                 self._runtime_facade,
+                llm_provider=self.llm_provider,
                 import_write_blocked_provider=self.import_task_manager.is_write_blocked,
             )
 

@@ -136,13 +136,13 @@ class _RetrievalTypeFilterMetadataStore(_ScopedSearchMetadataStore):
                 "para-stream-other": {
                     "hash": "para-stream-other",
                     "content": "其他聊天流普通记忆。",
-                    "source": "maibot.chat_history:session-other",
+                    "source": "chat_stream:session-other",
                     "metadata": {"chat_id": "session-other", "source_type": "chat_history"},
                 },
                 "para-stream-current": {
                     "hash": "para-stream-current",
                     "content": "当前聊天流普通记忆。",
-                    "source": "maibot.chat_history:session-current",
+                    "source": "chat_stream:session-current",
                     "metadata": {"chat_id": "session-current", "source_type": "chat_history"},
                 },
                 "para-summary-current": {

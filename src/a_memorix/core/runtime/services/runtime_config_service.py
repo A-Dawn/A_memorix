@@ -24,7 +24,6 @@ class MemoryRuntimeConfigService(KernelServiceBase):
                 "embedding_manager": self.embedding_manager,
                 "sparse_index": self.sparse_index,
                 "relation_write_service": self.relation_write_service,
-                "plugin_instance": self._runtime_facade,
                 "runtime_capabilities": dict(self._runtime_capabilities),
             }
         )
@@ -58,7 +57,7 @@ class MemoryRuntimeConfigService(KernelServiceBase):
 
         next_config = self._merge_runtime_config_patch(self.config, profile)
         runtime_bundle = kernel_module.build_search_runtime(
-            plugin_config=self._build_runtime_config(next_config),
+            runtime_config=self._build_runtime_config(next_config),
             logger_obj=kernel_module.logger,
             owner_tag="sdk_kernel_tuning_apply",
             log_prefix="[sdk]",

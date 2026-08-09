@@ -16,7 +16,6 @@ async def test_runtime_facade_delegates_kernel_runtime_methods(monkeypatch: pyte
 
     assert isinstance(facade, KernelRuntimeFacade)
     assert facade.config is kernel.config
-    assert facade._plugin_config is kernel.config
     assert facade.get_config("runtime.enabled") is True
 
     monkeypatch.setattr(kernel, "is_runtime_ready", lambda: True)
@@ -60,7 +59,7 @@ async def test_runtime_facade_delegates_kernel_runtime_methods(monkeypatch: pyte
     assert facade.is_runtime_ready() is True
     assert facade.is_chat_enabled("session-1", group_id="group-1", user_id="user-1") is True
     assert facade.is_embedding_degraded() is False
-    assert facade._dual_vector_pools_enabled() is True
+    assert facade.dual_vector_pools_enabled() is True
     assert facade.allow_metadata_only_write() is True
 
     dedup_hit, dedup_payload = await facade.execute_request_with_dedup("request-1", lambda: _async_payload("ok"))

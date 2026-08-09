@@ -10,7 +10,7 @@ import hashlib
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from a_memorix.logging import get_logger
 
@@ -21,6 +21,9 @@ from .search_postprocess import (
     maybe_apply_smart_path_fallback,
 )
 from .time_parser import parse_query_time_range
+
+if TYPE_CHECKING:
+    from ..runtime.runtime_services import RuntimeServices
 
 logger = get_logger("A_Memorix.SearchExecutionService")
 
@@ -107,46 +110,16 @@ class SearchExecutionService:
     """统一检索执行服务。"""
 
     @staticmethod
-    def _resolve_plugin_instance(plugin_config: Optional[dict]) -> Optional[Any]:
-        if isinstance(plugin_config, dict):
-            plugin_instance = plugin_config.get("plugin_instance")
-            if plugin_instance is not None:
-                return plugin_instance
-
-        try:
-            from ...runtime_registry import get_runtime_kernel
-
-            return get_runtime_kernel()
-        except Exception:
-            return None
-
-    @staticmethod
     def _normalize_query_type(raw_query_type: str) -> str:
         return _sanitize_text(raw_query_type).lower() or "search"
 
     @staticmethod
-    def _resolve_runtime_component(
-        plugin_config: Optional[dict],
-        plugin_instance: Optional[Any],
-        key: str,
-    ) -> Optional[Any]:
-        if isinstance(plugin_config, dict):
-            value = plugin_config.get(key)
-            if value is not None:
-                return value
-        if plugin_instance is not None:
-            value = getattr(plugin_instance, key, None)
-            if value is not None:
-                return value
-        return None
-
-    @staticmethod
     def _resolve_top_k(
-        plugin_config: Optional[dict],
+        runtime_config: Optional[dict],
         query_type: str,
         top_k_raw: Optional[Any],
     ) -> Tuple[bool, int, str]:
-        temporal_default_top_k = int(_get_config_value(plugin_config, "retrieval.temporal.default_top_k", 10))
+        temporal_default_top_k = int(_get_config_value(runtime_config, "retrieval.temporal.default_top_k", 10))
         default_top_k = temporal_default_top_k if query_type in {"time", "hybrid"} else 10
         if top_k_raw is None:
             return True, max(1, min(50, default_top_k)), ""
@@ -158,7 +131,7 @@ class SearchExecutionService:
 
     @staticmethod
     def _build_temporal(
-        plugin_config: Optional[dict],
+        runtime_config: Optional[dict],
         query_type: str,
         time_from_raw: Optional[str],
         time_to_raw: Optional[str],
@@ -168,7 +141,7 @@ class SearchExecutionService:
         if query_type not in {"time", "hybrid"}:
             return True, None, ""
 
-        temporal_enabled = bool(_get_config_value(plugin_config, "retrieval.temporal.enabled", True))
+        temporal_enabled = bool(_get_config_value(runtime_config, "retrieval.temporal.enabled", True))
         if not temporal_enabled:
             return False, None, "时序检索已禁用（retrieval.temporal.enabled=false）"
 
@@ -189,10 +162,10 @@ class SearchExecutionService:
             person=_sanitize_text(person) or None,
             source=_sanitize_text(source) or None,
             allow_created_fallback=bool(
-                _get_config_value(plugin_config, "retrieval.temporal.allow_created_fallback", True)
+                _get_config_value(runtime_config, "retrieval.temporal.allow_created_fallback", True)
             ),
-            candidate_multiplier=int(_get_config_value(plugin_config, "retrieval.temporal.candidate_multiplier", 8)),
-            max_scan=int(_get_config_value(plugin_config, "retrieval.temporal.max_scan", 1000)),
+            candidate_multiplier=int(_get_config_value(runtime_config, "retrieval.temporal.candidate_multiplier", 8)),
+            max_scan=int(_get_config_value(runtime_config, "retrieval.temporal.max_scan", 1000)),
         )
         return True, temporal, ""
 
@@ -229,8 +202,9 @@ class SearchExecutionService:
         *,
         retriever: Any,
         threshold_filter: Optional[Any],
-        plugin_config: Optional[dict],
+        runtime_config: Optional[dict],
         request: SearchExecutionRequest,
+        runtime_services: RuntimeServices | None = None,
         enforce_chat_filter: bool = True,
     ) -> SearchExecutionResult:
         """执行一次 search、time 或 hybrid 检索并返回领域结果。
@@ -256,7 +230,7 @@ class SearchExecutionService:
                 error="search/hybrid 模式必须提供 query",
             )
 
-        top_k_ok, top_k, top_k_error = SearchExecutionService._resolve_top_k(plugin_config, query_type, request.top_k)
+        top_k_ok, top_k, top_k_error = SearchExecutionService._resolve_top_k(runtime_config, query_type, request.top_k)
         if not top_k_ok:
             return SearchExecutionResult(success=False, error=top_k_error)
         if request.candidate_top_k is None:
@@ -268,7 +242,7 @@ class SearchExecutionService:
                 return SearchExecutionResult(success=False, error="candidate_top_k 参数必须为整数")
 
         temporal_ok, temporal, temporal_error = SearchExecutionService._build_temporal(
-            plugin_config=plugin_config,
+            runtime_config=runtime_config,
             query_type=query_type,
             time_from_raw=request.time_from,
             time_to_raw=request.time_to,
@@ -278,9 +252,8 @@ class SearchExecutionService:
         if not temporal_ok:
             return SearchExecutionResult(success=False, error=temporal_error)
 
-        plugin_instance = SearchExecutionService._resolve_plugin_instance(plugin_config)
-        if enforce_chat_filter and plugin_instance is not None and hasattr(plugin_instance, "is_chat_enabled"):
-            if not plugin_instance.is_chat_enabled(
+        if enforce_chat_filter and runtime_services is not None:
+            if not runtime_services.is_chat_enabled(
                 stream_id=request.stream_id,
                 group_id=request.group_id,
                 user_id=request.user_id,
@@ -328,7 +301,7 @@ class SearchExecutionService:
                 and not query
                 and bool(
                     _get_config_value(
-                        plugin_config,
+                        runtime_config,
                         "retrieval.time.skip_threshold_when_query_empty",
                         True,
                     )
@@ -340,22 +313,26 @@ class SearchExecutionService:
                 retrieved = threshold_filter.filter(retrieved)
 
             if query_type == "search":
-                graph_store = SearchExecutionService._resolve_runtime_component(
-                    plugin_config, plugin_instance, "graph_store"
+                graph_store = (
+                    runtime_config.get("graph_store")
+                    if isinstance(runtime_config, dict) and runtime_config.get("graph_store") is not None
+                    else runtime_services.graph_store if runtime_services is not None else None
                 )
-                metadata_store = SearchExecutionService._resolve_runtime_component(
-                    plugin_config, plugin_instance, "metadata_store"
+                metadata_store = (
+                    runtime_config.get("metadata_store")
+                    if isinstance(runtime_config, dict) and runtime_config.get("metadata_store") is not None
+                    else runtime_services.metadata_store if runtime_services is not None else None
                 )
                 fallback_enabled = bool(
                     _get_config_value(
-                        plugin_config,
+                        runtime_config,
                         "retrieval.search.smart_fallback.enabled",
                         True,
                     )
                 )
                 fallback_threshold = float(
                     _get_config_value(
-                        plugin_config,
+                        runtime_config,
                         "retrieval.search.smart_fallback.threshold",
                         0.6,
                     )
@@ -376,7 +353,7 @@ class SearchExecutionService:
 
             dedup_enabled = bool(
                 _get_config_value(
-                    plugin_config,
+                    runtime_config,
                     "retrieval.search.safe_content_dedup.enabled",
                     True,
                 )
@@ -395,10 +372,9 @@ class SearchExecutionService:
             bypass_request_dedup = str(request.caller or "").strip().lower() == "retrieval_tuning"
             if (
                 not bypass_request_dedup
-                and plugin_instance is not None
-                and hasattr(plugin_instance, "execute_request_with_dedup")
+                and runtime_services is not None
             ):
-                dedup_hit, payload = await plugin_instance.execute_request_with_dedup(
+                dedup_hit, payload = await runtime_services.execute_request_with_dedup(
                     request_key,
                     _executor,
                 )

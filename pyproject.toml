@@ -9,7 +9,7 @@ description = "A namespace-isolated memory engine for AI agents"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "AGPL-3.0-only"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "LICENSING.md"]
 authors = [{ name = "A_memorix contributors" }]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -26,13 +26,20 @@ dependencies = [
 
 [project.optional-dependencies]
 vector = ["faiss-cpu>=1.8.0"]
+lpmm = [
+  "networkx>=3.2.0",
+  "pyarrow>=16.0.0",
+]
 test = [
+  "pyarrow>=16.0.0",
   "pytest>=8.0.0",
   "pytest-asyncio>=0.24.0",
 ]
 build = ["build>=1.2.0"]
 all = [
   "faiss-cpu>=1.8.0",
+  "networkx>=3.2.0",
+  "pyarrow>=16.0.0",
 ]
 
 [project.urls]

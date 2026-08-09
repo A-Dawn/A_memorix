@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, Coroutine, Dict, Optional, Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING, Any, Callable, Coroutine, Dict, Optional, Sequence
 
 from ..utils.memory_lifecycle_policy import RelationLifecycleEvent
 
@@ -17,7 +17,6 @@ class KernelRuntimeFacade:
     def __init__(self, kernel: SDKMemoryKernel) -> None:
         self._kernel = kernel
         self.config = kernel.config
-        self._plugin_config = kernel.config
         self._runtime_self_check_report: Dict[str, Any] = {}
 
     def get_config(self, key: str, default: Any = None) -> Any:
@@ -102,11 +101,27 @@ class KernelRuntimeFacade:
     def is_embedding_degraded(self) -> bool:
         return self._kernel._is_embedding_degraded()
 
-    def _dual_vector_pools_enabled(self) -> bool:
+    def dual_vector_pools_enabled(self) -> bool:
         return self._kernel._dual_vector_pools_enabled()
 
     def allow_metadata_only_write(self) -> bool:
         return self._kernel._allow_metadata_only_write()
+
+    async def ensure_runtime_self_check(self, *, force: bool = False) -> Dict[str, Any]:
+        if self._runtime_self_check_report and not force:
+            return dict(self._runtime_self_check_report)
+
+        from ..utils.runtime_self_check import run_embedding_runtime_self_check
+
+        report = await run_embedding_runtime_self_check(
+            config=self.config,
+            vector_store=self.vector_store,
+            embedding_manager=self.embedding_manager,
+            paragraph_vector_store=self.paragraph_vector_store,
+            graph_vector_store=self.graph_vector_store,
+        )
+        self._runtime_self_check_report = dict(report)
+        return report
 
     async def ingest_text(self, **kwargs: Any) -> Dict[str, Any]:
         """让派生写入统一复用内核的 external ID 幂等入口。"""

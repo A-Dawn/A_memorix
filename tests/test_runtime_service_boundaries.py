@@ -416,7 +416,7 @@ def test_runtime_config_service_builds_runtime_bundle_from_kernel_state(
     assert runtime_config["vector_store"] is kernel.vector_store
     assert runtime_config["paragraph_vector_store"] is kernel.paragraph_vector_store
     assert runtime_config["graph_vector_store"] is kernel.graph_vector_store
-    assert runtime_config["plugin_instance"] is kernel._runtime_facade
+    assert "plugin_instance" not in runtime_config
 
 
 @pytest.mark.asyncio
@@ -720,8 +720,8 @@ async def test_embedding_recovery_restores_vector_runtime_after_fingerprint_beco
         return True
 
     def fake_build_search_runtime(**kwargs: Any) -> SimpleNamespace:
-        assert kwargs["plugin_config"]["paragraph_vector_store"] is paragraph_store
-        assert kwargs["plugin_config"]["graph_vector_store"] is graph_vector_store
+        assert kwargs["runtime_config"]["paragraph_vector_store"] is paragraph_store
+        assert kwargs["runtime_config"]["graph_vector_store"] is graph_vector_store
         calls.append("runtime")
         return SimpleNamespace(
             ready=True,
@@ -1130,20 +1130,32 @@ def test_runtime_dependency_refresh_dependents_uses_kernel_patched_factories(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeImportTaskManager:
-        def __init__(self, facade: Any) -> None:
-            events.append(("ImportTaskManager", {"facade": facade}))
+        def __init__(self, facade: Any, *, llm_provider: Any) -> None:
+            events.append(
+                (
+                    "ImportTaskManager",
+                    {"facade": facade, "llm_provider": llm_provider},
+                )
+            )
 
         def is_write_blocked(self) -> bool:
             return False
 
     class FakeRetrievalTuningManager:
-        def __init__(self, facade: Any, *, import_write_blocked_provider: Any) -> None:
+        def __init__(
+            self,
+            facade: Any,
+            *,
+            import_write_blocked_provider: Any,
+            llm_provider: Any,
+        ) -> None:
             events.append(
                 (
                     "RetrievalTuningManager",
                     {
                         "facade": facade,
                         "import_write_blocked_provider": import_write_blocked_provider,
+                        "llm_provider": llm_provider,
                     },
                 )
             )
@@ -1192,11 +1204,11 @@ def test_runtime_dependency_refresh_dependents_uses_kernel_patched_factories(
     ]
     assert events[0][1]["metadata_store"] is kernel.metadata_store
     assert events[0][1]["retriever"] is kernel.retriever
-    assert events[1][1]["plugin_config"] is runtime_config
+    assert events[1][1]["runtime_config"] is runtime_config
     assert events[2][1]["paragraph_vector_store"] is kernel.paragraph_vector_store
     assert events[2][1]["graph_vector_store"] is kernel.graph_vector_store
     assert events[4][1]["segmentation_service"] is kernel.episode_segmentation_service
-    assert events[5][1]["plugin_config"] is runtime_config
+    assert events[5][1]["runtime_config"] is runtime_config
     assert events[6][1]["facade"] is kernel._runtime_facade
     assert events[7][1]["facade"] is kernel._runtime_facade
     assert events[7][1]["import_write_blocked_provider"] == kernel.import_task_manager.is_write_blocked

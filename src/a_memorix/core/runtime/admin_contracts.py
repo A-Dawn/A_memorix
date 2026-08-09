@@ -146,7 +146,6 @@ _IMPORT_ACTIONS = {
     "create_lpmm_openie",
     "create_lpmm_convert",
     "create_temporal_backfill",
-    "create_maibot_migration",
     "list",
     "get",
     "chunks",
