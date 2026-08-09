@@ -9,13 +9,16 @@
       "name": "AuthService"
     },
     {
+      "name": "NamespaceService"
+    },
+    {
+      "name": "BackupService"
+    },
+    {
       "name": "JobService"
     },
     {
       "name": "MemoryService"
-    },
-    {
-      "name": "NamespaceService"
     }
   ],
   "consumes": [
@@ -25,6 +28,315 @@
     "application/json"
   ],
   "paths": {
+    "/v1/backup-uploads": {
+      "post": {
+        "operationId": "BackupService_BeginNamespaceBackupUpload",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1BeginNamespaceBackupUploadResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "BackupService"
+        ]
+      }
+    },
+    "/v1/backup-uploads/{uploadId}": {
+      "delete": {
+        "operationId": "BackupService_AbortNamespaceBackupUpload",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1AbortNamespaceBackupUploadResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "uploadId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "BackupService"
+        ]
+      },
+      "put": {
+        "operationId": "BackupService_UploadNamespaceBackupChunk",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1UploadNamespaceBackupChunkResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "uploadId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/BackupServiceUploadNamespaceBackupChunkBody"
+            }
+          }
+        ],
+        "tags": [
+          "BackupService"
+        ]
+      }
+    },
+    "/v1/backup-uploads/{uploadId}:complete": {
+      "post": {
+        "operationId": "BackupService_CompleteNamespaceBackupUpload",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1CompleteNamespaceBackupUploadResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "uploadId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/BackupServiceCompleteNamespaceBackupUploadBody"
+            }
+          }
+        ],
+        "tags": [
+          "BackupService"
+        ]
+      }
+    },
+    "/v1/backups": {
+      "get": {
+        "operationId": "BackupService_ListNamespaceBackups",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ListNamespaceBackupsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "sourceNamespaceId",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int64"
+          },
+          {
+            "name": "pageToken",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "BackupService"
+        ]
+      }
+    },
+    "/v1/backups/{backupId}": {
+      "get": {
+        "operationId": "BackupService_GetNamespaceBackup",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1GetNamespaceBackupResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "backupId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "BackupService"
+        ]
+      },
+      "delete": {
+        "operationId": "BackupService_DeleteNamespaceBackup",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1DeleteNamespaceBackupResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "backupId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "BackupService"
+        ]
+      }
+    },
+    "/v1/backups/{backupId}/content": {
+      "get": {
+        "operationId": "BackupService_DownloadNamespaceBackup",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1DownloadNamespaceBackupResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "backupId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "uint64"
+          },
+          {
+            "name": "maxBytes",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int64"
+          }
+        ],
+        "tags": [
+          "BackupService"
+        ]
+      }
+    },
+    "/v1/backups/{backupId}:restore": {
+      "post": {
+        "operationId": "BackupService_RestoreNamespaceFromBackup",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1RestoreNamespaceFromBackupResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "backupId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/BackupServiceRestoreNamespaceFromBackupBody"
+            }
+          }
+        ],
+        "tags": [
+          "BackupService"
+        ]
+      }
+    },
     "/v1/namespaces": {
       "get": {
         "operationId": "NamespaceService_ListNamespaces",
@@ -493,6 +805,36 @@
         ]
       }
     },
+    "/v1/namespaces/{namespaceId}/backups": {
+      "post": {
+        "operationId": "BackupService_CreateNamespaceBackup",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1CreateNamespaceBackupResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "namespaceId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "BackupService"
+        ]
+      }
+    },
     "/v1/namespaces/{namespaceId}/capabilities": {
       "get": {
         "operationId": "NamespaceService_GetNamespaceCapabilities",
@@ -837,6 +1179,35 @@
         "expiresAt": {
           "type": "string",
           "format": "date-time"
+        }
+      }
+    },
+    "BackupServiceCompleteNamespaceBackupUploadBody": {
+      "type": "object",
+      "properties": {
+        "expectedSha256": {
+          "type": "string"
+        }
+      }
+    },
+    "BackupServiceRestoreNamespaceFromBackupBody": {
+      "type": "object",
+      "properties": {
+        "targetNamespaceId": {
+          "type": "string"
+        }
+      }
+    },
+    "BackupServiceUploadNamespaceBackupChunkBody": {
+      "type": "object",
+      "properties": {
+        "offset": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "data": {
+          "type": "string",
+          "format": "byte"
         }
       }
     },
@@ -1214,6 +1585,9 @@
         }
       }
     },
+    "v1AbortNamespaceBackupUploadResponse": {
+      "type": "object"
+    },
     "v1ApiKeyInfo": {
       "type": "object",
       "properties": {
@@ -1279,11 +1653,31 @@
         }
       }
     },
+    "v1BeginNamespaceBackupUploadResponse": {
+      "type": "object",
+      "properties": {
+        "uploadId": {
+          "type": "string"
+        },
+        "nextOffset": {
+          "type": "string",
+          "format": "uint64"
+        }
+      }
+    },
     "v1CancelJobResponse": {
       "type": "object",
       "properties": {
         "job": {
           "$ref": "#/definitions/v1JobInfo"
+        }
+      }
+    },
+    "v1CompleteNamespaceBackupUploadResponse": {
+      "type": "object",
+      "properties": {
+        "backup": {
+          "$ref": "#/definitions/v1NamespaceBackupInfo"
         }
       }
     },
@@ -1295,6 +1689,14 @@
         },
         "secret": {
           "type": "string"
+        }
+      }
+    },
+    "v1CreateNamespaceBackupResponse": {
+      "type": "object",
+      "properties": {
+        "backup": {
+          "$ref": "#/definitions/v1NamespaceBackupInfo"
         }
       }
     },
@@ -1338,6 +1740,9 @@
         }
       }
     },
+    "v1DeleteNamespaceBackupResponse": {
+      "type": "object"
+    },
     "v1DeleteNamespaceResponse": {
       "type": "object",
       "properties": {
@@ -1351,6 +1756,29 @@
       "properties": {
         "namespace": {
           "$ref": "#/definitions/v1NamespaceInfo"
+        }
+      }
+    },
+    "v1DownloadNamespaceBackupResponse": {
+      "type": "object",
+      "properties": {
+        "backup": {
+          "$ref": "#/definitions/v1NamespaceBackupInfo"
+        },
+        "offset": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "data": {
+          "type": "string",
+          "format": "byte"
+        },
+        "nextOffset": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "complete": {
+          "type": "boolean"
         }
       }
     },
@@ -1399,6 +1827,14 @@
       "properties": {
         "memory": {
           "$ref": "#/definitions/v1MemoryRecord"
+        }
+      }
+    },
+    "v1GetNamespaceBackupResponse": {
+      "type": "object",
+      "properties": {
+        "backup": {
+          "$ref": "#/definitions/v1NamespaceBackupInfo"
         }
       }
     },
@@ -1614,6 +2050,21 @@
         }
       }
     },
+    "v1ListNamespaceBackupsResponse": {
+      "type": "object",
+      "properties": {
+        "backups": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1NamespaceBackupInfo"
+          }
+        },
+        "nextPageToken": {
+          "type": "string"
+        }
+      }
+    },
     "v1ListNamespacesResponse": {
       "type": "object",
       "properties": {
@@ -1696,6 +2147,47 @@
         "validTo": {
           "type": "string",
           "format": "date-time"
+        }
+      }
+    },
+    "v1NamespaceBackupInfo": {
+      "type": "object",
+      "properties": {
+        "backupId": {
+          "type": "string"
+        },
+        "sourceNamespaceId": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "formatVersion": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "producerVersion": {
+          "type": "string"
+        },
+        "sourceConfigVersion": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "archiveSizeBytes": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "dataSizeBytes": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "fileCount": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "sha256": {
+          "type": "string"
         }
       }
     },
@@ -1960,6 +2452,14 @@
       },
       "description": "RequestContext carries namespace identity and request correlation data."
     },
+    "v1RestoreNamespaceFromBackupResponse": {
+      "type": "object",
+      "properties": {
+        "namespace": {
+          "$ref": "#/definitions/v1NamespaceInfo"
+        }
+      }
+    },
     "v1RestoreNamespaceResponse": {
       "type": "object",
       "properties": {
@@ -2035,6 +2535,18 @@
       "properties": {
         "namespace": {
           "$ref": "#/definitions/v1NamespaceInfo"
+        }
+      }
+    },
+    "v1UploadNamespaceBackupChunkResponse": {
+      "type": "object",
+      "properties": {
+        "uploadId": {
+          "type": "string"
+        },
+        "nextOffset": {
+          "type": "string",
+          "format": "uint64"
         }
       }
     }

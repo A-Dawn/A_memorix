@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from uuid import uuid4
 
 import asyncio
@@ -13,6 +14,7 @@ from a_memorix.contracts import (
     AMemorixError,
     CreateNamespaceRequest,
     NamespaceCapacityError,
+    NamespaceConflictError,
     NamespaceHealth,
     NamespaceInfo,
     NamespaceResourceUsage,
@@ -96,7 +98,9 @@ class NamespaceRuntimeRegistry:
             return
         self._layout.initialize()
         self._started = True
-        for record in self._store.list_records():
+        records = self._store.list_records()
+        self._layout.recover_pending_restores(records)
+        for record in records:
             try:
                 self._layout.reconcile(record)
                 if record.info.status is NamespaceStatus.CREATING:
@@ -192,6 +196,76 @@ class NamespaceRuntimeRegistry:
                     )
                 raise
             self._failures.pop(request.namespace_id, None)
+            return record.info
+
+    @asynccontextmanager
+    async def inactive_storage(
+        self,
+        namespace_id: str,
+    ) -> AsyncIterator[tuple[NamespaceInfo, Path]]:
+        self._require_running()
+        namespace_id = validate_namespace_id(namespace_id)
+        async with self._namespace_lock(namespace_id):
+            record = self._store.get_record(namespace_id)
+            if record.info.status is not NamespaceStatus.INACTIVE:
+                raise NamespaceStateError(
+                    "namespace backup requires an inactive namespace",
+                    details={
+                        "namespace_id": namespace_id,
+                        "status": record.info.status.value,
+                    },
+                )
+            async with self._registry_lock:
+                if namespace_id in self._entries:
+                    raise NamespaceRuntimeError(
+                        f"namespace runtime has not fully shut down: {namespace_id}"
+                    )
+            yield record.info, self._layout.validate_active(record.storage_key)
+
+    async def restore_inactive_namespace(
+        self,
+        request: CreateNamespaceRequest,
+        *,
+        populate: Callable[[Path], None],
+    ) -> NamespaceInfo:
+        self._require_running()
+        namespace_id = validate_namespace_id(request.namespace_id)
+        async with self._namespace_lock(namespace_id):
+            if self._store.namespace_exists(namespace_id):
+                raise NamespaceConflictError(
+                    f"namespace already exists: {namespace_id}",
+                    details={"namespace_id": namespace_id},
+                )
+            storage_key = uuid4().hex
+            staging_created = False
+            committed = False
+            try:
+                staging_path = self._layout.create_restore_staging(storage_key)
+                staging_created = True
+                await asyncio.to_thread(populate, staging_path)
+                self._layout.mark_restore_pending(storage_key, namespace_id)
+                self._layout.commit_restore_staging(storage_key)
+                staging_created = False
+                committed = True
+                record = self._store.create_restored(
+                    request,
+                    storage_key=storage_key,
+                    now=self._clock.time(),
+                )
+            except BaseException:
+                if staging_created:
+                    self._layout.discard_restore_staging(storage_key)
+                if committed:
+                    self._layout.purge(storage_key)
+                self._layout.clear_restore_pending(storage_key)
+                raise
+            self._failures.pop(namespace_id, None)
+            try:
+                self._layout.clear_restore_pending(storage_key)
+            except OSError as exc:
+                self._failures[namespace_id] = (
+                    f"namespace restore marker cleanup failed: {exc}"
+                )
             return record.info
 
     def get_namespace(self, namespace_id: str) -> NamespaceInfo:

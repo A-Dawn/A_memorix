@@ -10,6 +10,8 @@ from google.rpc import status_pb2
 from a_memorix.api.v1 import (
     auth_pb2,
     auth_pb2_grpc,
+    backup_pb2,
+    backup_pb2_grpc,
     common_pb2,
     job_pb2,
     job_pb2_grpc,
@@ -50,6 +52,7 @@ class AMemorixClient:
         self._timeout = timeout
         self.namespaces = namespace_pb2_grpc.NamespaceServiceStub(self._channel)
         self.auth = auth_pb2_grpc.AuthServiceStub(self._channel)
+        self.backups = backup_pb2_grpc.BackupServiceStub(self._channel)
         self.memory = memory_pb2_grpc.MemoryServiceStub(self._channel)
         self.jobs = job_pb2_grpc.JobServiceStub(self._channel)
 
@@ -107,6 +110,72 @@ class AMemorixClient:
 
     async def get_namespace_capabilities(self, request):
         return await self._call(self.namespaces.GetNamespaceCapabilities, request)
+
+    async def create_namespace_backup(
+        self,
+        request: backup_pb2.CreateNamespaceBackupRequest,
+    ) -> backup_pb2.CreateNamespaceBackupResponse:
+        return await self._call(self.backups.CreateNamespaceBackup, request)
+
+    async def get_namespace_backup(
+        self,
+        request: backup_pb2.GetNamespaceBackupRequest,
+    ) -> backup_pb2.GetNamespaceBackupResponse:
+        return await self._call(self.backups.GetNamespaceBackup, request)
+
+    async def list_namespace_backups(
+        self,
+        request: backup_pb2.ListNamespaceBackupsRequest | None = None,
+    ) -> backup_pb2.ListNamespaceBackupsResponse:
+        return await self._call(
+            self.backups.ListNamespaceBackups,
+            request or backup_pb2.ListNamespaceBackupsRequest(),
+        )
+
+    async def delete_namespace_backup(
+        self,
+        request: backup_pb2.DeleteNamespaceBackupRequest,
+    ) -> backup_pb2.DeleteNamespaceBackupResponse:
+        return await self._call(self.backups.DeleteNamespaceBackup, request)
+
+    async def download_namespace_backup(
+        self,
+        request: backup_pb2.DownloadNamespaceBackupRequest,
+    ) -> backup_pb2.DownloadNamespaceBackupResponse:
+        return await self._call(self.backups.DownloadNamespaceBackup, request)
+
+    async def begin_namespace_backup_upload(
+        self,
+        request: backup_pb2.BeginNamespaceBackupUploadRequest | None = None,
+    ) -> backup_pb2.BeginNamespaceBackupUploadResponse:
+        return await self._call(
+            self.backups.BeginNamespaceBackupUpload,
+            request or backup_pb2.BeginNamespaceBackupUploadRequest(),
+        )
+
+    async def upload_namespace_backup_chunk(
+        self,
+        request: backup_pb2.UploadNamespaceBackupChunkRequest,
+    ) -> backup_pb2.UploadNamespaceBackupChunkResponse:
+        return await self._call(self.backups.UploadNamespaceBackupChunk, request)
+
+    async def complete_namespace_backup_upload(
+        self,
+        request: backup_pb2.CompleteNamespaceBackupUploadRequest,
+    ) -> backup_pb2.CompleteNamespaceBackupUploadResponse:
+        return await self._call(self.backups.CompleteNamespaceBackupUpload, request)
+
+    async def abort_namespace_backup_upload(
+        self,
+        request: backup_pb2.AbortNamespaceBackupUploadRequest,
+    ) -> backup_pb2.AbortNamespaceBackupUploadResponse:
+        return await self._call(self.backups.AbortNamespaceBackupUpload, request)
+
+    async def restore_namespace_from_backup(
+        self,
+        request: backup_pb2.RestoreNamespaceFromBackupRequest,
+    ) -> backup_pb2.RestoreNamespaceFromBackupResponse:
+        return await self._call(self.backups.RestoreNamespaceFromBackup, request)
 
     async def create_api_key(
         self,

@@ -168,6 +168,46 @@ class NamespaceControlStore:
         storage_key: str,
         now: float,
     ) -> _NamespaceRecord:
+        return self._insert_namespace(
+            request,
+            storage_key=storage_key,
+            status=NamespaceStatus.CREATING,
+            now=now,
+        )
+
+    def create_restored(
+        self,
+        request: CreateNamespaceRequest,
+        *,
+        storage_key: str,
+        now: float,
+    ) -> _NamespaceRecord:
+        return self._insert_namespace(
+            request,
+            storage_key=storage_key,
+            status=NamespaceStatus.INACTIVE,
+            now=now,
+        )
+
+    def namespace_exists(self, namespace_id: str) -> bool:
+        row = (
+            self._connections.connection()
+            .execute(
+                "SELECT 1 FROM namespaces WHERE namespace_id = ?",
+                (namespace_id,),
+            )
+            .fetchone()
+        )
+        return row is not None
+
+    def _insert_namespace(
+        self,
+        request: CreateNamespaceRequest,
+        *,
+        storage_key: str,
+        status: NamespaceStatus,
+        now: float,
+    ) -> _NamespaceRecord:
         quota_json = request.quota.model_dump_json()
         config_json = request.config.model_dump_json()
         try:
@@ -183,7 +223,7 @@ class NamespaceControlStore:
                     (
                         request.namespace_id,
                         storage_key,
-                        NamespaceStatus.CREATING.value,
+                        status.value,
                         now,
                         now,
                         quota_json,

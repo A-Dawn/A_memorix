@@ -64,6 +64,9 @@ func main() {
 	if err := api.RegisterNamespaceServiceHandler(ctx, mux, connection); err != nil {
 		log.Fatalf("register namespace gateway: %v", err)
 	}
+	if err := api.RegisterBackupServiceHandler(ctx, mux, connection); err != nil {
+		log.Fatalf("register backup gateway: %v", err)
+	}
 	if err := api.RegisterAuthServiceHandler(ctx, mux, connection); err != nil {
 		log.Fatalf("register auth gateway: %v", err)
 	}

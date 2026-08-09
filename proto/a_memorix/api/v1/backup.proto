@@ -1,0 +1,160 @@
+syntax = "proto3";
+
+package a_memorix.api.v1;
+
+import "a_memorix/api/v1/namespace.proto";
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+
+message NamespaceBackupInfo {
+  string backup_id = 1;
+  string source_namespace_id = 2;
+  google.protobuf.Timestamp created_at = 3;
+  uint32 format_version = 4;
+  string producer_version = 5;
+  uint64 source_config_version = 6;
+  uint64 archive_size_bytes = 7;
+  uint64 data_size_bytes = 8;
+  uint64 file_count = 9;
+  string sha256 = 10;
+}
+
+message CreateNamespaceBackupRequest {
+  string namespace_id = 1;
+}
+
+message CreateNamespaceBackupResponse {
+  NamespaceBackupInfo backup = 1;
+}
+
+message GetNamespaceBackupRequest {
+  string backup_id = 1;
+}
+
+message GetNamespaceBackupResponse {
+  NamespaceBackupInfo backup = 1;
+}
+
+message ListNamespaceBackupsRequest {
+  string source_namespace_id = 1;
+  optional uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListNamespaceBackupsResponse {
+  repeated NamespaceBackupInfo backups = 1;
+  string next_page_token = 2;
+}
+
+message DeleteNamespaceBackupRequest {
+  string backup_id = 1;
+}
+
+message DeleteNamespaceBackupResponse {}
+
+message DownloadNamespaceBackupRequest {
+  string backup_id = 1;
+  optional uint64 offset = 2;
+  optional uint32 max_bytes = 3;
+}
+
+message DownloadNamespaceBackupResponse {
+  NamespaceBackupInfo backup = 1;
+  uint64 offset = 2;
+  bytes data = 3;
+  uint64 next_offset = 4;
+  bool complete = 5;
+}
+
+message BeginNamespaceBackupUploadRequest {}
+
+message BeginNamespaceBackupUploadResponse {
+  string upload_id = 1;
+  uint64 next_offset = 2;
+}
+
+message UploadNamespaceBackupChunkRequest {
+  string upload_id = 1;
+  uint64 offset = 2;
+  bytes data = 3;
+}
+
+message UploadNamespaceBackupChunkResponse {
+  string upload_id = 1;
+  uint64 next_offset = 2;
+}
+
+message CompleteNamespaceBackupUploadRequest {
+  string upload_id = 1;
+  string expected_sha256 = 2;
+}
+
+message CompleteNamespaceBackupUploadResponse {
+  NamespaceBackupInfo backup = 1;
+}
+
+message AbortNamespaceBackupUploadRequest {
+  string upload_id = 1;
+}
+
+message AbortNamespaceBackupUploadResponse {}
+
+message RestoreNamespaceFromBackupRequest {
+  string backup_id = 1;
+  string target_namespace_id = 2;
+}
+
+message RestoreNamespaceFromBackupResponse {
+  NamespaceInfo namespace = 1;
+}
+
+service BackupService {
+  rpc CreateNamespaceBackup(CreateNamespaceBackupRequest) returns (CreateNamespaceBackupResponse) {
+    option (google.api.http) = {post: "/v1/namespaces/{namespace_id}/backups"};
+  }
+
+  rpc GetNamespaceBackup(GetNamespaceBackupRequest) returns (GetNamespaceBackupResponse) {
+    option (google.api.http) = {get: "/v1/backups/{backup_id}"};
+  }
+
+  rpc ListNamespaceBackups(ListNamespaceBackupsRequest) returns (ListNamespaceBackupsResponse) {
+    option (google.api.http) = {get: "/v1/backups"};
+  }
+
+  rpc DeleteNamespaceBackup(DeleteNamespaceBackupRequest) returns (DeleteNamespaceBackupResponse) {
+    option (google.api.http) = {delete: "/v1/backups/{backup_id}"};
+  }
+
+  rpc DownloadNamespaceBackup(DownloadNamespaceBackupRequest) returns (DownloadNamespaceBackupResponse) {
+    option (google.api.http) = {get: "/v1/backups/{backup_id}/content"};
+  }
+
+  rpc BeginNamespaceBackupUpload(BeginNamespaceBackupUploadRequest) returns (BeginNamespaceBackupUploadResponse) {
+    option (google.api.http) = {post: "/v1/backup-uploads"};
+  }
+
+  rpc UploadNamespaceBackupChunk(UploadNamespaceBackupChunkRequest) returns (UploadNamespaceBackupChunkResponse) {
+    option (google.api.http) = {
+      put: "/v1/backup-uploads/{upload_id}"
+      body: "*"
+    };
+  }
+
+  rpc CompleteNamespaceBackupUpload(CompleteNamespaceBackupUploadRequest) returns (CompleteNamespaceBackupUploadResponse) {
+    option (google.api.http) = {
+      post: "/v1/backup-uploads/{upload_id}:complete"
+      body: "*"
+    };
+  }
+
+  rpc AbortNamespaceBackupUpload(AbortNamespaceBackupUploadRequest) returns (AbortNamespaceBackupUploadResponse) {
+    option (google.api.http) = {delete: "/v1/backup-uploads/{upload_id}"};
+  }
+
+  rpc RestoreNamespaceFromBackup(RestoreNamespaceFromBackupRequest) returns (RestoreNamespaceFromBackupResponse) {
+    option (google.api.http) = {
+      post: "/v1/backups/{backup_id}:restore"
+      body: "*"
+    };
+  }
+}

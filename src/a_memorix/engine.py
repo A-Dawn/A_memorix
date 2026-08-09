@@ -41,6 +41,9 @@ from a_memorix.contracts import (
     JobType,
     MemoryHit,
     MemoryRecord,
+    NamespaceBackupChunk,
+    NamespaceBackupInfo,
+    NamespaceBackupUpload,
     NamespaceCapabilities,
     NamespaceHealth,
     NamespaceInfo,
@@ -50,11 +53,13 @@ from a_memorix.contracts import (
     RequestContext,
     SearchMemoryRequest,
     SearchMemoryResponse,
+    RestoreNamespaceBackupRequest,
     UpdateNamespaceConfigRequest,
 )
 from a_memorix.ports import Clock
 
 from .core.runtime.namespace_control import NamespaceControlStore
+from .core.runtime.namespace_backup import NamespaceBackupStore
 from .core.runtime.namespace_registry import NamespaceRuntimeRegistry
 from .core.runtime.namespace_runtime import (
     NamespaceConfigFactory,
@@ -93,6 +98,10 @@ class AMemorixEngine:
         if idempotency_retention_seconds <= 0:
             raise ValueError("idempotency_retention_seconds must be positive")
         self._layout = NamespaceStorageLayout(data_dir)
+        self._backup_store = NamespaceBackupStore(
+            self._layout.backups_root,
+            self._layout.backup_uploads_root,
+        )
         self._runtime_factory = runtime_factory or SDKKernelRuntimeFactory(
             config_factory=config_factory,
             host_port_factory=host_port_factory,
@@ -117,6 +126,7 @@ class AMemorixEngine:
         if self._registry is not None:
             return
         self._layout.initialize()
+        self._backup_store.initialize()
         store = NamespaceControlStore(self._layout.control_db_path)
         store.fail_interrupted_jobs(now=self._time())
         registry = NamespaceRuntimeRegistry(
@@ -277,6 +287,135 @@ class AMemorixEngine:
 
     async def namespace_health(self, namespace_id: str) -> NamespaceHealth:
         return await self._require_registry().get_health(namespace_id)
+
+    async def create_namespace_backup(
+        self,
+        namespace_id: str,
+    ) -> NamespaceBackupInfo:
+        registry = self._require_registry()
+        async with registry.inactive_storage(namespace_id) as (namespace, source):
+            return await asyncio.to_thread(
+                self._backup_store.create_backup,
+                namespace,
+                source,
+                created_at=datetime.fromtimestamp(self._time(), tz=timezone.utc),
+            )
+
+    async def get_namespace_backup(self, backup_id: str) -> NamespaceBackupInfo:
+        self._require_registry()
+        return await asyncio.to_thread(self._backup_store.get_backup, backup_id)
+
+    async def list_namespace_backups(
+        self,
+        *,
+        source_namespace_id: str = "",
+    ) -> list[NamespaceBackupInfo]:
+        self._require_registry()
+        return await asyncio.to_thread(
+            self._backup_store.list_backups,
+            source_namespace_id,
+        )
+
+    async def list_namespace_backups_page(
+        self,
+        *,
+        source_namespace_id: str = "",
+        page_size: int = 50,
+        page_token: str = "",
+    ) -> tuple[list[NamespaceBackupInfo], str]:
+        return _paginate(
+            await self.list_namespace_backups(
+                source_namespace_id=source_namespace_id
+            ),
+            page_size=page_size,
+            page_token=page_token,
+            token_kind=f"backups:{source_namespace_id}",
+            item_key=lambda item: item.backup_id,
+        )
+
+    async def delete_namespace_backup(self, backup_id: str) -> None:
+        self._require_registry()
+        await asyncio.to_thread(self._backup_store.delete_backup, backup_id)
+
+    async def download_namespace_backup(
+        self,
+        backup_id: str,
+        *,
+        offset: int = 0,
+        max_bytes: int = 256 * 1024,
+    ) -> NamespaceBackupChunk:
+        self._require_registry()
+        info, data, next_offset, complete = await asyncio.to_thread(
+            self._backup_store.read_chunk,
+            backup_id,
+            offset=offset,
+            max_bytes=max_bytes,
+        )
+        return NamespaceBackupChunk(
+            backup=info,
+            offset=offset,
+            data=data,
+            next_offset=next_offset,
+            complete=complete,
+        )
+
+    async def begin_namespace_backup_upload(self) -> NamespaceBackupUpload:
+        self._require_registry()
+        return await asyncio.to_thread(self._backup_store.begin_upload)
+
+    async def upload_namespace_backup_chunk(
+        self,
+        upload_id: str,
+        *,
+        offset: int,
+        data: bytes,
+    ) -> NamespaceBackupUpload:
+        self._require_registry()
+        return await asyncio.to_thread(
+            self._backup_store.append_upload,
+            upload_id,
+            offset=offset,
+            data=data,
+        )
+
+    async def complete_namespace_backup_upload(
+        self,
+        upload_id: str,
+        *,
+        expected_sha256: str = "",
+    ) -> NamespaceBackupInfo:
+        self._require_registry()
+        return await asyncio.to_thread(
+            self._backup_store.complete_upload,
+            upload_id,
+            expected_sha256=expected_sha256,
+        )
+
+    async def abort_namespace_backup_upload(self, upload_id: str) -> None:
+        self._require_registry()
+        await asyncio.to_thread(self._backup_store.abort_upload, upload_id)
+
+    async def restore_namespace_from_backup(
+        self,
+        request: RestoreNamespaceBackupRequest,
+    ) -> NamespaceInfo:
+        registry = self._require_registry()
+        manifest, _ = await asyncio.to_thread(
+            self._backup_store.inspect_backup,
+            request.backup_id,
+        )
+        create_request = CreateNamespaceRequest(
+            namespace_id=request.target_namespace_id,
+            quota=manifest.quota,
+            config=manifest.config,
+        )
+        return await registry.restore_inactive_namespace(
+            create_request,
+            populate=lambda destination: self._backup_store.extract_backup(
+                request.backup_id,
+                destination,
+            ),
+        )
 
     async def create_api_key(
         self,

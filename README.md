@@ -16,6 +16,7 @@ A_memorix 是面向 AI Agent 的长期记忆内核。2.x 主线正在从 MaiBot 
 - 并发初始化去重、活跃 runtime 上限、请求配额和 LRU 关闭
 - 类型化写入、检索、namespace 管理和 API Key 应用接口
 - gRPC、gRPC-Gateway HTTP/JSON、Python 客户端和固定 namespace MCP 适配
+- 版本化 namespace 离线备份、分块传输、完整性校验和新 namespace 恢复
 
 Episode、画像和摘要已经与 MaiBot 的模块、配置和数据库类型解耦，但它们的领域语义还需要进一步通用化。MaiBot 数据迁移等项目特定行为不会成为通用稳定 API。
 
@@ -117,6 +118,25 @@ async with AMemorixClient("127.0.0.1:50051", api_key=admin_token) as client:
 ```
 
 协议决策和错误语义见 [统一协议 ADR](docs/ADR_0001_GRPC_GATEWAY_PROTOCOL.md)，生成的 HTTP 描述位于 [OpenAPI v1](docs/openapi/a_memorix_v1.swagger.json)。
+
+## Namespace备份
+
+备份属于管理员控制面。namespace 必须先停用，恢复时必须指定一个尚不存在的新 ID，恢复结果保持停用状态：
+
+```python
+from a_memorix import RestoreNamespaceBackupRequest
+
+await engine.disable_namespace("agent-prod")
+backup = await engine.create_namespace_backup("agent-prod")
+restored = await engine.restore_namespace_from_backup(
+    RestoreNamespaceBackupRequest(
+        backup_id=backup.backup_id,
+        target_namespace_id="agent-prod-restored",
+    )
+)
+```
+
+`.amxbackup`归档包含 namespace 数据、配额和非敏感配置，不包含 API Key、Job、幂等记录或实际 Provider 密钥。gRPC 和 HTTP/JSON 提供最大1 MiB的分块上传、下载接口，归档和内部文件都使用 SHA-256 校验。格式、一致性边界和故障恢复规则见[阶段5.1记录](docs/PHASE5_1_NAMESPACE_BACKUP_20260809.md)。
 
 ## MCP 适配
 
