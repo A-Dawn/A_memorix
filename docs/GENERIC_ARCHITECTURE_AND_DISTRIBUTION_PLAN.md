@@ -16,6 +16,9 @@
 | 阶段4：统一协议层 | 已完成 | `docs/PHASE4_UNIFIED_PROTOCOL_20260809.md` |
 | 阶段4.1：通用应用契约补全 | 已完成 | `docs/PHASE4_1_GENERIC_APPLICATION_20260809.md` |
 | 阶段5：打包和运维能力 | 已完成 | `docs/PHASE5_PACKAGING_AND_OPERATIONS_20260809.md` |
+| 阶段6：官方 Agent 分支 | 独立分支推进 | 不在通用代码分支实施 |
+| 阶段7：扩展生态 | 已完成 | `docs/PHASE7_ADAPTER_ECOSYSTEM_20260809.md` |
+| 阶段8：2.0 发布 | 执行中 | `docs/PHASE8_ALPHA_RELEASE_GATE_20260809.md` |
 
 ## 1. 目标
 
@@ -705,7 +708,7 @@ MaiBot 只保留以下测试：
 
 退出条件：社区作者可以在独立仓库完成适配器，并通过提交清单进入扩展索引。
 
-主仓库侧 Adapter Protocol v1、Manifest Schema、校验命令、示例和[扩展索引规范](EXTENSIONS_REGISTRY_SPEC.md)已经完成。独立`A_memorix-extensions`仓库、信任索引和隔离 CI 仍需在对应仓库落地，不能仅凭主仓库结构校验视为阶段7整体完成。
+主仓库侧 Adapter Protocol v1、Manifest Schema、校验命令、示例和[扩展索引规范](EXTENSIONS_REGISTRY_SPEC.md)已经完成。[A_memorix-extensions](https://github.com/A-Dawn/A_memorix-extensions)已建立 manifest 索引、信任索引和独立 CI，社区作者可以从自己的代码仓库提交清单进入未验证索引。授予已验证等级所需的安装、协议、双 namespace 和供应链深度检查继续作为扩展仓库迭代项，不阻塞阶段7退出条件。
 
 ### 阶段 8：2.0 发布
 
@@ -758,4 +761,5 @@ RPC、HTTP 映射、认证方案和写入准入已经由阶段4及 [ADR 0001](AD
 - [x] 构建完整 CLI、发布 Wheel/sdist 和 OCI 镜像
 - [ ] 建立官方集成分支约束
 - [x] 创建扩展仓库规范
+- [x] 创建独立扩展仓库、信任索引和校验 CI
 - [ ] 完成 2.0.0 Alpha 发布门禁

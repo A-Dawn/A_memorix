@@ -2,8 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, refactor/generic-v2]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -68,6 +69,7 @@ jobs:
       - uses: bufbuild/buf-setup-action@v1
         with:
           version: "1.47.2"
+          github_token: ${{ github.token }}
       - run: buf lint
       - if: github.event_name == 'pull_request'
         run: buf breaking --against "https://github.com/${{ github.repository }}.git#branch=${{ github.event.pull_request.base.ref }}"
