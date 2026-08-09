@@ -1,0 +1,36 @@
+version: v2
+
+# Python output shares src/ with handwritten code, so this file must not use clean: true.
+
+managed:
+  enabled: true
+  disable:
+    - module: buf.build/googleapis/googleapis
+  override:
+    - file_option: go_package_prefix
+      value: github.com/MaiM-with-u/A_memorix/gen/go
+
+plugins:
+  - remote: buf.build/protocolbuffers/python:v33.5
+    out: src
+  - remote: buf.build/protocolbuffers/pyi:v33.5
+    out: src
+  - remote: buf.build/grpc/python:v1.83.0
+    out: src
+  - remote: buf.build/protocolbuffers/go:v1.36.11
+    out: gen/go
+    opt:
+      - paths=source_relative
+  - remote: buf.build/grpc/go:v1.6.2
+    out: gen/go
+    opt:
+      - paths=source_relative
+  - remote: buf.build/grpc-ecosystem/gateway:v2.30.0
+    out: gen/go
+    opt:
+      - paths=source_relative
+  - remote: buf.build/grpc-ecosystem/openapiv2:v2.30.0
+    out: docs/openapi
+    opt:
+      - allow_merge=true
+      - merge_file_name=a_memorix_v1

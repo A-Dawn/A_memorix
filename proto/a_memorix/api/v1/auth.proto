@@ -1,0 +1,59 @@
+syntax = "proto3";
+
+package a_memorix.api.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+
+message ApiKeyInfo {
+  string key_id = 1;
+  string namespace_id = 2;
+  string label = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp expires_at = 5;
+  google.protobuf.Timestamp revoked_at = 6;
+  google.protobuf.Timestamp last_used_at = 7;
+}
+
+message CreateApiKeyRequest {
+  string namespace_id = 1;
+  string label = 2;
+  google.protobuf.Timestamp expires_at = 3;
+}
+
+message CreateApiKeyResponse {
+  ApiKeyInfo api_key = 1;
+  string secret = 2;
+}
+
+message ListApiKeysRequest {
+  string namespace_id = 1;
+}
+
+message ListApiKeysResponse {
+  repeated ApiKeyInfo api_keys = 1;
+}
+
+message RevokeApiKeyRequest {
+  string namespace_id = 1;
+  string key_id = 2;
+}
+
+message RevokeApiKeyResponse {}
+
+service AuthService {
+  rpc CreateApiKey(CreateApiKeyRequest) returns (CreateApiKeyResponse) {
+    option (google.api.http) = {
+      post: "/v1/namespaces/{namespace_id}/api-keys"
+      body: "*"
+    };
+  }
+
+  rpc ListApiKeys(ListApiKeysRequest) returns (ListApiKeysResponse) {
+    option (google.api.http) = {get: "/v1/namespaces/{namespace_id}/api-keys"};
+  }
+
+  rpc RevokeApiKey(RevokeApiKeyRequest) returns (RevokeApiKeyResponse) {
+    option (google.api.http) = {delete: "/v1/namespaces/{namespace_id}/api-keys/{key_id}"};
+  }
+}

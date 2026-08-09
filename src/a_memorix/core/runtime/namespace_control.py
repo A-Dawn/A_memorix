@@ -11,6 +11,7 @@ import json
 import sqlite3
 
 from a_memorix.contracts import (
+    ApiKeyInfo,
     CreateNamespaceRequest,
     MigrationRequiredError,
     NamespaceConflictError,
@@ -19,12 +20,13 @@ from a_memorix.contracts import (
     NamespaceQuota,
     NamespaceStateError,
     NamespaceStatus,
+    NotFoundError,
 )
 
 from ..storage.sqlite_connection import SQLiteConnectionManager
 
 
-CONTROL_SCHEMA_VERSION = 1
+CONTROL_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -74,6 +76,20 @@ class NamespaceControlStore:
                 ON namespaces(status);
             CREATE INDEX IF NOT EXISTS idx_namespaces_purge_after
                 ON namespaces(purge_after);
+            CREATE TABLE IF NOT EXISTS api_keys (
+                key_id TEXT PRIMARY KEY COLLATE BINARY,
+                namespace_id TEXT NOT NULL COLLATE BINARY,
+                secret_hash BLOB NOT NULL UNIQUE,
+                label TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                expires_at REAL,
+                revoked_at REAL,
+                last_used_at REAL,
+                FOREIGN KEY(namespace_id) REFERENCES namespaces(namespace_id)
+                    ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_api_keys_namespace
+                ON api_keys(namespace_id, created_at);
             """
         )
         if current_version < CONTROL_SCHEMA_VERSION:
@@ -198,6 +214,137 @@ class NamespaceControlStore:
                     details={"namespace_id": namespace_id},
                 )
 
+    def create_api_key(
+        self,
+        *,
+        key_id: str,
+        namespace_id: str,
+        secret_hash: bytes,
+        label: str,
+        created_at: float,
+        expires_at: float | None,
+    ) -> ApiKeyInfo:
+        try:
+            with self._connections.transaction(immediate=True) as connection:
+                connection.execute(
+                    """
+                    INSERT INTO api_keys (
+                        key_id, namespace_id, secret_hash, label, created_at,
+                        expires_at, revoked_at, last_used_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)
+                    """,
+                    (
+                        key_id,
+                        namespace_id,
+                        secret_hash,
+                        label,
+                        created_at,
+                        expires_at,
+                    ),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise NamespaceConflictError(
+                "cannot create API key",
+                details={"namespace_id": namespace_id, "key_id": key_id},
+            ) from exc
+        return self.get_api_key(namespace_id, key_id)
+
+    def get_api_key(self, namespace_id: str, key_id: str) -> ApiKeyInfo:
+        row = self._connections.connection().execute(
+            """
+            SELECT key_id, namespace_id, label, created_at, expires_at,
+                   revoked_at, last_used_at
+            FROM api_keys
+            WHERE namespace_id = ? AND key_id = ?
+            """,
+            (namespace_id, key_id),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError(
+                f"API key not found: {key_id}",
+                details={"namespace_id": namespace_id, "key_id": key_id},
+            )
+        return self._api_key_from_row(row)
+
+    def list_api_keys(self, namespace_id: str) -> list[ApiKeyInfo]:
+        rows = self._connections.connection().execute(
+            """
+            SELECT key_id, namespace_id, label, created_at, expires_at,
+                   revoked_at, last_used_at
+            FROM api_keys
+            WHERE namespace_id = ?
+            ORDER BY created_at, key_id
+            """,
+            (namespace_id,),
+        ).fetchall()
+        return [self._api_key_from_row(row) for row in rows]
+
+    def authenticate_api_key(
+        self,
+        secret_hash: bytes,
+        *,
+        now: float,
+    ) -> ApiKeyInfo | None:
+        row = self._connections.connection().execute(
+            """
+            SELECT key_id, namespace_id, label, created_at, expires_at,
+                   revoked_at, last_used_at
+            FROM api_keys
+            WHERE secret_hash = ?
+              AND revoked_at IS NULL
+              AND (expires_at IS NULL OR expires_at > ?)
+            """,
+            (secret_hash, now),
+        ).fetchone()
+        if row is None:
+            return None
+        last_used_at = row["last_used_at"]
+        if last_used_at is None or now - float(last_used_at) >= 60.0:
+            with self._connections.transaction(immediate=True) as connection:
+                connection.execute(
+                    """
+                    UPDATE api_keys
+                    SET last_used_at = ?
+                    WHERE key_id = ? AND revoked_at IS NULL
+                    """,
+                    (now, str(row["key_id"])),
+                )
+            row = self._connections.connection().execute(
+                """
+                SELECT key_id, namespace_id, label, created_at, expires_at,
+                       revoked_at, last_used_at
+                FROM api_keys
+                WHERE key_id = ?
+                  AND revoked_at IS NULL
+                  AND (expires_at IS NULL OR expires_at > ?)
+                """,
+                (str(row["key_id"]), now),
+            ).fetchone()
+            if row is None:
+                return None
+        return self._api_key_from_row(row)
+
+    def revoke_api_key(
+        self,
+        namespace_id: str,
+        key_id: str,
+        *,
+        now: float,
+    ) -> ApiKeyInfo:
+        current = self.get_api_key(namespace_id, key_id)
+        if current.revoked_at is not None:
+            return current
+        with self._connections.transaction(immediate=True) as connection:
+            connection.execute(
+                """
+                UPDATE api_keys
+                SET revoked_at = ?
+                WHERE namespace_id = ? AND key_id = ? AND revoked_at IS NULL
+                """,
+                (now, namespace_id, key_id),
+            )
+        return self.get_api_key(namespace_id, key_id)
+
     @staticmethod
     def _from_row(row: sqlite3.Row) -> _NamespaceRecord:
         quota_data = json.loads(str(row["quota_json"] or "{}"))
@@ -220,6 +367,30 @@ class NamespaceControlStore:
             ),
         )
         return _NamespaceRecord(info=info, storage_key=str(row["storage_key"]))
+
+    @staticmethod
+    def _api_key_from_row(row: sqlite3.Row) -> ApiKeyInfo:
+        return ApiKeyInfo(
+            key_id=str(row["key_id"]),
+            namespace_id=str(row["namespace_id"]),
+            label=str(row["label"]),
+            created_at=_utc_datetime(float(row["created_at"])),
+            expires_at=(
+                _utc_datetime(float(row["expires_at"]))
+                if row["expires_at"] is not None
+                else None
+            ),
+            revoked_at=(
+                _utc_datetime(float(row["revoked_at"]))
+                if row["revoked_at"] is not None
+                else None
+            ),
+            last_used_at=(
+                _utc_datetime(float(row["last_used_at"]))
+                if row["last_used_at"] is not None
+                else None
+            ),
+        )
 
 
 def _utc_datetime(timestamp: float) -> datetime:

@@ -213,6 +213,9 @@ benchmark_output.txt
 e2e_debug.log
 e2e_error.log
 full_diff.txt
+/a-memorix-gateway
+/a-memorix-gateway.exe
+/temp/web_import_manager_tests/
 
 # Large Test Data Files
 机娘导论-openie.json

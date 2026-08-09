@@ -325,18 +325,11 @@ namespace 出现在路径中，便于鉴权、限流、审计和日志聚合。�
 
 ### 8.2 MCP
 
-MCP 工具名称与 application service 保持一致。namespace 可以采用两种模式：
-
-- 服务启动时绑定固定 namespace，工具参数中不再重复传递。
-- 多 namespace 服务把 `namespace_id` 设为所有工具的必填参数。
-
-初始实现优先支持固定 namespace 模式，降低 Agent 误访问其他 namespace 的风险。多 namespace MCP 需要显式鉴权后再开放。
+MCP 工具名称与 application service 保持一致。每个服务实例在启动时绑定固定 namespace，工具参数中不再重复传递 `namespace_id`。需要服务多个 namespace 时，应分别创建实例，不能在同一 MCP 会话中切换。
 
 ### 8.3 RPC
 
-RPC 层使用稳定 IDL 描述请求、响应、错误和流式任务事件。具体采用 gRPC 还是 JSON-RPC，在公共契约冻结后通过 ADR 确认。
-
-无论选择哪种实现，RPC 都不得绕过 namespace 鉴权、幂等和 Job 状态机。
+RPC 层采用 Protobuf 和 gRPC 描述请求、响应及错误。HTTP/JSON 由 gRPC-Gateway 根据同一份 IDL 映射，不建立独立 JSON-RPC contract。RPC 不得绕过 namespace 鉴权、幂等和 Job 状态机。
 
 ### 8.4 Python SDK
 
@@ -346,7 +339,7 @@ SDK 同时支持进程内调用和远程客户端：
 engine = AMemorixEngine(...)
 await engine.search_memory(request)
 
-client = AMemorixClient(base_url=..., api_key=...)
+client = AMemorixClient(target=..., api_key=...)
 await client.search_memory(request)
 ```
 
@@ -453,9 +446,9 @@ source = "https://example.com/repository"
 ```text
 pip install a-memorix
 pip install a-memorix[vector]
-pip install a-memorix[server]
+pip install a-memorix[rpc]
 pip install a-memorix[mcp]
-pip install a-memorix[imports]
+pip install a-memorix[lpmm]
 pip install a-memorix[all]
 ```
 
@@ -467,9 +460,9 @@ pip install a-memorix[all]
 - 向量：Faiss
 - 图与检索：SciPy、jieba
 - 导入：pandas、pyarrow、networkx、rich、tenacity
-- HTTP：FastAPI、Uvicorn、认证依赖
-- MCP：选定的 MCP SDK
-- RPC：选定的 RPC 实现
+- RPC：gRPC Python、Protobuf 和标准状态详情
+- HTTP：由独立 Go gRPC-Gateway 从 Protobuf 注解生成，不进入 Python 基础依赖
+- MCP：MCP Python SDK，只用于固定 namespace 适配
 
 已移除独立 Web 服务后仍残留的依赖不得继续进入基础安装集合。
 
@@ -657,11 +650,12 @@ MaiBot 只保留以下测试：
 
 工作内容：
 
-- 实现 HTTP v1
-- 实现 MCP 工具适配
-- 通过 ADR 选择 RPC 具体实现并实现 IDL
-- 实现 Python SDK
-- 建立跨协议契约测试
+- 以 Protobuf 建立唯一网络 IDL
+- 实现 gRPC v1 服务、认证和类型化错误
+- 通过 gRPC-Gateway 暴露 HTTP/JSON 并生成 OpenAPI
+- 实现固定 namespace MCP 工具适配
+- 实现 Python gRPC SDK
+- 建立直接 gRPC、HTTP/JSON 和 MCP 契约测试
 
 退出条件：同一 application request 通过不同协议调用时，状态变化、错误码和结果语义一致。
 
@@ -728,12 +722,11 @@ Alpha 验证接口和 namespace 模型，Beta 冻结公共 contracts，RC 只接
 
 以下事项不阻塞核心抽取，但必须在对应阶段前形成 ADR：
 
-- RPC 采用 gRPC、JSON-RPC 或其他实现
-- HTTP 的正式认证方案
-- namespace 存储硬配额与 application service 写入预检
 - 备份的一致性协议和远程对象存储支持
 - 是否提供嵌入式无服务模式的长期兼容承诺
 - 官方扩展签名和撤回机制
+
+RPC、HTTP 映射、认证方案和写入准入已经由阶段4及 [ADR 0001](ADR_0001_GRPC_GATEWAY_PROTOCOL.md) 确定。精确文件系统硬配额仍属于后续运维能力。
 
 ## 18. 第一批工作清单
 
@@ -746,10 +739,10 @@ Alpha 验证接口和 namespace 模型，Beta 冻结公共 contracts，RC 只接
 - [x] 建立 RequestContext
 - [x] 实现 namespace 控制面和物理隔离
 - [x] 建立 NamespaceRuntimeRegistry
-- [ ] 实现 HTTP v1
-- [ ] 实现 MCP 适配
-- [ ] 确定并实现 RPC
-- [ ] 构建 Python SDK、CLI 和容器
+- [x] 以 Protobuf、gRPC 和 gRPC-Gateway 实现 HTTP/RPC v1
+- [x] 实现固定 namespace MCP 适配
+- [x] 构建 Python gRPC SDK 和跨协议契约测试
+- [ ] 构建完整 CLI、发布 Wheel/sdist 和 OCI 镜像
 - [ ] 建立官方集成分支约束
 - [ ] 创建扩展仓库规范
 - [ ] 完成 2.0.0 Alpha 发布门禁

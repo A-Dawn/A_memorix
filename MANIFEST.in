@@ -1,0 +1,9 @@
+include buf.yaml
+include buf.lock
+include buf.gen.yaml
+include go.mod
+include go.sum
+recursive-include proto *.proto
+recursive-include cmd *.go
+recursive-include gen/go *.go
+recursive-include docs *.md *.json

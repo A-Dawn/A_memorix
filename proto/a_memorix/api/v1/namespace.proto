@@ -1,0 +1,163 @@
+syntax = "proto3";
+
+package a_memorix.api.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+
+enum NamespaceStatus {
+  NAMESPACE_STATUS_UNSPECIFIED = 0;
+  NAMESPACE_STATUS_CREATING = 1;
+  NAMESPACE_STATUS_ACTIVE = 2;
+  NAMESPACE_STATUS_INACTIVE = 3;
+  NAMESPACE_STATUS_QUARANTINED = 4;
+  NAMESPACE_STATUS_PURGING = 5;
+}
+
+enum NamespaceRuntimeState {
+  NAMESPACE_RUNTIME_STATE_UNSPECIFIED = 0;
+  NAMESPACE_RUNTIME_STATE_CLOSED = 1;
+  NAMESPACE_RUNTIME_STATE_LOADING = 2;
+  NAMESPACE_RUNTIME_STATE_READY = 3;
+  NAMESPACE_RUNTIME_STATE_DEGRADED = 4;
+  NAMESPACE_RUNTIME_STATE_FAILED = 5;
+}
+
+message NamespaceQuota {
+  optional uint32 max_concurrent_requests = 1;
+  optional uint64 max_storage_bytes = 2;
+}
+
+message NamespaceInfo {
+  string namespace_id = 1;
+  NamespaceStatus status = 2;
+  google.protobuf.Timestamp created_at = 3;
+  google.protobuf.Timestamp updated_at = 4;
+  google.protobuf.Timestamp last_active_at = 5;
+  uint64 version = 6;
+  NamespaceQuota quota = 7;
+  google.protobuf.Timestamp purge_after = 8;
+}
+
+message NamespaceResourceUsage {
+  uint32 active_requests = 1;
+  uint64 storage_bytes = 2;
+}
+
+message NamespaceHealth {
+  NamespaceInfo namespace = 1;
+  NamespaceRuntimeState runtime_state = 2;
+  bool healthy = 3;
+  NamespaceResourceUsage resource_usage = 4;
+  string last_error = 5;
+}
+
+message CreateNamespaceRequest {
+  string namespace_id = 1;
+  NamespaceQuota quota = 2;
+}
+
+message CreateNamespaceResponse {
+  NamespaceInfo namespace = 1;
+}
+
+message GetNamespaceRequest {
+  string namespace_id = 1;
+}
+
+message GetNamespaceResponse {
+  NamespaceInfo namespace = 1;
+}
+
+message ListNamespacesRequest {}
+
+message ListNamespacesResponse {
+  repeated NamespaceInfo namespaces = 1;
+}
+
+message DisableNamespaceRequest {
+  string namespace_id = 1;
+}
+
+message DisableNamespaceResponse {
+  NamespaceInfo namespace = 1;
+}
+
+message EnableNamespaceRequest {
+  string namespace_id = 1;
+}
+
+message EnableNamespaceResponse {
+  NamespaceInfo namespace = 1;
+}
+
+message DeleteNamespaceRequest {
+  string namespace_id = 1;
+}
+
+message DeleteNamespaceResponse {
+  NamespaceInfo namespace = 1;
+}
+
+message RestoreNamespaceRequest {
+  string namespace_id = 1;
+}
+
+message RestoreNamespaceResponse {
+  NamespaceInfo namespace = 1;
+}
+
+message PurgeNamespaceRequest {
+  string namespace_id = 1;
+}
+
+message PurgeNamespaceResponse {}
+
+message GetNamespaceHealthRequest {
+  string namespace_id = 1;
+}
+
+message GetNamespaceHealthResponse {
+  NamespaceHealth health = 1;
+}
+
+service NamespaceService {
+  rpc CreateNamespace(CreateNamespaceRequest) returns (CreateNamespaceResponse) {
+    option (google.api.http) = {
+      post: "/v1/namespaces"
+      body: "*"
+    };
+  }
+
+  rpc GetNamespace(GetNamespaceRequest) returns (GetNamespaceResponse) {
+    option (google.api.http) = {get: "/v1/namespaces/{namespace_id}"};
+  }
+
+  rpc ListNamespaces(ListNamespacesRequest) returns (ListNamespacesResponse) {
+    option (google.api.http) = {get: "/v1/namespaces"};
+  }
+
+  rpc DisableNamespace(DisableNamespaceRequest) returns (DisableNamespaceResponse) {
+    option (google.api.http) = {post: "/v1/namespaces/{namespace_id}:disable"};
+  }
+
+  rpc EnableNamespace(EnableNamespaceRequest) returns (EnableNamespaceResponse) {
+    option (google.api.http) = {post: "/v1/namespaces/{namespace_id}:enable"};
+  }
+
+  rpc DeleteNamespace(DeleteNamespaceRequest) returns (DeleteNamespaceResponse) {
+    option (google.api.http) = {delete: "/v1/namespaces/{namespace_id}"};
+  }
+
+  rpc RestoreNamespace(RestoreNamespaceRequest) returns (RestoreNamespaceResponse) {
+    option (google.api.http) = {post: "/v1/namespaces/{namespace_id}:restore"};
+  }
+
+  rpc PurgeNamespace(PurgeNamespaceRequest) returns (PurgeNamespaceResponse) {
+    option (google.api.http) = {delete: "/v1/namespaces/{namespace_id}:purge"};
+  }
+
+  rpc GetNamespaceHealth(GetNamespaceHealthRequest) returns (GetNamespaceHealthResponse) {
+    option (google.api.http) = {get: "/v1/namespaces/{namespace_id}/health"};
+  }
+}

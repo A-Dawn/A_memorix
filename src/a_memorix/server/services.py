@@ -1,0 +1,312 @@
+"""Generated gRPC service implementations backed by AMemorixEngine."""
+
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable
+from datetime import timezone
+from typing import TypeVar
+
+import grpc
+
+from a_memorix.api.v1 import (
+    auth_pb2,
+    auth_pb2_grpc,
+    memory_pb2,
+    memory_pb2_grpc,
+    namespace_pb2,
+    namespace_pb2_grpc,
+)
+from a_memorix.contracts import InvalidArgumentError, RequestContext
+from a_memorix.engine import AMemorixEngine
+
+from .auth import AuthPrincipal, GrpcAuthPolicy
+from .errors import abort_for_exception
+from .mapping import (
+    api_key_info_to_proto,
+    create_namespace_request_from_proto,
+    ingest_request_from_proto,
+    ingest_response_to_proto,
+    namespace_health_to_proto,
+    namespace_info_to_proto,
+    search_request_from_proto,
+    search_response_to_proto,
+)
+
+
+ResponseT = TypeVar("ResponseT")
+
+
+class _ServiceBase:
+    def __init__(self, engine: AMemorixEngine, auth: GrpcAuthPolicy) -> None:
+        self._engine = engine
+        self._auth = auth
+
+    @staticmethod
+    async def _invoke(
+        context: grpc.aio.ServicerContext,
+        operation: Callable[[], Awaitable[ResponseT]],
+        *,
+        request_context: (
+            RequestContext | Callable[[], RequestContext | None] | None
+        ) = None,
+    ) -> ResponseT:
+        try:
+            return await operation()
+        except Exception as error:
+            await abort_for_exception(
+                context,
+                error,
+                request_context=(
+                    request_context()
+                    if callable(request_context)
+                    else request_context
+                ),
+            )
+            raise RuntimeError("gRPC abort unexpectedly returned") from error
+
+
+class NamespaceGrpcService(_ServiceBase, namespace_pb2_grpc.NamespaceServiceServicer):
+    async def CreateNamespace(self, request, context):
+        async def operation() -> namespace_pb2.CreateNamespaceResponse:
+            self._auth.require_admin(context)
+            namespace = await self._engine.create_namespace(
+                create_namespace_request_from_proto(request)
+            )
+            return namespace_pb2.CreateNamespaceResponse(
+                namespace=namespace_info_to_proto(namespace)
+            )
+
+        return await self._invoke(context, operation)
+
+    async def GetNamespace(self, request, context):
+        async def operation() -> namespace_pb2.GetNamespaceResponse:
+            self._auth.require_namespace(context, request.namespace_id)
+            namespace = await self._engine.get_namespace(request.namespace_id)
+            return namespace_pb2.GetNamespaceResponse(
+                namespace=namespace_info_to_proto(namespace)
+            )
+
+        return await self._invoke(context, operation)
+
+    async def ListNamespaces(self, request, context):
+        del request
+
+        async def operation() -> namespace_pb2.ListNamespacesResponse:
+            self._auth.require_admin(context)
+            namespaces = await self._engine.list_namespaces()
+            return namespace_pb2.ListNamespacesResponse(
+                namespaces=[namespace_info_to_proto(item) for item in namespaces]
+            )
+
+        return await self._invoke(context, operation)
+
+    async def DisableNamespace(self, request, context):
+        async def operation() -> namespace_pb2.DisableNamespaceResponse:
+            self._auth.require_admin(context)
+            namespace = await self._engine.disable_namespace(request.namespace_id)
+            return namespace_pb2.DisableNamespaceResponse(
+                namespace=namespace_info_to_proto(namespace)
+            )
+
+        return await self._invoke(context, operation)
+
+    async def EnableNamespace(self, request, context):
+        async def operation() -> namespace_pb2.EnableNamespaceResponse:
+            self._auth.require_admin(context)
+            namespace = await self._engine.enable_namespace(request.namespace_id)
+            return namespace_pb2.EnableNamespaceResponse(
+                namespace=namespace_info_to_proto(namespace)
+            )
+
+        return await self._invoke(context, operation)
+
+    async def DeleteNamespace(self, request, context):
+        async def operation() -> namespace_pb2.DeleteNamespaceResponse:
+            self._auth.require_admin(context)
+            namespace = await self._engine.delete_namespace(request.namespace_id)
+            return namespace_pb2.DeleteNamespaceResponse(
+                namespace=namespace_info_to_proto(namespace)
+            )
+
+        return await self._invoke(context, operation)
+
+    async def RestoreNamespace(self, request, context):
+        async def operation() -> namespace_pb2.RestoreNamespaceResponse:
+            self._auth.require_admin(context)
+            namespace = await self._engine.restore_namespace(request.namespace_id)
+            return namespace_pb2.RestoreNamespaceResponse(
+                namespace=namespace_info_to_proto(namespace)
+            )
+
+        return await self._invoke(context, operation)
+
+    async def PurgeNamespace(self, request, context):
+        async def operation() -> namespace_pb2.PurgeNamespaceResponse:
+            self._auth.require_admin(context)
+            await self._engine.purge_namespace(request.namespace_id)
+            return namespace_pb2.PurgeNamespaceResponse()
+
+        return await self._invoke(context, operation)
+
+    async def GetNamespaceHealth(self, request, context):
+        async def operation() -> namespace_pb2.GetNamespaceHealthResponse:
+            self._auth.require_namespace(context, request.namespace_id)
+            health = await self._engine.namespace_health(request.namespace_id)
+            return namespace_pb2.GetNamespaceHealthResponse(
+                health=namespace_health_to_proto(health)
+            )
+
+        return await self._invoke(context, operation)
+
+
+class AuthGrpcService(_ServiceBase, auth_pb2_grpc.AuthServiceServicer):
+    async def CreateApiKey(self, request, context):
+        async def operation() -> auth_pb2.CreateApiKeyResponse:
+            self._auth.require_admin(context)
+            expires_at = (
+                request.expires_at.ToDatetime(tzinfo=timezone.utc)
+                if request.HasField("expires_at")
+                else None
+            )
+            created = await self._engine.create_api_key(
+                request.namespace_id,
+                label=request.label,
+                expires_at=expires_at,
+            )
+            return auth_pb2.CreateApiKeyResponse(
+                api_key=api_key_info_to_proto(created.api_key),
+                secret=created.secret,
+            )
+
+        return await self._invoke(context, operation)
+
+    async def ListApiKeys(self, request, context):
+        async def operation() -> auth_pb2.ListApiKeysResponse:
+            self._auth.require_admin(context)
+            keys = await self._engine.list_api_keys(request.namespace_id)
+            return auth_pb2.ListApiKeysResponse(
+                api_keys=[api_key_info_to_proto(item) for item in keys]
+            )
+
+        return await self._invoke(context, operation)
+
+    async def RevokeApiKey(self, request, context):
+        async def operation() -> auth_pb2.RevokeApiKeyResponse:
+            self._auth.require_admin(context)
+            await self._engine.revoke_api_key(request.namespace_id, request.key_id)
+            return auth_pb2.RevokeApiKeyResponse()
+
+        return await self._invoke(context, operation)
+
+
+class MemoryGrpcService(_ServiceBase, memory_pb2_grpc.MemoryServiceServicer):
+    async def IngestText(self, request, context):
+        request_context: RequestContext | None = None
+
+        async def operation() -> memory_pb2.IngestTextResponse:
+            nonlocal request_context
+            application_request = ingest_request_from_proto(request)
+            request_context = application_request.context
+            principal = self._auth.require_namespace(
+                context,
+                application_request.context.namespace_id,
+            )
+            request_context = _bind_authenticated_context(
+                application_request.context,
+                context,
+                principal,
+                wire_context=request.context,
+            )
+            application_request = application_request.model_copy(
+                update={"context": request_context}
+            )
+            result = await self._engine.ingest_text(application_request)
+            return ingest_response_to_proto(result)
+
+        return await self._invoke(
+            context,
+            operation,
+            request_context=lambda: request_context,
+        )
+
+    async def SearchMemory(self, request, context):
+        request_context: RequestContext | None = None
+
+        async def operation() -> memory_pb2.SearchMemoryResponse:
+            nonlocal request_context
+            application_request = search_request_from_proto(request)
+            request_context = application_request.context
+            principal = self._auth.require_namespace(
+                context,
+                application_request.context.namespace_id,
+            )
+            request_context = _bind_authenticated_context(
+                application_request.context,
+                context,
+                principal,
+                wire_context=request.context,
+            )
+            application_request = application_request.model_copy(
+                update={"context": request_context}
+            )
+            result = await self._engine.search_memory(application_request)
+            return search_response_to_proto(result)
+
+        return await self._invoke(
+            context,
+            operation,
+            request_context=lambda: request_context,
+        )
+
+
+def register_services(
+    server: grpc.aio.Server,
+    engine: AMemorixEngine,
+    auth: GrpcAuthPolicy,
+) -> None:
+    namespace_pb2_grpc.add_NamespaceServiceServicer_to_server(
+        NamespaceGrpcService(engine, auth),
+        server,
+    )
+    auth_pb2_grpc.add_AuthServiceServicer_to_server(
+        AuthGrpcService(engine, auth),
+        server,
+    )
+    memory_pb2_grpc.add_MemoryServiceServicer_to_server(
+        MemoryGrpcService(engine, auth),
+        server,
+    )
+
+
+def _bind_authenticated_context(
+    value: RequestContext,
+    grpc_context: grpc.aio.ServicerContext,
+    principal: AuthPrincipal,
+    *,
+    wire_context: object | None = None,
+) -> RequestContext:
+    metadata = grpc_context.invocation_metadata()
+    updates = {"principal_id": principal.principal_id}
+    for header, field in (
+        ("idempotency-key", "idempotency_key"),
+        ("x-request-id", "request_id"),
+        ("x-trace-id", "trace_id"),
+    ):
+        values = [
+            str(item.value).strip()
+            for item in metadata
+            if item.key.lower() == header
+        ]
+        if len(values) > 1:
+            raise InvalidArgumentError(f"multiple {header} headers are not allowed")
+        header_value = values[0] if values else ""
+        body_value = str(getattr(wire_context, field, "") or "")
+        if header_value and body_value and header_value != body_value:
+            raise InvalidArgumentError(
+                f"{header} header conflicts with request context",
+                details={"namespace_id": value.namespace_id},
+            )
+        updates[field] = header_value or body_value or getattr(value, field)
+    return value.model_copy(
+        update=updates,
+    )
