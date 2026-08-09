@@ -1,0 +1,42 @@
+[server]
+data_dir = "./data"
+host = "127.0.0.1"
+port = 50051
+allow_unauthenticated = false
+admin_token_file = "./secrets/admin-token"
+maximum_message_bytes = 16777216
+max_active_namespaces = 8
+max_concurrent_requests_per_namespace = 64
+idle_timeout_seconds = 900
+quarantine_retention_days = 7
+idempotency_retention_seconds = 86400
+
+[server.tls]
+# certificate = "./certs/server.pem"
+# private_key = "./certs/server-key.pem"
+# client_ca = "./certs/client-ca.pem"
+require_client_auth = false
+
+[client]
+target = "127.0.0.1:50051"
+token_file = "./secrets/admin-token"
+timeout_seconds = 30
+maximum_message_bytes = 16777216
+
+[client.tls]
+enabled = false
+# ca_certificate = "./certs/ca.pem"
+# certificate = "./certs/client.pem"
+# private_key = "./certs/client-key.pem"
+server_name = ""
+
+[observability]
+log_level = "INFO"
+log_format = "json"
+access_log = true
+service_name = "a-memorix"
+metrics_host = "127.0.0.1"
+# metrics_port = 9464
+# otlp_endpoint = "http://127.0.0.1:4317"
+otlp_insecure = false
+trace_sample_ratio = 0.1

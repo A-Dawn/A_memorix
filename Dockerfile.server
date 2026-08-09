@@ -1,0 +1,43 @@
+# syntax=docker/dockerfile:1
+
+ARG PYTHON_VERSION=3.12
+FROM python:${PYTHON_VERSION}-slim AS builder
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+WORKDIR /build
+
+COPY pyproject.toml README.md LICENSE LICENSING.md MANIFEST.in ./
+COPY src ./src
+RUN python -m pip wheel --wheel-dir /wheels ".[rpc,observability,vector]"
+
+FROM python:${PYTHON_VERSION}-slim AS runtime
+
+LABEL org.opencontainers.image.source="https://github.com/MaiM-with-u/A_memorix" \
+      org.opencontainers.image.licenses="AGPL-3.0-only" \
+      org.opencontainers.image.title="A_memorix gRPC server"
+
+ENV A_MEMORIX_DATA_DIR=/data \
+    A_MEMORIX_GRPC_HOST=0.0.0.0 \
+    A_MEMORIX_GRPC_PORT=50051 \
+    A_MEMORIX_METRICS_HOST=0.0.0.0 \
+    A_MEMORIX_METRICS_PORT=9464 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+RUN groupadd --gid 10001 a-memorix \
+    && useradd --uid 10001 --gid a-memorix --no-create-home --shell /usr/sbin/nologin a-memorix \
+    && install -d -o a-memorix -g a-memorix /data
+COPY --from=builder /wheels /wheels
+RUN python -m pip install --no-index --find-links=/wheels "a-memorix[rpc,observability,vector]" \
+    && rm -rf /wheels
+
+USER 10001:10001
+VOLUME ["/data"]
+EXPOSE 50051 9464
+HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=5 \
+    CMD ["a-memorix", "doctor", "--health-only"]
+ENTRYPOINT ["a-memorix"]
+CMD ["serve"]

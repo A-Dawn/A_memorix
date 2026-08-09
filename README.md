@@ -2,7 +2,7 @@
 
 A_memorix 是面向 AI Agent 的长期记忆内核。2.x 主线正在从 MaiBot 插件演进为独立 Python 包，目标是通过 namespace 隔离的运行时和统一协议，为不同 Agent 提供可组合的写入、检索、图关系、时序证据和记忆维护能力。
 
-当前版本为 `2.0.0a1`。这一版本已经完成通用核心迁移、宿主依赖解耦、namespace Runtime 和第一版统一协议层。Protobuf 是唯一网络 IDL，服务原生暴露 gRPC，HTTP/JSON 由 gRPC-Gateway 按同一份注解生成。MCP 以固定 namespace 工具适配器接入。现阶段适合参与内核开发、适配器验证和数据兼容性测试，不应视为稳定服务版本。
+当前版本为 `2.0.0a2`。这一版本已经完成通用核心迁移、宿主依赖解耦、namespace Runtime、统一协议层和基础运维分发。Protobuf 是唯一网络 IDL，服务原生暴露 gRPC，HTTP/JSON 由 gRPC-Gateway 按同一份注解生成。MCP 以固定 namespace 工具适配器接入。现阶段适合参与内核开发、适配器验证和数据兼容性测试，不应视为稳定服务版本。
 
 ## 当前能力
 
@@ -17,6 +17,8 @@ A_memorix 是面向 AI Agent 的长期记忆内核。2.x 主线正在从 MaiBot 
 - 类型化写入、检索、namespace 管理和 API Key 应用接口
 - gRPC、gRPC-Gateway HTTP/JSON、Python 客户端和固定 namespace MCP 适配
 - 版本化 namespace 离线备份、分块传输、完整性校验和新 namespace 恢复
+- 统一 CLI、标准健康检查、Prometheus 指标、OTLP Trace 和结构化日志
+- Python 服务镜像、Go 网关镜像、Compose 部署和版本标签发布流水线
 
 Episode、画像和摘要已经与 MaiBot 的模块、配置和数据库类型解耦，但它们的领域语义还需要进一步通用化。MaiBot 数据迁移等项目特定行为不会成为通用稳定 API。
 
@@ -28,7 +30,11 @@ Episode、画像和摘要已经与 MaiBot 的模块、配置和数据库类型�
 python -m pip install -e ".[test,vector]"
 ```
 
-分发包名为 `a-memorix`，Python 导入名为 `a_memorix`。正式发布后可通过 `pip install a-memorix` 安装基础包；FAISS 支持位于 `vector` extra，gRPC 位于 `rpc` extra，MCP 位于 `mcp` extra，LPMM Parquet 转换支持位于 `lpmm` extra。
+分发包名为 `a-memorix`，Python 导入名为 `a_memorix`。正式发布后可通过 `pip install a-memorix` 安装基础包；FAISS 支持位于 `vector` extra，gRPC 位于 `rpc` extra，MCP 位于 `mcp` extra，可观测性位于 `observability` extra，LPMM Parquet 转换支持位于 `lpmm` extra。运行独立服务的常用安装方式是：
+
+```powershell
+python -m pip install "a-memorix[rpc,vector,observability]"
+```
 
 ## Python 入口
 
@@ -87,9 +93,9 @@ async with engine:
 安装协议依赖并启动 gRPC 服务：
 
 ```powershell
-python -m pip install -e ".[rpc]"
+python -m pip install -e ".[rpc,observability]"
 $env:A_MEMORIX_ADMIN_TOKEN = "replace-with-at-least-32-random-characters"
-python -m a_memorix.server --data-dir ./data
+a-memorix serve --data-dir ./data
 ```
 
 服务默认监听 `127.0.0.1:50051`。未设置至少32字符的管理员令牌时，服务拒绝启动。开发环境可以显式传入 `--allow-unauthenticated`，但此模式只允许回环地址。
@@ -103,7 +109,7 @@ go run ./cmd/a-memorix-gateway --listen 127.0.0.1:8080 --grpc-target 127.0.0.1:5
 
 客户端通过 `Authorization: Bearer <token>` 访问。管理员令牌用于 namespace 和密钥管理；namespace API Key 只能访问自己所属的 namespace，密钥明文只在创建时返回，控制库仅保存 SHA-256 摘要。网关会把认证、请求 ID、追踪 ID 和幂等键转交给 gRPC 服务。v1 已提供 namespace 配置与能力发现、单条和批量写入、检索、直接读取、单条删除，以及按来源删除 Job。
 
-当前网关到 gRPC 的连接面向同机回环部署，使用明文连接。远程部署需要在反向代理处终止 TLS，或扩展网关的后端 TLS 配置，不能直接暴露默认监听方式。
+网关支持面向客户端的 HTTPS、mTLS，以及连接 gRPC 后端时的 TLS、mTLS。默认仍是同机或容器网络内的明文连接，不能把默认监听方式直接暴露到不可信网络。后端 TLS 使用 `--grpc-ca`、`--grpc-server-name`、`--grpc-client-cert` 和 `--grpc-client-key`，HTTPS 使用 `--tls-cert`、`--tls-key` 和 `--tls-client-ca`。
 
 Python 客户端使用生成的 gRPC stub：
 
@@ -118,6 +124,38 @@ async with AMemorixClient("127.0.0.1:50051", api_key=admin_token) as client:
 ```
 
 协议决策和错误语义见 [统一协议 ADR](docs/ADR_0001_GRPC_GATEWAY_PROTOCOL.md)，生成的 HTTP 描述位于 [OpenAPI v1](docs/openapi/a_memorix_v1.swagger.json)。
+
+## CLI与配置
+
+`a-memorix serve` 只启动 Python gRPC 服务。其他管理命令都是远程客户端，只调用公开 gRPC contract，不会直接修改数据目录。一个不依赖外部 Embedding Provider 的最小工作流如下：
+
+```powershell
+a-memorix namespace create agent-prod --allow-metadata-only-write --sparse-retrieval
+a-memorix memory ingest agent-prod --source-type document --external-id document:1 --text "A_memorix stores isolated memories."
+a-memorix memory search agent-prod --query "isolated memories"
+a-memorix doctor --health-only
+```
+
+远程地址、令牌文件和 TLS 参数放在命令组与子命令之间，例如 `a-memorix namespace --target memory.example:50051 --token-file ./admin-token list`。管理命令输出 JSON，错误输出到 stderr，并使用稳定错误码。
+
+配置采用 TOML，完整示例位于 [deploy/a-memorix.example.toml](deploy/a-memorix.example.toml)。优先级固定为命令行参数、环境变量、`--config` 或 `A_MEMORIX_CONFIG` 指定的文件、内置默认值。管理员令牌和 API Key 不写入 TOML，可通过 `A_MEMORIX_ADMIN_TOKEN`、`A_MEMORIX_API_KEY` 或只读令牌文件提供。执行 `a-memorix config` 可以查看不包含密钥值的生效配置。
+
+## 可观测性
+
+gRPC 服务注册标准 `grpc.health.v1.Health`。`a-memorix doctor` 和网关 `/healthz` 都使用该状态，网关只有在后端服务返回 `SERVING` 时才健康。日志默认输出 JSON，包含 RPC 方法、状态和耗时。
+
+设置 `A_MEMORIX_METRICS_PORT=9464` 后会暴露 Prometheus 指标，包括请求数、处理耗时和活跃请求。设置 `A_MEMORIX_OTLP_ENDPOINT` 后会通过 OTLP/gRPC 导出 Trace，可用 `A_MEMORIX_OTLP_INSECURE` 和 `A_MEMORIX_TRACE_SAMPLE_RATIO` 调整传输与采样。指标端口默认不启用，示例配置默认仅监听回环地址。
+
+## 容器部署
+
+仓库提供独立的 Python 服务镜像和 Go 网关镜像。设置管理员令牌后可一条命令启动：
+
+```powershell
+$env:A_MEMORIX_ADMIN_TOKEN = "replace-with-at-least-32-random-characters"
+docker compose up --build -d
+```
+
+Compose 默认暴露 gRPC `50051`、HTTP/JSON `8080` 和 Prometheus `9464`，数据保存在命名卷 `a-memorix-data`。两个容器都以非 root 用户运行、移除 Linux capabilities 并使用只读根文件系统。生产环境应通过端口绑定、防火墙或 TLS 配置限制管理面，不应把管理员令牌写入镜像或提交到仓库。
 
 ## Namespace备份
 
@@ -165,7 +203,7 @@ server.run(transport="stdio")
 | `MessageSource` | 按会话和时间范围读取消息 | 摘要、反馈修正可选 |
 | `Clock` | 为控制面生命周期提供可替换时间源 | 测试和定制调度可选 |
 
-这些接口只表达 A_memorix 已经需要的数据，不暴露宿主的配置对象、数据库模型和内部服务。`NamespaceHostPorts` 用于一次性传递某个 namespace 的可选能力。协议鉴权位于 gRPC 适配层，不会污染 Host Port；遥测和宿主日志接口仍等待真实调用方出现后再确定。
+这些接口只表达 A_memorix 已经需要的数据，不暴露宿主的配置对象、数据库模型和内部服务。`NamespaceHostPorts` 用于一次性传递某个 namespace 的可选能力。协议鉴权和网络边界可观测性位于 gRPC 适配层，不会污染 Host Port；宿主内部业务遥测接口仍等待真实调用方出现后再确定。
 
 ## 分支与分发
 
@@ -184,6 +222,7 @@ buf lint
 buf generate
 go test ./...
 python -m build
+twine check dist/*
 ```
 
 两项大规模格式迁移压测默认跳过，可设置 `A_MEMORIX_RUN_LARGE_MIGRATION_TEST=1` 单独执行。

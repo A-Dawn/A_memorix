@@ -1,0 +1,43 @@
+name: a-memorix
+
+services:
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    image: a-memorix-server:${A_MEMORIX_IMAGE_TAG:-2.0.0a2}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    environment:
+      A_MEMORIX_ADMIN_TOKEN: ${A_MEMORIX_ADMIN_TOKEN:?set A_MEMORIX_ADMIN_TOKEN to at least 32 random characters}
+      A_MEMORIX_LOG_LEVEL: ${A_MEMORIX_LOG_LEVEL:-INFO}
+      A_MEMORIX_LOG_FORMAT: json
+    ports:
+      - "${A_MEMORIX_GRPC_PORT:-50051}:50051"
+      - "${A_MEMORIX_METRICS_PORT:-9464}:9464"
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    volumes:
+      - a-memorix-data:/data
+
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.gateway
+    image: a-memorix-gateway:${A_MEMORIX_IMAGE_TAG:-2.0.0a2}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    depends_on:
+      server:
+        condition: service_healthy
+    ports:
+      - "${A_MEMORIX_HTTP_PORT:-8080}:8080"
+
+volumes:
+  a-memorix-data:
