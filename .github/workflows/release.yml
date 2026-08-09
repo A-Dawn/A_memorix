@@ -1,0 +1,110 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  python-distributions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: python -m pip install build
+      - run: python -m build
+      - uses: actions/upload-artifact@v7
+        with:
+          name: python-distributions
+          path: dist/*
+
+  gateway-binaries:
+    strategy:
+      matrix:
+        include:
+          - { os: linux, arch: amd64, suffix: linux-amd64 }
+          - { os: linux, arch: arm64, suffix: linux-arm64 }
+          - { os: darwin, arch: amd64, suffix: darwin-amd64 }
+          - { os: darwin, arch: arm64, suffix: darwin-arm64 }
+          - { os: windows, arch: amd64, suffix: windows-amd64.exe }
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Build gateway
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: "0"
+        run: go build -trimpath -ldflags="-s -w" -o "a-memorix-gateway-${{ matrix.suffix }}" ./cmd/a-memorix-gateway
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gateway-${{ matrix.suffix }}
+          path: a-memorix-gateway-*
+
+  container-images:
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - { component: server, dockerfile: Dockerfile.server }
+          - { component: gateway, dockerfile: Dockerfile.gateway }
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: metadata
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}-${{ matrix.component }}
+          tags: |
+            type=pep440,pattern={{version}}
+            type=pep440,pattern={{major}}.{{minor}}
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+
+  publish:
+    needs: [python-distributions, gateway-binaries, container-images]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    environment: release
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: python-distributions
+          path: dist
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: "gateway-*"
+          path: artifacts
+          merge-multiple: true
+      - name: Publish Python distributions
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+      - name: Create checksums
+        shell: bash
+        run: sha256sum dist/* artifacts/* > SHA256SUMS
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" dist/* artifacts/* SHA256SUMS --generate-notes --verify-tag --repo "${{ github.repository }}"

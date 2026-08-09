@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "a-memorix"
-version = "2.0.0a1"
+version = "2.0.0a2"
 description = "A namespace-isolated memory engine for AI agents"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -29,8 +29,14 @@ vector = ["faiss-cpu>=1.8.0"]
 rpc = [
   "googleapis-common-protos>=1.75.1,<2",
   "grpcio>=1.83.0,<2",
+  "grpcio-health-checking>=1.81.1,<1.82",
   "grpcio-status>=1.83.0,<2",
   "protobuf>=6.33.5,<7",
+]
+observability = [
+  "opentelemetry-exporter-otlp-proto-grpc>=1.44.0,<2",
+  "opentelemetry-exporter-prometheus>=0.65b0,<1",
+  "opentelemetry-sdk>=1.44.0,<2",
 ]
 mcp = ["mcp>=2.0.0,<3"]
 lpmm = [
@@ -38,29 +44,46 @@ lpmm = [
   "pyarrow>=16.0.0",
 ]
 test = [
+  "cryptography>=41.0.0,<46",
   "googleapis-common-protos>=1.75.1,<2",
   "grpcio>=1.83.0,<2",
+  "grpcio-health-checking>=1.81.1,<1.82",
   "grpcio-status>=1.83.0,<2",
   "mcp>=2.0.0,<3",
+  "opentelemetry-exporter-otlp-proto-grpc>=1.44.0,<2",
+  "opentelemetry-exporter-prometheus>=0.65b0,<1",
+  "opentelemetry-sdk>=1.44.0,<2",
   "protobuf>=6.33.5,<7",
   "pyarrow>=16.0.0",
   "pytest>=8.0.0",
   "pytest-asyncio>=0.24.0",
+  "ruff>=0.12.0,<1",
 ]
-build = ["build>=1.2.0"]
+build = [
+  "build>=1.2.0",
+  "packaging>=24.2,<26",
+  "twine>=6.0.0,<7",
+]
 all = [
   "faiss-cpu>=1.8.0",
   "googleapis-common-protos>=1.75.1,<2",
   "grpcio>=1.83.0,<2",
+  "grpcio-health-checking>=1.81.1,<1.82",
   "grpcio-status>=1.83.0,<2",
   "mcp>=2.0.0,<3",
   "networkx>=3.2.0",
+  "opentelemetry-exporter-otlp-proto-grpc>=1.44.0,<2",
+  "opentelemetry-exporter-prometheus>=0.65b0,<1",
+  "opentelemetry-sdk>=1.44.0,<2",
   "pyarrow>=16.0.0",
   "protobuf>=6.33.5,<7",
 ]
 
 [project.urls]
 Repository = "https://github.com/MaiM-with-u/A_memorix"
+
+[project.scripts]
+a-memorix = "a_memorix.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

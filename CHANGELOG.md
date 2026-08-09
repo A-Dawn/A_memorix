@@ -1,5 +1,28 @@
 # 更新日志 (Changelog)
 
+## [2.0.0a2] - 2026-08-09
+
+本版本完成通用主线的阶段5交付，使服务可以通过 Python 包、命令行、独立网关和双容器部署方式运行。
+
+### 运维入口
+
+- 新增统一的 `a-memorix` 命令，覆盖服务启动、远程 namespace 管理、API Key、记忆操作、备份恢复和诊断。
+- 增加严格 TOML 配置和环境变量覆盖，优先级为命令行、环境变量、显式配置文件、默认值。
+- 管理命令只调用公开 gRPC contract，不直接读取或修改服务数据目录。
+
+### 可观测性与安全
+
+- gRPC 服务注册标准健康检查，提供结构化 JSON 访问日志、Prometheus 指标和可选 OTLP Trace。
+- Python 服务、Python 客户端和 Go 网关支持 TLS 与双向 TLS。
+- Go 网关新增后端健康检查端点 `/healthz`，HTTP/JSON 继续由同一份 Protobuf contract 生成。
+
+### 分发
+
+- 拆分基础依赖、RPC、MCP、向量、可观测性和开发 extras。
+- 提供 Wheel、sdist、Python 服务镜像、Go 网关镜像和 Compose 双服务部署。
+- CI 覆盖 Python、Protobuf、Go 和容器构建；版本标签发布 Wheel、sdist、多平台网关二进制与 GHCR 镜像。
+- 最终全量回归共667项通过，2项可选大规模迁移压测按设计跳过。
+
 ## [2.0.0a1] - 2026-08-05
 
 本版本建立 A_memorix 2.x 通用开发主线，不再以 MaiBot 插件目录作为发布单元。

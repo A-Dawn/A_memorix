@@ -1,2 +1,3 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+src/a_memorix/api/v1/*_pb2_grpc.py whitespace=-blank-at-eof

@@ -777,14 +777,12 @@ async def _wait_for_gateway(base_url: str, process: subprocess.Popen[str]) -> No
         if process.poll() is not None:
             raise RuntimeError(f"gRPC-Gateway exited with code {process.returncode}")
         try:
-            status, _ = await asyncio.to_thread(
-                _http_json,
-                "GET",
-                f"{base_url}/v1/namespaces/not-created",
-                None,
-                "",
+            response = await asyncio.to_thread(
+                urllib.request.urlopen,
+                f"{base_url}/healthz",
+                timeout=5,
             )
-            if status in {401, 403, 404}:
+            if response.status == 200 and response.read() == b"serving\n":
                 return
         except OSError:
             pass

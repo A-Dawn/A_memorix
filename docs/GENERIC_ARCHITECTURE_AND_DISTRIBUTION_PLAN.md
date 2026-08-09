@@ -15,7 +15,7 @@
 | 阶段3：Host Port与Namespace Runtime | 已完成 | `docs/PHASE3_NAMESPACE_RUNTIME_20260809.md` |
 | 阶段4：统一协议层 | 已完成 | `docs/PHASE4_UNIFIED_PROTOCOL_20260809.md` |
 | 阶段4.1：通用应用契约补全 | 已完成 | `docs/PHASE4_1_GENERIC_APPLICATION_20260809.md` |
-| 阶段5：打包和运维能力 | 进行中 | 阶段5.1备份恢复已完成，见`docs/PHASE5_1_NAMESPACE_BACKUP_20260809.md` |
+| 阶段5：打包和运维能力 | 已完成 | `docs/PHASE5_PACKAGING_AND_OPERATIONS_20260809.md` |
 
 ## 1. 目标
 
@@ -690,7 +690,7 @@ MaiBot 只保留以下测试：
 
 退出条件：全新环境可以通过 pip 或容器启动服务，创建 namespace，写入、检索、备份并恢复数据。
 
-阶段5.1已经完成离线备份格式、受控归档、分块传输、恢复启动清理和跨协议契约。CLI、可观测性、OCI 镜像及全新环境验收继续在阶段5后续任务中完成。
+阶段5已完成离线备份格式、受控归档、统一 CLI、严格配置、健康检查、结构化日志、指标、Trace、TLS、OCI 镜像、Compose 和发布流水线。实现与验收边界见`docs/PHASE5_PACKAGING_AND_OPERATIONS_20260809.md`。
 
 ### 阶段 6：官方 Agent 分支
 

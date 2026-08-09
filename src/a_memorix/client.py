@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import grpc
+from grpc_health.v1 import health_pb2, health_pb2_grpc
 from google.rpc import status_pb2
 
 from a_memorix.api.v1 import (
@@ -33,11 +34,14 @@ class AMemorixClient:
         credentials: grpc.ChannelCredentials | None = None,
         timeout: float | None = 30.0,
         maximum_message_bytes: int = 16 * 1024 * 1024,
+        tls_server_name: str = "",
     ) -> None:
-        options = (
+        options: list[tuple[str, int | str]] = [
             ("grpc.max_receive_message_length", maximum_message_bytes),
             ("grpc.max_send_message_length", maximum_message_bytes),
-        )
+        ]
+        if tls_server_name:
+            options.append(("grpc.ssl_target_name_override", tls_server_name))
         if credentials is None:
             self._channel = grpc.aio.insecure_channel(target, options=options)
         else:
@@ -55,6 +59,7 @@ class AMemorixClient:
         self.backups = backup_pb2_grpc.BackupServiceStub(self._channel)
         self.memory = memory_pb2_grpc.MemoryServiceStub(self._channel)
         self.jobs = job_pb2_grpc.JobServiceStub(self._channel)
+        self.health = health_pb2_grpc.HealthStub(self._channel)
 
     async def close(self) -> None:
         await self._channel.close()
@@ -110,6 +115,13 @@ class AMemorixClient:
 
     async def get_namespace_capabilities(self, request):
         return await self._call(self.namespaces.GetNamespaceCapabilities, request)
+
+    async def check_health(self, service: str = "") -> str:
+        response = await self._call(
+            self.health.Check,
+            health_pb2.HealthCheckRequest(service=service),
+        )
+        return health_pb2.HealthCheckResponse.ServingStatus.Name(response.status)
 
     async def create_namespace_backup(
         self,
