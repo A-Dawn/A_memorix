@@ -730,23 +730,22 @@ Alpha 验证接口和 namespace 模型，Beta 冻结公共 contracts，RC 只接
 
 - RPC 采用 gRPC、JSON-RPC 或其他实现
 - HTTP 的正式认证方案
-- namespace 配额模型
+- namespace 存储硬配额与 application service 写入预检
 - 备份的一致性协议和远程对象存储支持
 - 是否提供嵌入式无服务模式的长期兼容承诺
 - 官方扩展签名和撤回机制
-- 许可申请邮箱和处理流程
 
 ## 18. 第一批工作清单
 
-- [ ] 固化旧主线和 MaiBot 当前实现快照
-- [ ] 修复 3 个向量重启失败
-- [ ] 创建通用开发分支
-- [ ] 增加 `pyproject.toml`
-- [ ] 迁入通用测试
-- [ ] 建立 Host Port
-- [ ] 建立 RequestContext
-- [ ] 实现 namespace 控制面和物理隔离
-- [ ] 建立 NamespaceRuntimeRegistry
+- [x] 固化旧主线和 MaiBot 当前实现快照
+- [x] 修复 3 个向量重启失败
+- [x] 创建通用开发分支
+- [x] 增加 `pyproject.toml`
+- [x] 迁入通用测试
+- [x] 建立 Host Port
+- [x] 建立 RequestContext
+- [x] 实现 namespace 控制面和物理隔离
+- [x] 建立 NamespaceRuntimeRegistry
 - [ ] 实现 HTTP v1
 - [ ] 实现 MCP 适配
 - [ ] 确定并实现 RPC
