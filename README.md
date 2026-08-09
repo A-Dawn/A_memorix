@@ -205,11 +205,22 @@ server.run(transport="stdio")
 
 这些接口只表达 A_memorix 已经需要的数据，不暴露宿主的配置对象、数据库模型和内部服务。`NamespaceHostPorts` 用于一次性传递某个 namespace 的可选能力。协议鉴权和网络边界可观测性位于 gRPC 适配层，不会污染 Host Port；宿主内部业务遥测接口仍等待真实调用方出现后再确定。
 
+## Adapter Manifest
+
+社区适配器使用同一份 Manifest Schema 声明运行形态、核心版本范围、transport、Host Port 和权限。远程适配器只能使用 gRPC、gRPC-Gateway HTTP/JSON 或固定 namespace MCP；进程内适配器只能依赖顶层公开 Python API，不能导入 `a_memorix.core`。
+
+```powershell
+a-memorix adapter validate docs/examples/adapter-remote.toml
+a-memorix --pretty adapter schema
+```
+
+权限字段是供部署者和扩展索引审计的最小权限声明，不替代 API Key、容器沙箱、文件系统 ACL 或网络策略。完整规则见 [Adapter Protocol v1](docs/ADAPTER_PROTOCOL_V1.md) 和 [扩展索引规范](docs/EXTENSIONS_REGISTRY_SPEC.md)。
+
 ## 分支与分发
 
 - 通用基础版最终由 `main` 维护。
 - 官方 Agent 适配使用独立集成分支，不把项目私有代码写回通用核心。
-- 社区适配器将在独立的 `A_memorix-extensions` 仓库登记、验证和分发。
+- 社区适配器在独立的 [A_memorix-extensions](https://github.com/A-Dawn/A_memorix-extensions) 仓库登记、验证和分发。
 - 1.x MaiBot 插件历史保留在 `legacy-v1.0.1` 标签和 `legacy/plugin-v1` 分支。
 
 完整路线见 [通用架构与分发计划](docs/GENERIC_ARCHITECTURE_AND_DISTRIBUTION_PLAN.md)。
@@ -231,4 +242,6 @@ twine check dist/*
 
 项目默认采用 [GNU AGPL-3.0-only](LICENSE)。任何协议变更或其他许可安排都必须发送邮件至 `contact@luminarc.tech` 申请，只有收到书面批准后才产生例外。具体规则见 [LICENSING.md](LICENSING.md)。
 
-外部贡献规则和社区扩展治理将在开放对应仓库前单独发布。
+安全漏洞和疑似恶意扩展请通过`security@luminarc.tech`私密报告，具体要求见[安全策略](SECURITY.md)。
+
+社区扩展的 manifest、信任分级和首轮结构门禁已经落地；授予已验证等级所需的安装、协议、namespace 隔离和供应链自动化仍需继续建设。

@@ -21,7 +21,15 @@
 - 拆分基础依赖、RPC、MCP、向量、可观测性和开发 extras。
 - 提供 Wheel、sdist、Python 服务镜像、Go 网关镜像和 Compose 双服务部署。
 - CI 覆盖 Python、Protobuf、Go 和容器构建；版本标签发布 Wheel、sdist、多平台网关二进制与 GHCR 镜像。
-- 最终全量回归共667项通过，2项可选大规模迁移压测按设计跳过。
+- CI 增加 Windows、无 Faiss 降级链路和公开层严格类型检查；发布标签必须与包版本一致，并通过完整测试和协议门禁后才能生成制品。
+- 最终全量回归共679项通过，2项可选大规模迁移压测按设计跳过。
+
+### 扩展契约
+
+- 发布 Adapter Protocol v1，明确远程适配器与进程内适配器的边界、namespace 隔离要求和版本规则。
+- 新增严格的 TOML manifest 模型、权限声明、核心版本兼容校验和 JSON Schema 输出。
+- CLI 增加`adapter validate`与`adapter schema`，并提供远程、进程内两类示例和独立扩展索引规范。
+- 新增私密安全报告策略，安全问题使用`security@luminarc.tech`，与许可申请渠道分离。
 
 ## [2.0.0a1] - 2026-08-05
 

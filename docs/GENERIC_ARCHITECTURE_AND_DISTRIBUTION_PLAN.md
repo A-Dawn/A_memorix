@@ -396,18 +396,7 @@ MaiBot 当前内嵌代码先保留不动。通用版开发完成后，再创建�
 
 ### 10.1 扩展清单
 
-```toml
-id = "community.example-agent"
-name = "Example Agent Adapter"
-version = "1.0.0"
-package = "a-memorix-example-agent"
-entrypoint = "example_agent.adapter:create_adapter"
-core_version = ">=2.0,<3.0"
-adapter_protocol = "1"
-transports = ["in_process", "http"]
-license = "AGPL-3.0-only"
-source = "https://example.com/repository"
-```
+扩展清单采用 [Adapter Protocol v1](ADAPTER_PROTOCOL_V1.md)。Manifest Schema、运行形态、权限声明和版本校验由主包提供，远程与进程内示例分别位于`docs/examples/adapter-remote.toml`和`docs/examples/adapter-in-process.toml`。
 
 ### 10.2 注册表门禁
 
@@ -716,6 +705,8 @@ MaiBot 只保留以下测试：
 
 退出条件：社区作者可以在独立仓库完成适配器，并通过提交清单进入扩展索引。
 
+主仓库侧 Adapter Protocol v1、Manifest Schema、校验命令、示例和[扩展索引规范](EXTENSIONS_REGISTRY_SPEC.md)已经完成。独立`A_memorix-extensions`仓库、信任索引和隔离 CI 仍需在对应仓库落地，不能仅凭主仓库结构校验视为阶段7整体完成。
+
 ### 阶段 8：2.0 发布
 
 发布顺序：
@@ -764,7 +755,7 @@ RPC、HTTP 映射、认证方案和写入准入已经由阶段4及 [ADR 0001](AD
 - [x] 实现固定 namespace MCP 适配
 - [x] 构建 Python gRPC SDK 和跨协议契约测试
 - [x] 实现 namespace 离线备份、分块传输和恢复
-- [ ] 构建完整 CLI、发布 Wheel/sdist 和 OCI 镜像
+- [x] 构建完整 CLI、发布 Wheel/sdist 和 OCI 镜像
 - [ ] 建立官方集成分支约束
-- [ ] 创建扩展仓库规范
+- [x] 创建扩展仓库规范
 - [ ] 完成 2.0.0 Alpha 发布门禁

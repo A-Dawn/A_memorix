@@ -1,0 +1,23 @@
+schema_version = 1
+id = "community.example-embedded-agent"
+name = "Example Embedded Agent Adapter"
+version = "1.0.0"
+runtime = "in_process"
+package = "a-memorix-example-embedded-agent"
+entrypoint = "example_embedded_agent.adapter:create_adapter"
+core_version = ">=2.0.0a2,<3.0"
+adapter_protocol = "1"
+transports = ["in_process"]
+host_ports = ["embedding", "llm", "identity", "message_source"]
+license = "AGPL-3.0-only"
+source = "https://example.com/example-embedded-agent-adapter"
+
+[permissions]
+api = ["namespace.read", "memory.read", "memory.write", "memory.delete"]
+network = ["https://models.example.com"]
+environment = ["EXAMPLE_MODEL_API_KEY"]
+subprocess = false
+
+[[permissions.filesystem]]
+path = "${AGENT_DATA_DIR}"
+access = "read"

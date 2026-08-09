@@ -7,8 +7,9 @@ include .dockerignore
 include Dockerfile.gateway
 include Dockerfile.server
 include compose.yaml
+include SECURITY.md
 recursive-include proto *.proto
 recursive-include cmd *.go
 recursive-include gen/go *.go
-recursive-include docs *.md *.json
+recursive-include docs *.md *.json *.toml
 recursive-include deploy *.toml

@@ -19,6 +19,7 @@ jobs:
           cache: pip
       - run: python -m pip install -e ".[test,vector,build]"
       - run: ruff check .
+      - run: mypy
       - run: pytest -q
       - run: python -m build
       - run: twine check dist/*
@@ -26,6 +27,34 @@ jobs:
         with:
           name: python-distributions
           path: dist/*
+
+  compatibility:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux without Faiss
+            os: ubuntu-latest
+            install: ".[test]"
+            tests: tests/test_cli_operations.py
+          - name: Windows with Faiss
+            os: windows-latest
+            install: ".[test,vector]"
+            tests: tests
+          - name: Windows without Faiss
+            os: windows-latest
+            install: ".[test]"
+            tests: tests/test_cli_operations.py
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -e "${{ matrix.install }}"
+      - run: pytest -q ${{ matrix.tests }}
 
   protocol-and-go:
     runs-on: ubuntu-latest
