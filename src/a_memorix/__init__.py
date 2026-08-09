@@ -1,5 +1,23 @@
 """Public API for the A_memorix memory engine."""
 
+from typing import Any
+
+from .adapter_manifest import (
+    ADAPTER_MANIFEST_SCHEMA_VERSION,
+    ADAPTER_PROTOCOL_VERSION,
+    AdapterApiPermission,
+    AdapterCompatibilityError,
+    AdapterFilesystemPermission,
+    AdapterHostPort,
+    AdapterManifest,
+    AdapterPermissions,
+    AdapterRuntime,
+    AdapterTransport,
+    FilesystemAccess,
+    adapter_manifest_json_schema,
+    ensure_adapter_compatible,
+    load_adapter_manifest,
+)
 from .contracts import (
     AMemorixError,
     ApiKeyInfo,
@@ -76,10 +94,20 @@ from .ports import (
 )
 
 __all__ = [
+    "ADAPTER_MANIFEST_SCHEMA_VERSION",
+    "ADAPTER_PROTOCOL_VERSION",
     "AMemorixEngine",
     "AMemorixError",
     "AMemorixClient",
     "ApiKeyInfo",
+    "AdapterApiPermission",
+    "AdapterCompatibilityError",
+    "AdapterFilesystemPermission",
+    "AdapterHostPort",
+    "AdapterManifest",
+    "AdapterPermissions",
+    "AdapterRuntime",
+    "AdapterTransport",
     "BatchIngestItemResult",
     "BatchIngestTextRequest",
     "BatchIngestTextResponse",
@@ -95,6 +123,7 @@ __all__ = [
     "ErrorCode",
     "ErrorEnvelope",
     "ForbiddenError",
+    "FilesystemAccess",
     "GetMemoryRequest",
     "GetMemoryResponse",
     "IngestTextInput",
@@ -149,12 +178,15 @@ __all__ = [
     "SystemClock",
     "UnauthorizedError",
     "UpdateNamespaceConfigRequest",
+    "adapter_manifest_json_schema",
+    "ensure_adapter_compatible",
+    "load_adapter_manifest",
     "__version__",
 ]
 __version__ = "2.0.0a2"
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> Any:
     if name == "AMemorixClient":
         try:
             from .client import AMemorixClient

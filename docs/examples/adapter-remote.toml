@@ -1,0 +1,19 @@
+schema_version = 1
+id = "community.example-agent"
+name = "Example Agent Adapter"
+version = "1.0.0"
+runtime = "remote"
+package = "a-memorix-example-agent"
+core_version = ">=2.0.0a2,<3.0"
+adapter_protocol = "1"
+transports = ["grpc", "http_json"]
+host_ports = []
+license = "AGPL-3.0-only"
+source = "https://example.com/example-agent-adapter"
+
+[permissions]
+api = ["memory.read", "memory.write", "memory.delete", "job.read"]
+network = ["a-memorix"]
+filesystem = []
+environment = []
+subprocess = false

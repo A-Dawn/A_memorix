@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import PurePosixPath
-from typing import Literal
+from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -12,8 +12,10 @@ from .context import NamespaceId
 from .namespaces import NamespaceConfig, NamespaceQuota
 
 
-NAMESPACE_BACKUP_FORMAT = "a-memorix-namespace-backup"
-NAMESPACE_BACKUP_FORMAT_VERSION = 1
+NAMESPACE_BACKUP_FORMAT: Final[Literal["a-memorix-namespace-backup"]] = (
+    "a-memorix-namespace-backup"
+)
+NAMESPACE_BACKUP_FORMAT_VERSION: Final[Literal[1]] = 1
 
 
 class NamespaceBackupFile(BaseModel):

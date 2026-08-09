@@ -20,6 +20,7 @@ dependencies = [
   "jieba>=0.42.1",
   "json-repair>=0.44.0",
   "numpy>=1.26.0",
+  "packaging>=24.2,<26",
   "pydantic>=2.0.0",
   "scipy>=1.11.0",
 ]
@@ -50,6 +51,7 @@ test = [
   "grpcio-health-checking>=1.81.1,<1.82",
   "grpcio-status>=1.83.0,<2",
   "mcp>=2.0.0,<3",
+  "mypy>=1.17.0,<2",
   "opentelemetry-exporter-otlp-proto-grpc>=1.44.0,<2",
   "opentelemetry-exporter-prometheus>=0.65b0,<1",
   "opentelemetry-sdk>=1.44.0,<2",
@@ -57,11 +59,10 @@ test = [
   "pyarrow>=16.0.0",
   "pytest>=8.0.0",
   "pytest-asyncio>=0.24.0",
-  "ruff>=0.12.0,<1",
+  "ruff==0.16.2",
 ]
 build = [
   "build>=1.2.0",
-  "packaging>=24.2,<26",
   "twine>=6.0.0,<7",
 ]
 all = [
@@ -80,7 +81,7 @@ all = [
 ]
 
 [project.urls]
-Repository = "https://github.com/MaiM-with-u/A_memorix"
+Repository = "https://github.com/A-Dawn/A_memorix"
 
 [project.scripts]
 a-memorix = "a_memorix.cli:main"
@@ -102,4 +103,19 @@ extend-exclude = [
   "src/a_memorix/api/v1/*_pb2.py",
   "src/a_memorix/api/v1/*_pb2.pyi",
   "src/a_memorix/api/v1/*_pb2_grpc.py",
+]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+files = [
+  "src/a_memorix/__init__.py",
+  "src/a_memorix/adapter_manifest.py",
+  "src/a_memorix/config.py",
+  "src/a_memorix/contracts",
+  "src/a_memorix/ports",
 ]

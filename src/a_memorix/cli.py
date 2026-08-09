@@ -24,13 +24,22 @@ from a_memorix.config import (
     read_secret,
 )
 from a_memorix.contracts import AMemorixError, ErrorCode
-from a_memorix import __version__
+from a_memorix import (
+    __version__,
+    adapter_manifest_json_schema,
+    ensure_adapter_compatible,
+    load_adapter_manifest,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
     try:
+        if args.command == "adapter":
+            result = _adapter_command(args)
+            _print_value(result, pretty=args.pretty)
+            return 0
         config = load_config(args.config)
         if args.command == "config":
             _print_value(config.redacted(), pretty=args.pretty)
@@ -97,6 +106,13 @@ def _parser() -> argparse.ArgumentParser:
     mcp.add_argument("--transport", default="stdio", choices=("stdio",))
 
     commands.add_parser("config", help="print the effective redacted configuration")
+
+    adapter = commands.add_parser("adapter", help="validate adapter metadata")
+    adapter_commands = adapter.add_subparsers(dest="adapter_command", required=True)
+    adapter_validate = adapter_commands.add_parser("validate")
+    adapter_validate.add_argument("manifest", type=Path)
+    adapter_validate.add_argument("--core-version", default=__version__)
+    adapter_commands.add_parser("schema")
 
     namespace = commands.add_parser("namespace", help="manage namespaces")
     _add_client_options(namespace)
@@ -183,6 +199,18 @@ def _parser() -> argparse.ArgumentParser:
     _add_client_options(doctor)
     doctor.add_argument("--health-only", action="store_true")
     return parser
+
+
+def _adapter_command(args: argparse.Namespace) -> object:
+    if args.adapter_command == "schema":
+        return adapter_manifest_json_schema()
+    manifest = load_adapter_manifest(args.manifest)
+    ensure_adapter_compatible(manifest, core_version=args.core_version)
+    return {
+        "valid": True,
+        "core_version": args.core_version,
+        "manifest": manifest.model_dump(mode="json"),
+    }
 
 
 def _add_client_options(parser: argparse.ArgumentParser) -> None:
