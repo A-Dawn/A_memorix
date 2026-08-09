@@ -90,7 +90,7 @@ def test_lpmm_converter_rejects_paths_outside_import_root(tmp_path: Path) -> Non
     result = _run_convert(data_dir, outside_input, output_dir)
 
     assert result.returncode != 0
-    assert "LPMM 输入必须位于导入目录" in f"{result.stdout}\n{result.stderr}"
+    assert "lpmm_path_outside_root" in f"{result.stdout}\n{result.stderr}"
 
 
 def test_lpmm_converter_writes_loadable_dual_pools_and_refuses_overwrite(tmp_path: Path) -> None:
@@ -150,7 +150,7 @@ def test_lpmm_converter_writes_loadable_dual_pools_and_refuses_overwrite(tmp_pat
     committed_manifest = manifest_path.read_bytes()
     second = _run_convert(data_dir, input_dir, output_dir)
     assert second.returncode != 0
-    assert "输出目录必须为空" in second.stderr
+    assert "lpmm_output_not_empty" in second.stderr
     assert manifest_path.read_bytes() == committed_manifest
 
 
@@ -195,8 +195,11 @@ def test_lpmm_converter_deduplicates_semantic_ids_within_batch(tmp_path: Path) -
 @pytest.mark.parametrize(
     ("rows", "expected_error"),
     [
-        ([{"hash": "bad", "str": "错误维度", "embedding": [1.0, 0.0, 0.5]}], "向量维度不匹配"),
-        ([], "没有产生任何可用向量"),
+        (
+            [{"hash": "bad", "str": "错误维度", "embedding": [1.0, 0.0, 0.5]}],
+            "lpmm_vector_dimension_mismatch",
+        ),
+        ([], "lpmm_no_usable_vectors"),
     ],
 )
 def test_lpmm_converter_failure_does_not_publish_ready_manifest(

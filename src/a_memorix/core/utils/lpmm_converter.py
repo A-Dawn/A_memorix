@@ -25,7 +25,9 @@ def _resolve_bounded_path(raw_path: str, root: Path, label: str) -> Path:
     try:
         resolved.relative_to(root.resolve())
     except ValueError:
-        raise ValueError(f"{label}必须位于导入目录: {root.resolve()}") from None
+        raise ValueError(
+            f"lpmm_path_outside_root: {label}必须位于导入目录: {root.resolve()}"
+        ) from None
     return resolved
 
 
@@ -79,7 +81,9 @@ class LPMMConverter:
 
     def _initialize_stores(self) -> None:
         if self.output_dir.exists() and any(self.output_dir.iterdir()):
-            raise RuntimeError(f"输出目录必须为空，已拒绝覆盖: {self.output_dir}")
+            raise RuntimeError(
+                f"lpmm_output_not_empty: 输出目录必须为空，已拒绝覆盖: {self.output_dir}"
+            )
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.paragraph_vector_store = VectorStore(
             dimension=self.dimension,
@@ -162,6 +166,7 @@ class LPMMConverter:
                     vector = np.asarray(row["embedding"], dtype=np.float32)
                     if vector.shape != (self.dimension,):
                         raise ValueError(
+                            f"lpmm_vector_dimension_mismatch: "
                             f"{item_type} 第 {row_index} 行向量维度不匹配: "
                             f"{vector.shape} vs ({self.dimension},)"
                         )
@@ -219,7 +224,9 @@ class LPMMConverter:
                         self.metadata_store.set_relation_vector_state(relation_hash, "ready")
 
         if sum(self.vector_stats.values()) <= 0:
-            raise RuntimeError("LPMM 输入没有产生任何可用向量，拒绝发布 ready 标志")
+            raise RuntimeError(
+                "lpmm_no_usable_vectors: LPMM 输入没有产生任何可用向量，拒绝发布 ready 标志"
+            )
 
     def _convert_graph(self) -> None:
         assert self.graph_store is not None
