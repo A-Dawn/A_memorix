@@ -68,6 +68,18 @@ class InvalidArgumentError(AMemorixError):
     code = ErrorCode.INVALID_ARGUMENT
 
 
+class UnauthorizedError(AMemorixError):
+    code = ErrorCode.UNAUTHORIZED
+
+
+class ForbiddenError(AMemorixError):
+    code = ErrorCode.FORBIDDEN
+
+
+class NotFoundError(AMemorixError):
+    code = ErrorCode.NOT_FOUND
+
+
 class NamespaceNotFoundError(AMemorixError):
     code = ErrorCode.NAMESPACE_NOT_FOUND
 
@@ -96,3 +108,31 @@ class NamespaceCapacityError(AMemorixError):
 class NamespaceRuntimeError(AMemorixError):
     code = ErrorCode.CAPABILITY_UNAVAILABLE
     retryable = True
+
+
+class CapabilityUnavailableError(AMemorixError):
+    code = ErrorCode.CAPABILITY_UNAVAILABLE
+    retryable = True
+
+
+class RemoteAMemorixError(AMemorixError):
+    """Error reconstructed from a remote ErrorDetail message."""
+
+    def __init__(
+        self,
+        code: ErrorCode,
+        message: str,
+        *,
+        request_id: str = "",
+        trace_id: str = "",
+        retryable: bool = False,
+        details: Mapping[str, object] | None = None,
+    ) -> None:
+        self.code = code
+        self.retryable = retryable
+        super().__init__(
+            message,
+            request_id=request_id,
+            trace_id=trace_id,
+            details=details,
+        )

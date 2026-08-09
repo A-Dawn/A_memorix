@@ -1,0 +1,1078 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "a_memorix/api/v1/auth.proto",
+    "version": "version not set"
+  },
+  "tags": [
+    {
+      "name": "AuthService"
+    },
+    {
+      "name": "MemoryService"
+    },
+    {
+      "name": "NamespaceService"
+    }
+  ],
+  "consumes": [
+    "application/json"
+  ],
+  "produces": [
+    "application/json"
+  ],
+  "paths": {
+    "/v1/namespaces": {
+      "get": {
+        "operationId": "NamespaceService_ListNamespaces",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ListNamespacesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "NamespaceService"
+        ]
+      },
+      "post": {
+        "operationId": "NamespaceService_CreateNamespace",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1CreateNamespaceResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1CreateNamespaceRequest"
+            }
+          }
+        ],
+        "tags": [
+          "NamespaceService"
+        ]
+      }
+    },
+    "/v1/namespaces/{context.namespaceId}/memories:ingest": {
+      "post": {
+        "operationId": "MemoryService_IngestText",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1IngestTextResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "context.namespaceId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/MemoryServiceIngestTextBody"
+            }
+          }
+        ],
+        "tags": [
+          "MemoryService"
+        ]
+      }
+    },
+    "/v1/namespaces/{context.namespaceId}/memories:search": {
+      "post": {
+        "operationId": "MemoryService_SearchMemory",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1SearchMemoryResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "context.namespaceId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/MemoryServiceSearchMemoryBody"
+            }
+          }
+        ],
+        "tags": [
+          "MemoryService"
+        ]
+      }
+    },
+    "/v1/namespaces/{namespaceId}": {
+      "get": {
+        "operationId": "NamespaceService_GetNamespace",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1GetNamespaceResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "namespaceId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "NamespaceService"
+        ]
+      },
+      "delete": {
+        "operationId": "NamespaceService_DeleteNamespace",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1DeleteNamespaceResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "namespaceId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "NamespaceService"
+        ]
+      }
+    },
+    "/v1/namespaces/{namespaceId}/api-keys": {
+      "get": {
+        "operationId": "AuthService_ListApiKeys",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ListApiKeysResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "namespaceId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "AuthService"
+        ]
+      },
+      "post": {
+        "operationId": "AuthService_CreateApiKey",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1CreateApiKeyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "namespaceId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/AuthServiceCreateApiKeyBody"
+            }
+          }
+        ],
+        "tags": [
+          "AuthService"
+        ]
+      }
+    },
+    "/v1/namespaces/{namespaceId}/api-keys/{keyId}": {
+      "delete": {
+        "operationId": "AuthService_RevokeApiKey",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1RevokeApiKeyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "namespaceId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "keyId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "AuthService"
+        ]
+      }
+    },
+    "/v1/namespaces/{namespaceId}/health": {
+      "get": {
+        "operationId": "NamespaceService_GetNamespaceHealth",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1GetNamespaceHealthResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "namespaceId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "NamespaceService"
+        ]
+      }
+    },
+    "/v1/namespaces/{namespaceId}:disable": {
+      "post": {
+        "operationId": "NamespaceService_DisableNamespace",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1DisableNamespaceResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "namespaceId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "NamespaceService"
+        ]
+      }
+    },
+    "/v1/namespaces/{namespaceId}:enable": {
+      "post": {
+        "operationId": "NamespaceService_EnableNamespace",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1EnableNamespaceResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "namespaceId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "NamespaceService"
+        ]
+      }
+    },
+    "/v1/namespaces/{namespaceId}:purge": {
+      "delete": {
+        "operationId": "NamespaceService_PurgeNamespace",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1PurgeNamespaceResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "namespaceId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "NamespaceService"
+        ]
+      }
+    },
+    "/v1/namespaces/{namespaceId}:restore": {
+      "post": {
+        "operationId": "NamespaceService_RestoreNamespace",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1RestoreNamespaceResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "namespaceId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "NamespaceService"
+        ]
+      }
+    }
+  },
+  "definitions": {
+    "AuthServiceCreateApiKeyBody": {
+      "type": "object",
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "MemoryServiceIngestTextBody": {
+      "type": "object",
+      "properties": {
+        "context": {
+          "type": "object",
+          "properties": {
+            "agentId": {
+              "type": "string"
+            },
+            "principalId": {
+              "type": "string"
+            },
+            "conversationId": {
+              "type": "string"
+            },
+            "userId": {
+              "type": "string"
+            },
+            "groupId": {
+              "type": "string"
+            },
+            "requestId": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "idempotencyKey": {
+              "type": "string"
+            }
+          },
+          "description": "RequestContext carries namespace identity and request correlation data."
+        },
+        "externalId": {
+          "type": "string"
+        },
+        "sourceType": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "personIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "participants": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "observedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "validFrom": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "validTo": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "metadata": {
+          "type": "object"
+        },
+        "entities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "relations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1RelationInput"
+          }
+        },
+        "respectFilter": {
+          "type": "boolean"
+        }
+      }
+    },
+    "MemoryServiceSearchMemoryBody": {
+      "type": "object",
+      "properties": {
+        "context": {
+          "type": "object",
+          "properties": {
+            "agentId": {
+              "type": "string"
+            },
+            "principalId": {
+              "type": "string"
+            },
+            "conversationId": {
+              "type": "string"
+            },
+            "userId": {
+              "type": "string"
+            },
+            "groupId": {
+              "type": "string"
+            },
+            "requestId": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "idempotencyKey": {
+              "type": "string"
+            }
+          },
+          "description": "RequestContext carries namespace identity and request correlation data."
+        },
+        "query": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "mode": {
+          "$ref": "#/definitions/v1SearchMode"
+        },
+        "sharedConversationIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "personId": {
+          "type": "string"
+        },
+        "timeStart": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "timeEnd": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "respectFilter": {
+          "type": "boolean"
+        }
+      }
+    },
+    "protobufAny": {
+      "type": "object",
+      "properties": {
+        "@type": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": {}
+    },
+    "protobufNullValue": {
+      "type": "string",
+      "enum": [
+        "NULL_VALUE"
+      ],
+      "default": "NULL_VALUE",
+      "description": "`NullValue` is a singleton enumeration to represent the null value for the\n`Value` type union.\n\nThe JSON representation for `NullValue` is JSON `null`.\n\n - NULL_VALUE: Null value."
+    },
+    "rpcStatus": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "message": {
+          "type": "string"
+        },
+        "details": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/protobufAny"
+          }
+        }
+      }
+    },
+    "v1ApiKeyInfo": {
+      "type": "object",
+      "properties": {
+        "keyId": {
+          "type": "string"
+        },
+        "namespaceId": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "revokedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "lastUsedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "v1CreateApiKeyResponse": {
+      "type": "object",
+      "properties": {
+        "apiKey": {
+          "$ref": "#/definitions/v1ApiKeyInfo"
+        },
+        "secret": {
+          "type": "string"
+        }
+      }
+    },
+    "v1CreateNamespaceRequest": {
+      "type": "object",
+      "properties": {
+        "namespaceId": {
+          "type": "string"
+        },
+        "quota": {
+          "$ref": "#/definitions/v1NamespaceQuota"
+        }
+      }
+    },
+    "v1CreateNamespaceResponse": {
+      "type": "object",
+      "properties": {
+        "namespace": {
+          "$ref": "#/definitions/v1NamespaceInfo"
+        }
+      }
+    },
+    "v1DeleteNamespaceResponse": {
+      "type": "object",
+      "properties": {
+        "namespace": {
+          "$ref": "#/definitions/v1NamespaceInfo"
+        }
+      }
+    },
+    "v1DisableNamespaceResponse": {
+      "type": "object",
+      "properties": {
+        "namespace": {
+          "$ref": "#/definitions/v1NamespaceInfo"
+        }
+      }
+    },
+    "v1EnableNamespaceResponse": {
+      "type": "object",
+      "properties": {
+        "namespace": {
+          "$ref": "#/definitions/v1NamespaceInfo"
+        }
+      }
+    },
+    "v1GetNamespaceHealthResponse": {
+      "type": "object",
+      "properties": {
+        "health": {
+          "$ref": "#/definitions/v1NamespaceHealth"
+        }
+      }
+    },
+    "v1GetNamespaceResponse": {
+      "type": "object",
+      "properties": {
+        "namespace": {
+          "$ref": "#/definitions/v1NamespaceInfo"
+        }
+      }
+    },
+    "v1IngestTextResponse": {
+      "type": "object",
+      "properties": {
+        "storedIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "skippedIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "factClaimIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "detail": {
+          "type": "string"
+        }
+      }
+    },
+    "v1ListApiKeysResponse": {
+      "type": "object",
+      "properties": {
+        "apiKeys": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1ApiKeyInfo"
+          }
+        }
+      }
+    },
+    "v1ListNamespacesResponse": {
+      "type": "object",
+      "properties": {
+        "namespaces": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1NamespaceInfo"
+          }
+        }
+      }
+    },
+    "v1MemoryHit": {
+      "type": "object",
+      "properties": {
+        "memoryId": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "score": {
+          "type": "number",
+          "format": "double"
+        },
+        "source": {
+          "type": "string"
+        },
+        "metadata": {
+          "type": "object"
+        }
+      }
+    },
+    "v1NamespaceHealth": {
+      "type": "object",
+      "properties": {
+        "namespace": {
+          "$ref": "#/definitions/v1NamespaceInfo"
+        },
+        "runtimeState": {
+          "$ref": "#/definitions/v1NamespaceRuntimeState"
+        },
+        "healthy": {
+          "type": "boolean"
+        },
+        "resourceUsage": {
+          "$ref": "#/definitions/v1NamespaceResourceUsage"
+        },
+        "lastError": {
+          "type": "string"
+        }
+      }
+    },
+    "v1NamespaceInfo": {
+      "type": "object",
+      "properties": {
+        "namespaceId": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/v1NamespaceStatus"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "lastActiveAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "version": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "quota": {
+          "$ref": "#/definitions/v1NamespaceQuota"
+        },
+        "purgeAfter": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "v1NamespaceQuota": {
+      "type": "object",
+      "properties": {
+        "maxConcurrentRequests": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "maxStorageBytes": {
+          "type": "string",
+          "format": "uint64"
+        }
+      }
+    },
+    "v1NamespaceResourceUsage": {
+      "type": "object",
+      "properties": {
+        "activeRequests": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "storageBytes": {
+          "type": "string",
+          "format": "uint64"
+        }
+      }
+    },
+    "v1NamespaceRuntimeState": {
+      "type": "string",
+      "enum": [
+        "NAMESPACE_RUNTIME_STATE_UNSPECIFIED",
+        "NAMESPACE_RUNTIME_STATE_CLOSED",
+        "NAMESPACE_RUNTIME_STATE_LOADING",
+        "NAMESPACE_RUNTIME_STATE_READY",
+        "NAMESPACE_RUNTIME_STATE_DEGRADED",
+        "NAMESPACE_RUNTIME_STATE_FAILED"
+      ],
+      "default": "NAMESPACE_RUNTIME_STATE_UNSPECIFIED"
+    },
+    "v1NamespaceStatus": {
+      "type": "string",
+      "enum": [
+        "NAMESPACE_STATUS_UNSPECIFIED",
+        "NAMESPACE_STATUS_CREATING",
+        "NAMESPACE_STATUS_ACTIVE",
+        "NAMESPACE_STATUS_INACTIVE",
+        "NAMESPACE_STATUS_QUARANTINED",
+        "NAMESPACE_STATUS_PURGING"
+      ],
+      "default": "NAMESPACE_STATUS_UNSPECIFIED"
+    },
+    "v1PurgeNamespaceResponse": {
+      "type": "object"
+    },
+    "v1RelationInput": {
+      "type": "object",
+      "properties": {
+        "subject": {
+          "type": "string"
+        },
+        "predicate": {
+          "type": "string"
+        },
+        "object": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "number",
+          "format": "double"
+        },
+        "metadata": {
+          "type": "object"
+        }
+      }
+    },
+    "v1RequestContext": {
+      "type": "object",
+      "properties": {
+        "namespaceId": {
+          "type": "string"
+        },
+        "agentId": {
+          "type": "string"
+        },
+        "principalId": {
+          "type": "string"
+        },
+        "conversationId": {
+          "type": "string"
+        },
+        "userId": {
+          "type": "string"
+        },
+        "groupId": {
+          "type": "string"
+        },
+        "requestId": {
+          "type": "string"
+        },
+        "traceId": {
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "type": "string"
+        }
+      },
+      "description": "RequestContext carries namespace identity and request correlation data."
+    },
+    "v1RestoreNamespaceResponse": {
+      "type": "object",
+      "properties": {
+        "namespace": {
+          "$ref": "#/definitions/v1NamespaceInfo"
+        }
+      }
+    },
+    "v1RevokeApiKeyResponse": {
+      "type": "object"
+    },
+    "v1SearchMemoryResponse": {
+      "type": "object",
+      "properties": {
+        "summary": {
+          "type": "string"
+        },
+        "hits": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1MemoryHit"
+          }
+        },
+        "filtered": {
+          "type": "boolean"
+        },
+        "degraded": {
+          "type": "boolean"
+        },
+        "retrievalReady": {
+          "type": "boolean"
+        },
+        "retrievalMode": {
+          "type": "string"
+        },
+        "availableChannels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "unavailableChannels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "v1SearchMode": {
+      "type": "string",
+      "enum": [
+        "SEARCH_MODE_UNSPECIFIED",
+        "SEARCH_MODE_SEARCH",
+        "SEARCH_MODE_TIME",
+        "SEARCH_MODE_HYBRID",
+        "SEARCH_MODE_EPISODE",
+        "SEARCH_MODE_AGGREGATE"
+      ],
+      "default": "SEARCH_MODE_UNSPECIFIED"
+    }
+  }
+}

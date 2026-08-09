@@ -1,18 +1,33 @@
 """Public request, response and error contracts."""
 
 from .context import NamespaceId, RequestContext
+from .auth import ApiKeyInfo, CreatedApiKey
 from .errors import (
     AMemorixError,
+    CapabilityUnavailableError,
     ErrorCode,
     ErrorEnvelope,
+    ForbiddenError,
     InvalidArgumentError,
     MigrationRequiredError,
+    NotFoundError,
     NamespaceCapacityError,
     NamespaceConflictError,
     NamespaceIntegrityError,
     NamespaceNotFoundError,
     NamespaceRuntimeError,
     NamespaceStateError,
+    RemoteAMemorixError,
+    UnauthorizedError,
+)
+from .memory import (
+    IngestTextRequest,
+    IngestTextResponse,
+    MemoryHit,
+    RelationInput,
+    SearchMemoryRequest,
+    SearchMemoryResponse,
+    SearchMode,
 )
 from .namespaces import (
     CreateNamespaceRequest,
@@ -26,11 +41,19 @@ from .namespaces import (
 
 __all__ = [
     "AMemorixError",
+    "ApiKeyInfo",
+    "CapabilityUnavailableError",
     "CreateNamespaceRequest",
+    "CreatedApiKey",
     "ErrorCode",
     "ErrorEnvelope",
+    "ForbiddenError",
+    "IngestTextRequest",
+    "IngestTextResponse",
     "InvalidArgumentError",
     "MigrationRequiredError",
+    "MemoryHit",
+    "NotFoundError",
     "NamespaceCapacityError",
     "NamespaceConflictError",
     "NamespaceHealth",
@@ -45,4 +68,10 @@ __all__ = [
     "NamespaceStateError",
     "NamespaceStatus",
     "RequestContext",
+    "RelationInput",
+    "RemoteAMemorixError",
+    "SearchMemoryRequest",
+    "SearchMemoryResponse",
+    "SearchMode",
+    "UnauthorizedError",
 ]

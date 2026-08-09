@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package a_memorix.api.v1;
+
+import "google/protobuf/struct.proto";
+
+// RequestContext carries namespace identity and request correlation data.
+message RequestContext {
+  string namespace_id = 1;
+  string agent_id = 2;
+  string principal_id = 3;
+  string conversation_id = 4;
+  string user_id = 5;
+  string group_id = 6;
+  string request_id = 7;
+  string trace_id = 8;
+  string idempotency_key = 9;
+}
+
+// ErrorDetail is attached to a canonical gRPC status as typed error details.
+message ErrorDetail {
+  string code = 1;
+  string request_id = 2;
+  string trace_id = 3;
+  bool retryable = 4;
+  google.protobuf.Struct details = 5;
+}

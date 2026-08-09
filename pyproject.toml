@@ -26,11 +26,23 @@ dependencies = [
 
 [project.optional-dependencies]
 vector = ["faiss-cpu>=1.8.0"]
+rpc = [
+  "googleapis-common-protos>=1.75.1,<2",
+  "grpcio>=1.83.0,<2",
+  "grpcio-status>=1.83.0,<2",
+  "protobuf>=6.33.5,<7",
+]
+mcp = ["mcp>=2.0.0,<3"]
 lpmm = [
   "networkx>=3.2.0",
   "pyarrow>=16.0.0",
 ]
 test = [
+  "googleapis-common-protos>=1.75.1,<2",
+  "grpcio>=1.83.0,<2",
+  "grpcio-status>=1.83.0,<2",
+  "mcp>=2.0.0,<3",
+  "protobuf>=6.33.5,<7",
   "pyarrow>=16.0.0",
   "pytest>=8.0.0",
   "pytest-asyncio>=0.24.0",
@@ -38,8 +50,13 @@ test = [
 build = ["build>=1.2.0"]
 all = [
   "faiss-cpu>=1.8.0",
+  "googleapis-common-protos>=1.75.1,<2",
+  "grpcio>=1.83.0,<2",
+  "grpcio-status>=1.83.0,<2",
+  "mcp>=2.0.0,<3",
   "networkx>=3.2.0",
   "pyarrow>=16.0.0",
+  "protobuf>=6.33.5,<7",
 ]
 
 [project.urls]
@@ -48,8 +65,18 @@ Repository = "https://github.com/MaiM-with-u/A_memorix"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"a_memorix.api.v1" = ["*.pyi"]
+
 [tool.pytest.ini_options]
 addopts = "-ra"
 asyncio_mode = "auto"
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.ruff]
+extend-exclude = [
+  "src/a_memorix/api/v1/*_pb2.py",
+  "src/a_memorix/api/v1/*_pb2.pyi",
+  "src/a_memorix/api/v1/*_pb2_grpc.py",
+]

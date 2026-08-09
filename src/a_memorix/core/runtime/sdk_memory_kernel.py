@@ -962,6 +962,11 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
             group_id=group_id,
         )
 
+    async def contains_external_memory(self, external_id: str) -> bool:
+        await self.initialize()
+        assert self.metadata_store is not None
+        return self.metadata_store.get_external_memory_ref(str(external_id or "").strip()) is not None
+
     async def process_episode_source_rebuild_batch(
         self,
         *,
