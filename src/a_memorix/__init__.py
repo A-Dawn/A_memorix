@@ -1,7 +1,28 @@
 """Public API for the A_memorix memory engine."""
 
+from .contracts import (
+    AMemorixError,
+    CreateNamespaceRequest,
+    ErrorCode,
+    ErrorEnvelope,
+    InvalidArgumentError,
+    MigrationRequiredError,
+    NamespaceCapacityError,
+    NamespaceConflictError,
+    NamespaceHealth,
+    NamespaceInfo,
+    NamespaceIntegrityError,
+    NamespaceNotFoundError,
+    NamespaceQuota,
+    NamespaceRuntimeError,
+    NamespaceStateError,
+    NamespaceStatus,
+    RequestContext,
+)
 from .core.runtime import KernelSearchRequest, SDKMemoryKernel
+from .engine import AMemorixEngine
 from .ports import (
+    Clock,
     EmbeddingProvider,
     IdentityRecord,
     IdentityResolver,
@@ -10,10 +31,19 @@ from .ports import (
     LLMResult,
     MessageRecord,
     MessageSource,
+    NamespaceHostPorts,
+    SystemClock,
 )
 
 __all__ = [
+    "AMemorixEngine",
+    "AMemorixError",
+    "Clock",
+    "CreateNamespaceRequest",
     "EmbeddingProvider",
+    "ErrorCode",
+    "ErrorEnvelope",
+    "InvalidArgumentError",
     "IdentityRecord",
     "IdentityResolver",
     "KernelSearchRequest",
@@ -22,7 +52,21 @@ __all__ = [
     "LLMResult",
     "MessageRecord",
     "MessageSource",
+    "MigrationRequiredError",
+    "NamespaceCapacityError",
+    "NamespaceConflictError",
+    "NamespaceHealth",
+    "NamespaceHostPorts",
+    "NamespaceInfo",
+    "NamespaceIntegrityError",
+    "NamespaceNotFoundError",
+    "NamespaceQuota",
+    "NamespaceRuntimeError",
+    "NamespaceStateError",
+    "NamespaceStatus",
+    "RequestContext",
     "SDKMemoryKernel",
+    "SystemClock",
     "__version__",
 ]
 __version__ = "2.0.0a1"
