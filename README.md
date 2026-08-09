@@ -218,7 +218,7 @@ a-memorix --pretty adapter schema
 
 ## 分支与分发
 
-- 通用基础版最终由 `main` 维护。
+- 通用基础版由 `main` 维护。
 - 官方 Agent 适配使用独立集成分支，不把项目私有代码写回通用核心。
 - 社区适配器在独立的 [A_memorix-extensions](https://github.com/A-Dawn/A_memorix-extensions) 仓库登记、验证和分发。
 - 1.x MaiBot 插件历史保留在 `legacy-v1.0.1` 标签和 `legacy/plugin-v1` 分支。
