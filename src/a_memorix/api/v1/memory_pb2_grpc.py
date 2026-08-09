@@ -19,6 +19,21 @@ class MemoryServiceStub:
                 request_serializer=a__memorix_dot_api_dot_v1_dot_memory__pb2.IngestTextRequest.SerializeToString,
                 response_deserializer=a__memorix_dot_api_dot_v1_dot_memory__pb2.IngestTextResponse.FromString,
                 _registered_method=True)
+        self.BatchIngestText = channel.unary_unary(
+                '/a_memorix.api.v1.MemoryService/BatchIngestText',
+                request_serializer=a__memorix_dot_api_dot_v1_dot_memory__pb2.BatchIngestTextRequest.SerializeToString,
+                response_deserializer=a__memorix_dot_api_dot_v1_dot_memory__pb2.BatchIngestTextResponse.FromString,
+                _registered_method=True)
+        self.GetMemory = channel.unary_unary(
+                '/a_memorix.api.v1.MemoryService/GetMemory',
+                request_serializer=a__memorix_dot_api_dot_v1_dot_memory__pb2.GetMemoryRequest.SerializeToString,
+                response_deserializer=a__memorix_dot_api_dot_v1_dot_memory__pb2.GetMemoryResponse.FromString,
+                _registered_method=True)
+        self.DeleteMemory = channel.unary_unary(
+                '/a_memorix.api.v1.MemoryService/DeleteMemory',
+                request_serializer=a__memorix_dot_api_dot_v1_dot_memory__pb2.DeleteMemoryRequest.SerializeToString,
+                response_deserializer=a__memorix_dot_api_dot_v1_dot_memory__pb2.DeleteMemoryResponse.FromString,
+                _registered_method=True)
         self.SearchMemory = channel.unary_unary(
                 '/a_memorix.api.v1.MemoryService/SearchMemory',
                 request_serializer=a__memorix_dot_api_dot_v1_dot_memory__pb2.SearchMemoryRequest.SerializeToString,
@@ -30,6 +45,24 @@ class MemoryServiceServicer:
     """Missing associated documentation comment in .proto file."""
 
     def IngestText(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def BatchIngestText(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetMemory(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DeleteMemory(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -48,6 +81,21 @@ def add_MemoryServiceServicer_to_server(servicer, server):
                     servicer.IngestText,
                     request_deserializer=a__memorix_dot_api_dot_v1_dot_memory__pb2.IngestTextRequest.FromString,
                     response_serializer=a__memorix_dot_api_dot_v1_dot_memory__pb2.IngestTextResponse.SerializeToString,
+            ),
+            'BatchIngestText': grpc.unary_unary_rpc_method_handler(
+                    servicer.BatchIngestText,
+                    request_deserializer=a__memorix_dot_api_dot_v1_dot_memory__pb2.BatchIngestTextRequest.FromString,
+                    response_serializer=a__memorix_dot_api_dot_v1_dot_memory__pb2.BatchIngestTextResponse.SerializeToString,
+            ),
+            'GetMemory': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetMemory,
+                    request_deserializer=a__memorix_dot_api_dot_v1_dot_memory__pb2.GetMemoryRequest.FromString,
+                    response_serializer=a__memorix_dot_api_dot_v1_dot_memory__pb2.GetMemoryResponse.SerializeToString,
+            ),
+            'DeleteMemory': grpc.unary_unary_rpc_method_handler(
+                    servicer.DeleteMemory,
+                    request_deserializer=a__memorix_dot_api_dot_v1_dot_memory__pb2.DeleteMemoryRequest.FromString,
+                    response_serializer=a__memorix_dot_api_dot_v1_dot_memory__pb2.DeleteMemoryResponse.SerializeToString,
             ),
             'SearchMemory': grpc.unary_unary_rpc_method_handler(
                     servicer.SearchMemory,
@@ -82,6 +130,87 @@ class MemoryService:
             '/a_memorix.api.v1.MemoryService/IngestText',
             a__memorix_dot_api_dot_v1_dot_memory__pb2.IngestTextRequest.SerializeToString,
             a__memorix_dot_api_dot_v1_dot_memory__pb2.IngestTextResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def BatchIngestText(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/a_memorix.api.v1.MemoryService/BatchIngestText',
+            a__memorix_dot_api_dot_v1_dot_memory__pb2.BatchIngestTextRequest.SerializeToString,
+            a__memorix_dot_api_dot_v1_dot_memory__pb2.BatchIngestTextResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetMemory(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/a_memorix.api.v1.MemoryService/GetMemory',
+            a__memorix_dot_api_dot_v1_dot_memory__pb2.GetMemoryRequest.SerializeToString,
+            a__memorix_dot_api_dot_v1_dot_memory__pb2.GetMemoryResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DeleteMemory(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/a_memorix.api.v1.MemoryService/DeleteMemory',
+            a__memorix_dot_api_dot_v1_dot_memory__pb2.DeleteMemoryRequest.SerializeToString,
+            a__memorix_dot_api_dot_v1_dot_memory__pb2.DeleteMemoryResponse.FromString,
             options,
             channel_credentials,
             insecure,

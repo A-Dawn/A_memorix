@@ -29,6 +29,16 @@ class NamespaceServiceStub:
                 request_serializer=a__memorix_dot_api_dot_v1_dot_namespace__pb2.ListNamespacesRequest.SerializeToString,
                 response_deserializer=a__memorix_dot_api_dot_v1_dot_namespace__pb2.ListNamespacesResponse.FromString,
                 _registered_method=True)
+        self.UpdateNamespaceConfig = channel.unary_unary(
+                '/a_memorix.api.v1.NamespaceService/UpdateNamespaceConfig',
+                request_serializer=a__memorix_dot_api_dot_v1_dot_namespace__pb2.UpdateNamespaceConfigRequest.SerializeToString,
+                response_deserializer=a__memorix_dot_api_dot_v1_dot_namespace__pb2.UpdateNamespaceConfigResponse.FromString,
+                _registered_method=True)
+        self.GetNamespaceCapabilities = channel.unary_unary(
+                '/a_memorix.api.v1.NamespaceService/GetNamespaceCapabilities',
+                request_serializer=a__memorix_dot_api_dot_v1_dot_namespace__pb2.GetNamespaceCapabilitiesRequest.SerializeToString,
+                response_deserializer=a__memorix_dot_api_dot_v1_dot_namespace__pb2.GetNamespaceCapabilitiesResponse.FromString,
+                _registered_method=True)
         self.DisableNamespace = channel.unary_unary(
                 '/a_memorix.api.v1.NamespaceService/DisableNamespace',
                 request_serializer=a__memorix_dot_api_dot_v1_dot_namespace__pb2.DisableNamespaceRequest.SerializeToString,
@@ -77,6 +87,18 @@ class NamespaceServiceServicer:
         raise NotImplementedError('Method not implemented!')
 
     def ListNamespaces(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def UpdateNamespaceConfig(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetNamespaceCapabilities(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -135,6 +157,16 @@ def add_NamespaceServiceServicer_to_server(servicer, server):
                     servicer.ListNamespaces,
                     request_deserializer=a__memorix_dot_api_dot_v1_dot_namespace__pb2.ListNamespacesRequest.FromString,
                     response_serializer=a__memorix_dot_api_dot_v1_dot_namespace__pb2.ListNamespacesResponse.SerializeToString,
+            ),
+            'UpdateNamespaceConfig': grpc.unary_unary_rpc_method_handler(
+                    servicer.UpdateNamespaceConfig,
+                    request_deserializer=a__memorix_dot_api_dot_v1_dot_namespace__pb2.UpdateNamespaceConfigRequest.FromString,
+                    response_serializer=a__memorix_dot_api_dot_v1_dot_namespace__pb2.UpdateNamespaceConfigResponse.SerializeToString,
+            ),
+            'GetNamespaceCapabilities': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetNamespaceCapabilities,
+                    request_deserializer=a__memorix_dot_api_dot_v1_dot_namespace__pb2.GetNamespaceCapabilitiesRequest.FromString,
+                    response_serializer=a__memorix_dot_api_dot_v1_dot_namespace__pb2.GetNamespaceCapabilitiesResponse.SerializeToString,
             ),
             'DisableNamespace': grpc.unary_unary_rpc_method_handler(
                     servicer.DisableNamespace,
@@ -248,6 +280,60 @@ class NamespaceService:
             '/a_memorix.api.v1.NamespaceService/ListNamespaces',
             a__memorix_dot_api_dot_v1_dot_namespace__pb2.ListNamespacesRequest.SerializeToString,
             a__memorix_dot_api_dot_v1_dot_namespace__pb2.ListNamespacesResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def UpdateNamespaceConfig(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/a_memorix.api.v1.NamespaceService/UpdateNamespaceConfig',
+            a__memorix_dot_api_dot_v1_dot_namespace__pb2.UpdateNamespaceConfigRequest.SerializeToString,
+            a__memorix_dot_api_dot_v1_dot_namespace__pb2.UpdateNamespaceConfigResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetNamespaceCapabilities(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/a_memorix.api.v1.NamespaceService/GetNamespaceCapabilities',
+            a__memorix_dot_api_dot_v1_dot_namespace__pb2.GetNamespaceCapabilitiesRequest.SerializeToString,
+            a__memorix_dot_api_dot_v1_dot_namespace__pb2.GetNamespaceCapabilitiesResponse.FromString,
             options,
             channel_credentials,
             insecure,

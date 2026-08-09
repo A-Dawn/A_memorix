@@ -101,11 +101,19 @@ func local_request_NamespaceService_GetNamespace_0(ctx context.Context, marshale
 	return msg, metadata, err
 }
 
+var filter_NamespaceService_ListNamespaces_0 = &utilities.DoubleArray{Encoding: map[string]int{}, Base: []int(nil), Check: []int(nil)}
+
 func request_NamespaceService_ListNamespaces_0(ctx context.Context, marshaler runtime.Marshaler, client NamespaceServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
 		protoReq ListNamespacesRequest
 		metadata runtime.ServerMetadata
 	)
+	if err := req.ParseForm(); err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if err := runtime.PopulateQueryParameters(&protoReq, req.Form, filter_NamespaceService_ListNamespaces_0); err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
 	if req.Body != nil {
 		_, _ = io.Copy(io.Discard, req.Body)
 	}
@@ -118,7 +126,97 @@ func local_request_NamespaceService_ListNamespaces_0(ctx context.Context, marsha
 		protoReq ListNamespacesRequest
 		metadata runtime.ServerMetadata
 	)
+	if err := req.ParseForm(); err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if err := runtime.PopulateQueryParameters(&protoReq, req.Form, filter_NamespaceService_ListNamespaces_0); err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
 	msg, err := server.ListNamespaces(ctx, &protoReq)
+	return msg, metadata, err
+}
+
+func request_NamespaceService_UpdateNamespaceConfig_0(ctx context.Context, marshaler runtime.Marshaler, client NamespaceServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq UpdateNamespaceConfigRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	val, ok := pathParams["namespace_id"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "namespace_id")
+	}
+	protoReq.NamespaceId, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "namespace_id", err)
+	}
+	if req.Body != nil {
+		_, _ = io.Copy(io.Discard, req.Body)
+	}
+	msg, err := client.UpdateNamespaceConfig(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
+	return msg, metadata, err
+}
+
+func local_request_NamespaceService_UpdateNamespaceConfig_0(ctx context.Context, marshaler runtime.Marshaler, server NamespaceServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq UpdateNamespaceConfigRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	val, ok := pathParams["namespace_id"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "namespace_id")
+	}
+	protoReq.NamespaceId, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "namespace_id", err)
+	}
+	msg, err := server.UpdateNamespaceConfig(ctx, &protoReq)
+	return msg, metadata, err
+}
+
+func request_NamespaceService_GetNamespaceCapabilities_0(ctx context.Context, marshaler runtime.Marshaler, client NamespaceServiceClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq GetNamespaceCapabilitiesRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	val, ok := pathParams["namespace_id"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "namespace_id")
+	}
+	protoReq.NamespaceId, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "namespace_id", err)
+	}
+	if req.Body != nil {
+		_, _ = io.Copy(io.Discard, req.Body)
+	}
+	msg, err := client.GetNamespaceCapabilities(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
+	return msg, metadata, err
+}
+
+func local_request_NamespaceService_GetNamespaceCapabilities_0(ctx context.Context, marshaler runtime.Marshaler, server NamespaceServiceServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq GetNamespaceCapabilitiesRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	val, ok := pathParams["namespace_id"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "namespace_id")
+	}
+	protoReq.NamespaceId, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "namespace_id", err)
+	}
+	msg, err := server.GetNamespaceCapabilities(ctx, &protoReq)
 	return msg, metadata, err
 }
 
@@ -422,6 +520,46 @@ func RegisterNamespaceServiceHandlerServer(ctx context.Context, mux *runtime.Ser
 		}
 		forward_NamespaceService_ListNamespaces_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
+	mux.Handle(http.MethodPatch, pattern_NamespaceService_UpdateNamespaceConfig_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		var stream runtime.ServerTransportStream
+		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/a_memorix.api.v1.NamespaceService/UpdateNamespaceConfig", runtime.WithHTTPPathPattern("/v1/namespaces/{namespace_id}/config"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := local_request_NamespaceService_UpdateNamespaceConfig_0(annotatedContext, inboundMarshaler, server, req, pathParams)
+		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_NamespaceService_UpdateNamespaceConfig_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
+	mux.Handle(http.MethodGet, pattern_NamespaceService_GetNamespaceCapabilities_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		var stream runtime.ServerTransportStream
+		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/a_memorix.api.v1.NamespaceService/GetNamespaceCapabilities", runtime.WithHTTPPathPattern("/v1/namespaces/{namespace_id}/capabilities"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := local_request_NamespaceService_GetNamespaceCapabilities_0(annotatedContext, inboundMarshaler, server, req, pathParams)
+		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_NamespaceService_GetNamespaceCapabilities_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
 	mux.Handle(http.MethodPost, pattern_NamespaceService_DisableNamespace_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
@@ -633,6 +771,40 @@ func RegisterNamespaceServiceHandlerClient(ctx context.Context, mux *runtime.Ser
 		}
 		forward_NamespaceService_ListNamespaces_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
+	mux.Handle(http.MethodPatch, pattern_NamespaceService_UpdateNamespaceConfig_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/a_memorix.api.v1.NamespaceService/UpdateNamespaceConfig", runtime.WithHTTPPathPattern("/v1/namespaces/{namespace_id}/config"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := request_NamespaceService_UpdateNamespaceConfig_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_NamespaceService_UpdateNamespaceConfig_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
+	mux.Handle(http.MethodGet, pattern_NamespaceService_GetNamespaceCapabilities_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/a_memorix.api.v1.NamespaceService/GetNamespaceCapabilities", runtime.WithHTTPPathPattern("/v1/namespaces/{namespace_id}/capabilities"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := request_NamespaceService_GetNamespaceCapabilities_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_NamespaceService_GetNamespaceCapabilities_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
 	mux.Handle(http.MethodPost, pattern_NamespaceService_DisableNamespace_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
@@ -739,25 +911,29 @@ func RegisterNamespaceServiceHandlerClient(ctx context.Context, mux *runtime.Ser
 }
 
 var (
-	pattern_NamespaceService_CreateNamespace_0    = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "namespaces"}, ""))
-	pattern_NamespaceService_GetNamespace_0       = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "namespaces", "namespace_id"}, ""))
-	pattern_NamespaceService_ListNamespaces_0     = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "namespaces"}, ""))
-	pattern_NamespaceService_DisableNamespace_0   = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "namespaces", "namespace_id"}, "disable"))
-	pattern_NamespaceService_EnableNamespace_0    = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "namespaces", "namespace_id"}, "enable"))
-	pattern_NamespaceService_DeleteNamespace_0    = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "namespaces", "namespace_id"}, ""))
-	pattern_NamespaceService_RestoreNamespace_0   = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "namespaces", "namespace_id"}, "restore"))
-	pattern_NamespaceService_PurgeNamespace_0     = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "namespaces", "namespace_id"}, "purge"))
-	pattern_NamespaceService_GetNamespaceHealth_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "namespaces", "namespace_id", "health"}, ""))
+	pattern_NamespaceService_CreateNamespace_0          = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "namespaces"}, ""))
+	pattern_NamespaceService_GetNamespace_0             = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "namespaces", "namespace_id"}, ""))
+	pattern_NamespaceService_ListNamespaces_0           = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "namespaces"}, ""))
+	pattern_NamespaceService_UpdateNamespaceConfig_0    = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "namespaces", "namespace_id", "config"}, ""))
+	pattern_NamespaceService_GetNamespaceCapabilities_0 = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "namespaces", "namespace_id", "capabilities"}, ""))
+	pattern_NamespaceService_DisableNamespace_0         = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "namespaces", "namespace_id"}, "disable"))
+	pattern_NamespaceService_EnableNamespace_0          = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "namespaces", "namespace_id"}, "enable"))
+	pattern_NamespaceService_DeleteNamespace_0          = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "namespaces", "namespace_id"}, ""))
+	pattern_NamespaceService_RestoreNamespace_0         = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "namespaces", "namespace_id"}, "restore"))
+	pattern_NamespaceService_PurgeNamespace_0           = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "namespaces", "namespace_id"}, "purge"))
+	pattern_NamespaceService_GetNamespaceHealth_0       = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "namespaces", "namespace_id", "health"}, ""))
 )
 
 var (
-	forward_NamespaceService_CreateNamespace_0    = runtime.ForwardResponseMessage
-	forward_NamespaceService_GetNamespace_0       = runtime.ForwardResponseMessage
-	forward_NamespaceService_ListNamespaces_0     = runtime.ForwardResponseMessage
-	forward_NamespaceService_DisableNamespace_0   = runtime.ForwardResponseMessage
-	forward_NamespaceService_EnableNamespace_0    = runtime.ForwardResponseMessage
-	forward_NamespaceService_DeleteNamespace_0    = runtime.ForwardResponseMessage
-	forward_NamespaceService_RestoreNamespace_0   = runtime.ForwardResponseMessage
-	forward_NamespaceService_PurgeNamespace_0     = runtime.ForwardResponseMessage
-	forward_NamespaceService_GetNamespaceHealth_0 = runtime.ForwardResponseMessage
+	forward_NamespaceService_CreateNamespace_0          = runtime.ForwardResponseMessage
+	forward_NamespaceService_GetNamespace_0             = runtime.ForwardResponseMessage
+	forward_NamespaceService_ListNamespaces_0           = runtime.ForwardResponseMessage
+	forward_NamespaceService_UpdateNamespaceConfig_0    = runtime.ForwardResponseMessage
+	forward_NamespaceService_GetNamespaceCapabilities_0 = runtime.ForwardResponseMessage
+	forward_NamespaceService_DisableNamespace_0         = runtime.ForwardResponseMessage
+	forward_NamespaceService_EnableNamespace_0          = runtime.ForwardResponseMessage
+	forward_NamespaceService_DeleteNamespace_0          = runtime.ForwardResponseMessage
+	forward_NamespaceService_RestoreNamespace_0         = runtime.ForwardResponseMessage
+	forward_NamespaceService_PurgeNamespace_0           = runtime.ForwardResponseMessage
+	forward_NamespaceService_GetNamespaceHealth_0       = runtime.ForwardResponseMessage
 )

@@ -19,15 +19,17 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	NamespaceService_CreateNamespace_FullMethodName    = "/a_memorix.api.v1.NamespaceService/CreateNamespace"
-	NamespaceService_GetNamespace_FullMethodName       = "/a_memorix.api.v1.NamespaceService/GetNamespace"
-	NamespaceService_ListNamespaces_FullMethodName     = "/a_memorix.api.v1.NamespaceService/ListNamespaces"
-	NamespaceService_DisableNamespace_FullMethodName   = "/a_memorix.api.v1.NamespaceService/DisableNamespace"
-	NamespaceService_EnableNamespace_FullMethodName    = "/a_memorix.api.v1.NamespaceService/EnableNamespace"
-	NamespaceService_DeleteNamespace_FullMethodName    = "/a_memorix.api.v1.NamespaceService/DeleteNamespace"
-	NamespaceService_RestoreNamespace_FullMethodName   = "/a_memorix.api.v1.NamespaceService/RestoreNamespace"
-	NamespaceService_PurgeNamespace_FullMethodName     = "/a_memorix.api.v1.NamespaceService/PurgeNamespace"
-	NamespaceService_GetNamespaceHealth_FullMethodName = "/a_memorix.api.v1.NamespaceService/GetNamespaceHealth"
+	NamespaceService_CreateNamespace_FullMethodName          = "/a_memorix.api.v1.NamespaceService/CreateNamespace"
+	NamespaceService_GetNamespace_FullMethodName             = "/a_memorix.api.v1.NamespaceService/GetNamespace"
+	NamespaceService_ListNamespaces_FullMethodName           = "/a_memorix.api.v1.NamespaceService/ListNamespaces"
+	NamespaceService_UpdateNamespaceConfig_FullMethodName    = "/a_memorix.api.v1.NamespaceService/UpdateNamespaceConfig"
+	NamespaceService_GetNamespaceCapabilities_FullMethodName = "/a_memorix.api.v1.NamespaceService/GetNamespaceCapabilities"
+	NamespaceService_DisableNamespace_FullMethodName         = "/a_memorix.api.v1.NamespaceService/DisableNamespace"
+	NamespaceService_EnableNamespace_FullMethodName          = "/a_memorix.api.v1.NamespaceService/EnableNamespace"
+	NamespaceService_DeleteNamespace_FullMethodName          = "/a_memorix.api.v1.NamespaceService/DeleteNamespace"
+	NamespaceService_RestoreNamespace_FullMethodName         = "/a_memorix.api.v1.NamespaceService/RestoreNamespace"
+	NamespaceService_PurgeNamespace_FullMethodName           = "/a_memorix.api.v1.NamespaceService/PurgeNamespace"
+	NamespaceService_GetNamespaceHealth_FullMethodName       = "/a_memorix.api.v1.NamespaceService/GetNamespaceHealth"
 )
 
 // NamespaceServiceClient is the client API for NamespaceService service.
@@ -37,6 +39,8 @@ type NamespaceServiceClient interface {
 	CreateNamespace(ctx context.Context, in *CreateNamespaceRequest, opts ...grpc.CallOption) (*CreateNamespaceResponse, error)
 	GetNamespace(ctx context.Context, in *GetNamespaceRequest, opts ...grpc.CallOption) (*GetNamespaceResponse, error)
 	ListNamespaces(ctx context.Context, in *ListNamespacesRequest, opts ...grpc.CallOption) (*ListNamespacesResponse, error)
+	UpdateNamespaceConfig(ctx context.Context, in *UpdateNamespaceConfigRequest, opts ...grpc.CallOption) (*UpdateNamespaceConfigResponse, error)
+	GetNamespaceCapabilities(ctx context.Context, in *GetNamespaceCapabilitiesRequest, opts ...grpc.CallOption) (*GetNamespaceCapabilitiesResponse, error)
 	DisableNamespace(ctx context.Context, in *DisableNamespaceRequest, opts ...grpc.CallOption) (*DisableNamespaceResponse, error)
 	EnableNamespace(ctx context.Context, in *EnableNamespaceRequest, opts ...grpc.CallOption) (*EnableNamespaceResponse, error)
 	DeleteNamespace(ctx context.Context, in *DeleteNamespaceRequest, opts ...grpc.CallOption) (*DeleteNamespaceResponse, error)
@@ -77,6 +81,26 @@ func (c *namespaceServiceClient) ListNamespaces(ctx context.Context, in *ListNam
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListNamespacesResponse)
 	err := c.cc.Invoke(ctx, NamespaceService_ListNamespaces_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *namespaceServiceClient) UpdateNamespaceConfig(ctx context.Context, in *UpdateNamespaceConfigRequest, opts ...grpc.CallOption) (*UpdateNamespaceConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UpdateNamespaceConfigResponse)
+	err := c.cc.Invoke(ctx, NamespaceService_UpdateNamespaceConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *namespaceServiceClient) GetNamespaceCapabilities(ctx context.Context, in *GetNamespaceCapabilitiesRequest, opts ...grpc.CallOption) (*GetNamespaceCapabilitiesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetNamespaceCapabilitiesResponse)
+	err := c.cc.Invoke(ctx, NamespaceService_GetNamespaceCapabilities_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -150,6 +174,8 @@ type NamespaceServiceServer interface {
 	CreateNamespace(context.Context, *CreateNamespaceRequest) (*CreateNamespaceResponse, error)
 	GetNamespace(context.Context, *GetNamespaceRequest) (*GetNamespaceResponse, error)
 	ListNamespaces(context.Context, *ListNamespacesRequest) (*ListNamespacesResponse, error)
+	UpdateNamespaceConfig(context.Context, *UpdateNamespaceConfigRequest) (*UpdateNamespaceConfigResponse, error)
+	GetNamespaceCapabilities(context.Context, *GetNamespaceCapabilitiesRequest) (*GetNamespaceCapabilitiesResponse, error)
 	DisableNamespace(context.Context, *DisableNamespaceRequest) (*DisableNamespaceResponse, error)
 	EnableNamespace(context.Context, *EnableNamespaceRequest) (*EnableNamespaceResponse, error)
 	DeleteNamespace(context.Context, *DeleteNamespaceRequest) (*DeleteNamespaceResponse, error)
@@ -174,6 +200,12 @@ func (UnimplementedNamespaceServiceServer) GetNamespace(context.Context, *GetNam
 }
 func (UnimplementedNamespaceServiceServer) ListNamespaces(context.Context, *ListNamespacesRequest) (*ListNamespacesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListNamespaces not implemented")
+}
+func (UnimplementedNamespaceServiceServer) UpdateNamespaceConfig(context.Context, *UpdateNamespaceConfigRequest) (*UpdateNamespaceConfigResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method UpdateNamespaceConfig not implemented")
+}
+func (UnimplementedNamespaceServiceServer) GetNamespaceCapabilities(context.Context, *GetNamespaceCapabilitiesRequest) (*GetNamespaceCapabilitiesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetNamespaceCapabilities not implemented")
 }
 func (UnimplementedNamespaceServiceServer) DisableNamespace(context.Context, *DisableNamespaceRequest) (*DisableNamespaceResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DisableNamespace not implemented")
@@ -264,6 +296,42 @@ func _NamespaceService_ListNamespaces_Handler(srv interface{}, ctx context.Conte
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(NamespaceServiceServer).ListNamespaces(ctx, req.(*ListNamespacesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NamespaceService_UpdateNamespaceConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateNamespaceConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NamespaceServiceServer).UpdateNamespaceConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NamespaceService_UpdateNamespaceConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NamespaceServiceServer).UpdateNamespaceConfig(ctx, req.(*UpdateNamespaceConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NamespaceService_GetNamespaceCapabilities_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetNamespaceCapabilitiesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NamespaceServiceServer).GetNamespaceCapabilities(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NamespaceService_GetNamespaceCapabilities_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NamespaceServiceServer).GetNamespaceCapabilities(ctx, req.(*GetNamespaceCapabilitiesRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -394,6 +462,14 @@ var NamespaceService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListNamespaces",
 			Handler:    _NamespaceService_ListNamespaces_Handler,
+		},
+		{
+			MethodName: "UpdateNamespaceConfig",
+			Handler:    _NamespaceService_UpdateNamespaceConfig_Handler,
+		},
+		{
+			MethodName: "GetNamespaceCapabilities",
+			Handler:    _NamespaceService_GetNamespaceCapabilities_Handler,
 		},
 		{
 			MethodName: "DisableNamespace",

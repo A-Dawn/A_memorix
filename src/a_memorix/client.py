@@ -11,6 +11,8 @@ from a_memorix.api.v1 import (
     auth_pb2,
     auth_pb2_grpc,
     common_pb2,
+    job_pb2,
+    job_pb2_grpc,
     memory_pb2,
     memory_pb2_grpc,
     namespace_pb2,
@@ -49,6 +51,7 @@ class AMemorixClient:
         self.namespaces = namespace_pb2_grpc.NamespaceServiceStub(self._channel)
         self.auth = auth_pb2_grpc.AuthServiceStub(self._channel)
         self.memory = memory_pb2_grpc.MemoryServiceStub(self._channel)
+        self.jobs = job_pb2_grpc.JobServiceStub(self._channel)
 
     async def close(self) -> None:
         await self._channel.close()
@@ -99,6 +102,12 @@ class AMemorixClient:
     async def get_namespace_health(self, request):
         return await self._call(self.namespaces.GetNamespaceHealth, request)
 
+    async def update_namespace_config(self, request):
+        return await self._call(self.namespaces.UpdateNamespaceConfig, request)
+
+    async def get_namespace_capabilities(self, request):
+        return await self._call(self.namespaces.GetNamespaceCapabilities, request)
+
     async def create_api_key(
         self,
         request: auth_pb2.CreateApiKeyRequest,
@@ -133,6 +142,54 @@ class AMemorixClient:
         request: memory_pb2.SearchMemoryRequest,
     ) -> memory_pb2.SearchMemoryResponse:
         return await self._call(self.memory.SearchMemory, request)
+
+    async def batch_ingest_text(
+        self,
+        request: memory_pb2.BatchIngestTextRequest,
+        *,
+        idempotency_key: str = "",
+    ) -> memory_pb2.BatchIngestTextResponse:
+        metadata = self._metadata
+        if idempotency_key:
+            metadata = (*metadata, ("idempotency-key", idempotency_key))
+        return await self._call(
+            self.memory.BatchIngestText,
+            request,
+            metadata=metadata,
+        )
+
+    async def get_memory(
+        self,
+        request: memory_pb2.GetMemoryRequest,
+    ) -> memory_pb2.GetMemoryResponse:
+        return await self._call(self.memory.GetMemory, request)
+
+    async def delete_memory(
+        self,
+        request: memory_pb2.DeleteMemoryRequest,
+    ) -> memory_pb2.DeleteMemoryResponse:
+        return await self._call(self.memory.DeleteMemory, request)
+
+    async def submit_delete_by_source(
+        self,
+        request: job_pb2.SubmitDeleteBySourceRequest,
+    ) -> job_pb2.SubmitDeleteBySourceResponse:
+        return await self._call(self.jobs.SubmitDeleteBySource, request)
+
+    async def get_job(self, request: job_pb2.GetJobRequest) -> job_pb2.GetJobResponse:
+        return await self._call(self.jobs.GetJob, request)
+
+    async def list_jobs(
+        self,
+        request: job_pb2.ListJobsRequest,
+    ) -> job_pb2.ListJobsResponse:
+        return await self._call(self.jobs.ListJobs, request)
+
+    async def cancel_job(
+        self,
+        request: job_pb2.CancelJobRequest,
+    ) -> job_pb2.CancelJobResponse:
+        return await self._call(self.jobs.CancelJob, request)
 
     async def _call(
         self,

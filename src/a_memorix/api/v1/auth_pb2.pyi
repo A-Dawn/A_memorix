@@ -47,16 +47,22 @@ class CreateApiKeyResponse(_message.Message):
     def __init__(self, api_key: _Optional[_Union[ApiKeyInfo, _Mapping]] = ..., secret: _Optional[str] = ...) -> None: ...
 
 class ListApiKeysRequest(_message.Message):
-    __slots__ = ("namespace_id",)
+    __slots__ = ("namespace_id", "page_size", "page_token")
     NAMESPACE_ID_FIELD_NUMBER: _ClassVar[int]
+    PAGE_SIZE_FIELD_NUMBER: _ClassVar[int]
+    PAGE_TOKEN_FIELD_NUMBER: _ClassVar[int]
     namespace_id: str
-    def __init__(self, namespace_id: _Optional[str] = ...) -> None: ...
+    page_size: int
+    page_token: str
+    def __init__(self, namespace_id: _Optional[str] = ..., page_size: _Optional[int] = ..., page_token: _Optional[str] = ...) -> None: ...
 
 class ListApiKeysResponse(_message.Message):
-    __slots__ = ("api_keys",)
+    __slots__ = ("api_keys", "next_page_token")
     API_KEYS_FIELD_NUMBER: _ClassVar[int]
+    NEXT_PAGE_TOKEN_FIELD_NUMBER: _ClassVar[int]
     api_keys: _containers.RepeatedCompositeFieldContainer[ApiKeyInfo]
-    def __init__(self, api_keys: _Optional[_Iterable[_Union[ApiKeyInfo, _Mapping]]] = ...) -> None: ...
+    next_page_token: str
+    def __init__(self, api_keys: _Optional[_Iterable[_Union[ApiKeyInfo, _Mapping]]] = ..., next_page_token: _Optional[str] = ...) -> None: ...
 
 class RevokeApiKeyRequest(_message.Message):
     __slots__ = ("namespace_id", "key_id")

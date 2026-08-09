@@ -659,6 +659,20 @@ MaiBot 只保留以下测试：
 
 退出条件：同一 application request 通过不同协议调用时，状态变化、错误码和结果语义一致。
 
+### 阶段 4.1：通用应用契约补全
+
+工作内容：
+
+- 实现 namespace 持久化配置、配置版本和运行时能力发现
+- 实现跨重启幂等账本、请求摘要冲突检测和批量写入
+- 增加直接读取、单条删除和按来源删除
+- 建立持久化 Job 状态机，先承载按来源删除
+- 为 namespace、API Key 和 Job 列表增加游标分页
+- 扩展 gRPC、HTTP/JSON、Python SDK 和固定 namespace MCP 的一致契约
+- 把 Protobuf breaking 检查加入协议演进门禁
+
+退出条件：其他 Agent 可以只依赖公开 contract 完成 namespace 配置、能力探测、基础记忆管理和长任务跟踪，不需要导入内核私有服务。
+
 ### 阶段 5：打包和运维能力
 
 工作内容：

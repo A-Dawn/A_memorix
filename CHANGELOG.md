@@ -19,7 +19,11 @@
 
 ### 验证
 
-- 迁入57个通用测试文件，共629项测试通过，2项可选大规模压测跳过。
+- 建立物理隔离的 namespace 运行时、生命周期控制库、配额和 API Key。
+- Protobuf 成为唯一网络 IDL，提供 gRPC、gRPC-Gateway HTTP/JSON、Python SDK 和固定 namespace MCP。
+- namespace 配置、运行时能力发现、持久化幂等、批量写入、直接读删和来源删除 Job 已进入公开 contract。
+- namespace、API Key 和 Job 列表支持游标分页，Protobuf 变更通过 Buf breaking gate。
+- 通用测试共656项通过，2项可选大规模压测跳过。
 - 包可在不安装、不导入 MaiBot 的环境中编译、导入和运行测试。
 
 ## [1.0.1] - 2026-03-07

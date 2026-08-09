@@ -70,6 +70,9 @@ func main() {
 	if err := api.RegisterMemoryServiceHandler(ctx, mux, connection); err != nil {
 		log.Fatalf("register memory gateway: %v", err)
 	}
+	if err := api.RegisterJobServiceHandler(ctx, mux, connection); err != nil {
+		log.Fatalf("register job gateway: %v", err)
+	}
 
 	server := &http.Server{
 		Addr:              *listenAddress,

@@ -6,9 +6,10 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Mapping
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .context import RequestContext
+from .errors import ErrorEnvelope
 
 
 class SearchMode(StrEnum):
@@ -24,15 +25,16 @@ class RelationInput(BaseModel):
 
     subject: str = Field(min_length=1)
     predicate: str = Field(min_length=1)
-    object_value: str = Field(alias="object", serialization_alias="object", min_length=1)
+    object_value: str = Field(
+        alias="object", serialization_alias="object", min_length=1
+    )
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     metadata: Mapping[str, object] = Field(default_factory=dict)
 
 
-class IngestTextRequest(BaseModel):
+class IngestTextInput(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    context: RequestContext
     external_id: str = Field(default="", max_length=512)
     source_type: str = Field(min_length=1, max_length=128)
     text: str = Field(min_length=1)
@@ -48,6 +50,10 @@ class IngestTextRequest(BaseModel):
     respect_filter: bool = True
 
 
+class IngestTextRequest(IngestTextInput):
+    context: RequestContext
+
+
 class IngestTextResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -56,6 +62,91 @@ class IngestTextResponse(BaseModel):
     fact_claim_ids: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
     detail: str = ""
+
+
+class BatchIngestTextRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    context: RequestContext
+    items: tuple[IngestTextInput, ...] = Field(min_length=1, max_length=100)
+
+
+class BatchIngestItemResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    index: int = Field(ge=0)
+    response: IngestTextResponse | None = None
+    error: ErrorEnvelope | None = None
+
+    @model_validator(mode="after")
+    def validate_result(self) -> "BatchIngestItemResult":
+        if (self.response is None) == (self.error is None):
+            raise ValueError("exactly one of response or error must be set")
+        return self
+
+
+class BatchIngestTextResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    results: tuple[BatchIngestItemResult, ...] = ()
+    succeeded: int = Field(default=0, ge=0)
+    failed: int = Field(default=0, ge=0)
+
+
+class GetMemoryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    context: RequestContext
+    memory_id: str = Field(default="", max_length=512)
+    external_id: str = Field(default="", max_length=512)
+
+    @model_validator(mode="after")
+    def validate_selector(self) -> "GetMemoryRequest":
+        if bool(self.memory_id.strip()) == bool(self.external_id.strip()):
+            raise ValueError("exactly one of memory_id or external_id must be set")
+        return self
+
+
+class MemoryRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    memory_id: str
+    external_id: str = ""
+    source_type: str = ""
+    source: str = ""
+    content: str = ""
+    metadata: Mapping[str, object] = Field(default_factory=dict)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    observed_at: datetime | None = None
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
+
+
+class GetMemoryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    memory: MemoryRecord
+
+
+class DeleteMemoryRequest(GetMemoryRequest):
+    reason: str = Field(default="user_delete", min_length=1, max_length=256)
+
+
+class DeleteMemoryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    operation_id: str = ""
+    deleted_count: int = Field(default=0, ge=0)
+    deleted_memory_ids: tuple[str, ...] = ()
+
+
+class DeleteBySourceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    context: RequestContext
+    source: str = Field(min_length=1, max_length=512)
+    reason: str = Field(default="source_delete", min_length=1, max_length=256)
 
 
 class SearchMemoryRequest(BaseModel):

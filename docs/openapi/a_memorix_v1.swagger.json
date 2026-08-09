@@ -9,6 +9,9 @@
       "name": "AuthService"
     },
     {
+      "name": "JobService"
+    },
+    {
       "name": "MemoryService"
     },
     {
@@ -39,6 +42,21 @@
             }
           }
         },
+        "parameters": [
+          {
+            "name": "pageSize",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int64"
+          },
+          {
+            "name": "pageToken",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
         "tags": [
           "NamespaceService"
         ]
@@ -71,6 +89,158 @@
         ],
         "tags": [
           "NamespaceService"
+        ]
+      }
+    },
+    "/v1/namespaces/{context.namespaceId}/memories:batchIngest": {
+      "post": {
+        "operationId": "MemoryService_BatchIngestText",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1BatchIngestTextResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "context.namespaceId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/MemoryServiceBatchIngestTextBody"
+            }
+          }
+        ],
+        "tags": [
+          "MemoryService"
+        ]
+      }
+    },
+    "/v1/namespaces/{context.namespaceId}/memories:delete": {
+      "post": {
+        "operationId": "MemoryService_DeleteMemory",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1DeleteMemoryResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "context.namespaceId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/MemoryServiceDeleteMemoryBody"
+            }
+          }
+        ],
+        "tags": [
+          "MemoryService"
+        ]
+      }
+    },
+    "/v1/namespaces/{context.namespaceId}/memories:deleteBySource": {
+      "post": {
+        "operationId": "JobService_SubmitDeleteBySource",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1SubmitDeleteBySourceResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "context.namespaceId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/JobServiceSubmitDeleteBySourceBody"
+            }
+          }
+        ],
+        "tags": [
+          "JobService"
+        ]
+      }
+    },
+    "/v1/namespaces/{context.namespaceId}/memories:get": {
+      "post": {
+        "operationId": "MemoryService_GetMemory",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1GetMemoryResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "context.namespaceId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/MemoryServiceGetMemoryBody"
+            }
+          }
+        ],
+        "tags": [
+          "MemoryService"
         ]
       }
     },
@@ -231,6 +401,19 @@
             "in": "path",
             "required": true,
             "type": "string"
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int64"
+          },
+          {
+            "name": "pageToken",
+            "in": "query",
+            "required": false,
+            "type": "string"
           }
         ],
         "tags": [
@@ -310,6 +493,74 @@
         ]
       }
     },
+    "/v1/namespaces/{namespaceId}/capabilities": {
+      "get": {
+        "operationId": "NamespaceService_GetNamespaceCapabilities",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1GetNamespaceCapabilitiesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "namespaceId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "NamespaceService"
+        ]
+      }
+    },
+    "/v1/namespaces/{namespaceId}/config": {
+      "patch": {
+        "operationId": "NamespaceService_UpdateNamespaceConfig",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1UpdateNamespaceConfigResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "namespaceId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/NamespaceServiceUpdateNamespaceConfigBody"
+            }
+          }
+        ],
+        "tags": [
+          "NamespaceService"
+        ]
+      }
+    },
     "/v1/namespaces/{namespaceId}/health": {
       "get": {
         "operationId": "NamespaceService_GetNamespaceHealth",
@@ -337,6 +588,121 @@
         ],
         "tags": [
           "NamespaceService"
+        ]
+      }
+    },
+    "/v1/namespaces/{namespaceId}/jobs": {
+      "get": {
+        "operationId": "JobService_ListJobs",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ListJobsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "namespaceId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int64"
+          },
+          {
+            "name": "pageToken",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "JobService"
+        ]
+      }
+    },
+    "/v1/namespaces/{namespaceId}/jobs/{jobId}": {
+      "get": {
+        "operationId": "JobService_GetJob",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1GetJobResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "namespaceId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "jobId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "JobService"
+        ]
+      }
+    },
+    "/v1/namespaces/{namespaceId}/jobs/{jobId}:cancel": {
+      "post": {
+        "operationId": "JobService_CancelJob",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1CancelJobResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "namespaceId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "jobId",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "JobService"
         ]
       }
     },
@@ -471,6 +837,174 @@
         "expiresAt": {
           "type": "string",
           "format": "date-time"
+        }
+      }
+    },
+    "JobServiceSubmitDeleteBySourceBody": {
+      "type": "object",
+      "properties": {
+        "context": {
+          "type": "object",
+          "properties": {
+            "agentId": {
+              "type": "string"
+            },
+            "principalId": {
+              "type": "string"
+            },
+            "conversationId": {
+              "type": "string"
+            },
+            "userId": {
+              "type": "string"
+            },
+            "groupId": {
+              "type": "string"
+            },
+            "requestId": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "idempotencyKey": {
+              "type": "string"
+            }
+          },
+          "description": "RequestContext carries namespace identity and request correlation data."
+        },
+        "source": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "MemoryServiceBatchIngestTextBody": {
+      "type": "object",
+      "properties": {
+        "context": {
+          "type": "object",
+          "properties": {
+            "agentId": {
+              "type": "string"
+            },
+            "principalId": {
+              "type": "string"
+            },
+            "conversationId": {
+              "type": "string"
+            },
+            "userId": {
+              "type": "string"
+            },
+            "groupId": {
+              "type": "string"
+            },
+            "requestId": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "idempotencyKey": {
+              "type": "string"
+            }
+          },
+          "description": "RequestContext carries namespace identity and request correlation data."
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1IngestTextInput"
+          }
+        }
+      }
+    },
+    "MemoryServiceDeleteMemoryBody": {
+      "type": "object",
+      "properties": {
+        "context": {
+          "type": "object",
+          "properties": {
+            "agentId": {
+              "type": "string"
+            },
+            "principalId": {
+              "type": "string"
+            },
+            "conversationId": {
+              "type": "string"
+            },
+            "userId": {
+              "type": "string"
+            },
+            "groupId": {
+              "type": "string"
+            },
+            "requestId": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "idempotencyKey": {
+              "type": "string"
+            }
+          },
+          "description": "RequestContext carries namespace identity and request correlation data."
+        },
+        "memoryId": {
+          "type": "string"
+        },
+        "externalId": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "MemoryServiceGetMemoryBody": {
+      "type": "object",
+      "properties": {
+        "context": {
+          "type": "object",
+          "properties": {
+            "agentId": {
+              "type": "string"
+            },
+            "principalId": {
+              "type": "string"
+            },
+            "conversationId": {
+              "type": "string"
+            },
+            "userId": {
+              "type": "string"
+            },
+            "groupId": {
+              "type": "string"
+            },
+            "requestId": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "idempotencyKey": {
+              "type": "string"
+            }
+          },
+          "description": "RequestContext carries namespace identity and request correlation data."
+        },
+        "memoryId": {
+          "type": "string"
+        },
+        "externalId": {
+          "type": "string"
         }
       }
     },
@@ -632,6 +1166,18 @@
         }
       }
     },
+    "NamespaceServiceUpdateNamespaceConfigBody": {
+      "type": "object",
+      "properties": {
+        "config": {
+          "$ref": "#/definitions/v1NamespaceConfig"
+        },
+        "expectedConfigVersion": {
+          "type": "string",
+          "format": "uint64"
+        }
+      }
+    },
     "protobufAny": {
       "type": "object",
       "properties": {
@@ -698,6 +1244,49 @@
         }
       }
     },
+    "v1BatchIngestItemResult": {
+      "type": "object",
+      "properties": {
+        "index": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "response": {
+          "$ref": "#/definitions/v1IngestTextResponse"
+        },
+        "error": {
+          "$ref": "#/definitions/v1ErrorDetail"
+        }
+      }
+    },
+    "v1BatchIngestTextResponse": {
+      "type": "object",
+      "properties": {
+        "results": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1BatchIngestItemResult"
+          }
+        },
+        "succeeded": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "failed": {
+          "type": "integer",
+          "format": "int64"
+        }
+      }
+    },
+    "v1CancelJobResponse": {
+      "type": "object",
+      "properties": {
+        "job": {
+          "$ref": "#/definitions/v1JobInfo"
+        }
+      }
+    },
     "v1CreateApiKeyResponse": {
       "type": "object",
       "properties": {
@@ -717,6 +1306,9 @@
         },
         "quota": {
           "$ref": "#/definitions/v1NamespaceQuota"
+        },
+        "config": {
+          "$ref": "#/definitions/v1NamespaceConfig"
         }
       }
     },
@@ -725,6 +1317,24 @@
       "properties": {
         "namespace": {
           "$ref": "#/definitions/v1NamespaceInfo"
+        }
+      }
+    },
+    "v1DeleteMemoryResponse": {
+      "type": "object",
+      "properties": {
+        "operationId": {
+          "type": "string"
+        },
+        "deletedCount": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "deletedMemoryIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       }
     },
@@ -752,6 +1362,54 @@
         }
       }
     },
+    "v1ErrorDetail": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "requestId": {
+          "type": "string"
+        },
+        "traceId": {
+          "type": "string"
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "details": {
+          "type": "object"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "description": "ErrorDetail is attached to a canonical gRPC status as typed error details."
+    },
+    "v1GetJobResponse": {
+      "type": "object",
+      "properties": {
+        "job": {
+          "$ref": "#/definitions/v1JobInfo"
+        }
+      }
+    },
+    "v1GetMemoryResponse": {
+      "type": "object",
+      "properties": {
+        "memory": {
+          "$ref": "#/definitions/v1MemoryRecord"
+        }
+      }
+    },
+    "v1GetNamespaceCapabilitiesResponse": {
+      "type": "object",
+      "properties": {
+        "capabilities": {
+          "$ref": "#/definitions/v1NamespaceCapabilities"
+        }
+      }
+    },
     "v1GetNamespaceHealthResponse": {
       "type": "object",
       "properties": {
@@ -765,6 +1423,69 @@
       "properties": {
         "namespace": {
           "$ref": "#/definitions/v1NamespaceInfo"
+        }
+      }
+    },
+    "v1IngestTextInput": {
+      "type": "object",
+      "properties": {
+        "externalId": {
+          "type": "string"
+        },
+        "sourceType": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "personIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "participants": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "observedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "validFrom": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "validTo": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "metadata": {
+          "type": "object"
+        },
+        "entities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "relations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1RelationInput"
+          }
+        },
+        "respectFilter": {
+          "type": "boolean"
         }
       }
     },
@@ -800,6 +1521,69 @@
         }
       }
     },
+    "v1JobInfo": {
+      "type": "object",
+      "properties": {
+        "jobId": {
+          "type": "string"
+        },
+        "namespaceId": {
+          "type": "string"
+        },
+        "jobType": {
+          "$ref": "#/definitions/v1JobType"
+        },
+        "status": {
+          "$ref": "#/definitions/v1JobStatus"
+        },
+        "progress": {
+          "type": "number",
+          "format": "double"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "completedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "result": {
+          "type": "object"
+        },
+        "error": {
+          "$ref": "#/definitions/v1ErrorDetail"
+        }
+      }
+    },
+    "v1JobStatus": {
+      "type": "string",
+      "enum": [
+        "JOB_STATUS_UNSPECIFIED",
+        "JOB_STATUS_PENDING",
+        "JOB_STATUS_RUNNING",
+        "JOB_STATUS_SUCCEEDED",
+        "JOB_STATUS_FAILED",
+        "JOB_STATUS_CANCELLED"
+      ],
+      "default": "JOB_STATUS_UNSPECIFIED"
+    },
+    "v1JobType": {
+      "type": "string",
+      "enum": [
+        "JOB_TYPE_UNSPECIFIED",
+        "JOB_TYPE_DELETE_BY_SOURCE"
+      ],
+      "default": "JOB_TYPE_UNSPECIFIED"
+    },
     "v1ListApiKeysResponse": {
       "type": "object",
       "properties": {
@@ -809,6 +1593,24 @@
             "type": "object",
             "$ref": "#/definitions/v1ApiKeyInfo"
           }
+        },
+        "nextPageToken": {
+          "type": "string"
+        }
+      }
+    },
+    "v1ListJobsResponse": {
+      "type": "object",
+      "properties": {
+        "jobs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1JobInfo"
+          }
+        },
+        "nextPageToken": {
+          "type": "string"
         }
       }
     },
@@ -821,6 +1623,9 @@
             "type": "object",
             "$ref": "#/definitions/v1NamespaceInfo"
           }
+        },
+        "nextPageToken": {
+          "type": "string"
         }
       }
     },
@@ -848,6 +1653,128 @@
         },
         "metadata": {
           "type": "object"
+        }
+      }
+    },
+    "v1MemoryRecord": {
+      "type": "object",
+      "properties": {
+        "memoryId": {
+          "type": "string"
+        },
+        "externalId": {
+          "type": "string"
+        },
+        "sourceType": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "metadata": {
+          "type": "object"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "observedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "validFrom": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "validTo": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "v1NamespaceCapabilities": {
+      "type": "object",
+      "properties": {
+        "namespaceId": {
+          "type": "string"
+        },
+        "configVersion": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "capabilities": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "boolean"
+          }
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "searchModes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "degraded": {
+          "type": "boolean"
+        },
+        "unavailable": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "v1NamespaceConfig": {
+      "type": "object",
+      "properties": {
+        "embedding": {
+          "$ref": "#/definitions/v1ProviderReference"
+        },
+        "llm": {
+          "$ref": "#/definitions/v1ProviderReference"
+        },
+        "identityResolver": {
+          "$ref": "#/definitions/v1ProviderReference"
+        },
+        "messageSource": {
+          "$ref": "#/definitions/v1ProviderReference"
+        },
+        "features": {
+          "$ref": "#/definitions/v1NamespaceFeatureConfig"
+        }
+      }
+    },
+    "v1NamespaceFeatureConfig": {
+      "type": "object",
+      "properties": {
+        "episodes": {
+          "type": "boolean"
+        },
+        "personProfiles": {
+          "type": "boolean"
+        },
+        "sparseRetrieval": {
+          "type": "boolean"
+        },
+        "relationVectors": {
+          "type": "boolean"
+        },
+        "allowMetadataOnlyWrite": {
+          "type": "boolean"
         }
       }
     },
@@ -902,6 +1829,13 @@
         "purgeAfter": {
           "type": "string",
           "format": "date-time"
+        },
+        "configVersion": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "config": {
+          "$ref": "#/definitions/v1NamespaceConfig"
         }
       }
     },
@@ -954,6 +1888,20 @@
         "NAMESPACE_STATUS_PURGING"
       ],
       "default": "NAMESPACE_STATUS_UNSPECIFIED"
+    },
+    "v1ProviderReference": {
+      "type": "object",
+      "properties": {
+        "providerId": {
+          "type": "string"
+        },
+        "modelId": {
+          "type": "string"
+        },
+        "secretRef": {
+          "type": "string"
+        }
+      }
     },
     "v1PurgeNamespaceResponse": {
       "type": "object"
@@ -1073,6 +2021,22 @@
         "SEARCH_MODE_AGGREGATE"
       ],
       "default": "SEARCH_MODE_UNSPECIFIED"
+    },
+    "v1SubmitDeleteBySourceResponse": {
+      "type": "object",
+      "properties": {
+        "job": {
+          "$ref": "#/definitions/v1JobInfo"
+        }
+      }
+    },
+    "v1UpdateNamespaceConfigResponse": {
+      "type": "object",
+      "properties": {
+        "namespace": {
+          "$ref": "#/definitions/v1NamespaceInfo"
+        }
+      }
     }
   }
 }

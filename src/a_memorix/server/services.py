@@ -11,6 +11,8 @@ import grpc
 from a_memorix.api.v1 import (
     auth_pb2,
     auth_pb2_grpc,
+    job_pb2,
+    job_pb2_grpc,
     memory_pb2,
     memory_pb2_grpc,
     namespace_pb2,
@@ -23,13 +25,23 @@ from .auth import AuthPrincipal, GrpcAuthPolicy
 from .errors import abort_for_exception
 from .mapping import (
     api_key_info_to_proto,
+    batch_ingest_request_from_proto,
+    batch_ingest_response_to_proto,
     create_namespace_request_from_proto,
+    delete_by_source_request_from_proto,
+    delete_memory_request_from_proto,
+    delete_memory_response_to_proto,
+    get_memory_request_from_proto,
+    get_memory_response_to_proto,
     ingest_request_from_proto,
     ingest_response_to_proto,
+    job_info_to_proto,
+    namespace_capabilities_to_proto,
     namespace_health_to_proto,
     namespace_info_to_proto,
     search_request_from_proto,
     search_response_to_proto,
+    update_namespace_config_request_from_proto,
 )
 
 
@@ -89,13 +101,39 @@ class NamespaceGrpcService(_ServiceBase, namespace_pb2_grpc.NamespaceServiceServ
         return await self._invoke(context, operation)
 
     async def ListNamespaces(self, request, context):
-        del request
-
         async def operation() -> namespace_pb2.ListNamespacesResponse:
             self._auth.require_admin(context)
-            namespaces = await self._engine.list_namespaces()
+            namespaces, next_page_token = await self._engine.list_namespaces_page(
+                page_size=request.page_size if request.HasField("page_size") else 50,
+                page_token=request.page_token,
+            )
             return namespace_pb2.ListNamespacesResponse(
-                namespaces=[namespace_info_to_proto(item) for item in namespaces]
+                namespaces=[namespace_info_to_proto(item) for item in namespaces],
+                next_page_token=next_page_token,
+            )
+
+        return await self._invoke(context, operation)
+
+    async def UpdateNamespaceConfig(self, request, context):
+        async def operation() -> namespace_pb2.UpdateNamespaceConfigResponse:
+            self._auth.require_admin(context)
+            namespace = await self._engine.update_namespace_config(
+                update_namespace_config_request_from_proto(request)
+            )
+            return namespace_pb2.UpdateNamespaceConfigResponse(
+                namespace=namespace_info_to_proto(namespace)
+            )
+
+        return await self._invoke(context, operation)
+
+    async def GetNamespaceCapabilities(self, request, context):
+        async def operation() -> namespace_pb2.GetNamespaceCapabilitiesResponse:
+            self._auth.require_namespace(context, request.namespace_id)
+            capabilities = await self._engine.get_namespace_capabilities(
+                request.namespace_id
+            )
+            return namespace_pb2.GetNamespaceCapabilitiesResponse(
+                capabilities=namespace_capabilities_to_proto(capabilities)
             )
 
         return await self._invoke(context, operation)
@@ -183,9 +221,14 @@ class AuthGrpcService(_ServiceBase, auth_pb2_grpc.AuthServiceServicer):
     async def ListApiKeys(self, request, context):
         async def operation() -> auth_pb2.ListApiKeysResponse:
             self._auth.require_admin(context)
-            keys = await self._engine.list_api_keys(request.namespace_id)
+            keys, next_page_token = await self._engine.list_api_keys_page(
+                request.namespace_id,
+                page_size=request.page_size if request.HasField("page_size") else 50,
+                page_token=request.page_token,
+            )
             return auth_pb2.ListApiKeysResponse(
-                api_keys=[api_key_info_to_proto(item) for item in keys]
+                api_keys=[api_key_info_to_proto(item) for item in keys],
+                next_page_token=next_page_token,
             )
 
         return await self._invoke(context, operation)
@@ -229,6 +272,93 @@ class MemoryGrpcService(_ServiceBase, memory_pb2_grpc.MemoryServiceServicer):
             request_context=lambda: request_context,
         )
 
+    async def BatchIngestText(self, request, context):
+        request_context: RequestContext | None = None
+
+        async def operation() -> memory_pb2.BatchIngestTextResponse:
+            nonlocal request_context
+            application_request = batch_ingest_request_from_proto(request)
+            request_context = application_request.context
+            principal = self._auth.require_namespace(
+                context,
+                application_request.context.namespace_id,
+            )
+            request_context = _bind_authenticated_context(
+                application_request.context,
+                context,
+                principal,
+                wire_context=request.context,
+            )
+            application_request = application_request.model_copy(
+                update={"context": request_context}
+            )
+            result = await self._engine.batch_ingest_text(application_request)
+            return batch_ingest_response_to_proto(result)
+
+        return await self._invoke(
+            context,
+            operation,
+            request_context=lambda: request_context,
+        )
+
+    async def GetMemory(self, request, context):
+        request_context: RequestContext | None = None
+
+        async def operation() -> memory_pb2.GetMemoryResponse:
+            nonlocal request_context
+            application_request = get_memory_request_from_proto(request)
+            request_context = application_request.context
+            principal = self._auth.require_namespace(
+                context,
+                application_request.context.namespace_id,
+            )
+            request_context = _bind_authenticated_context(
+                application_request.context,
+                context,
+                principal,
+                wire_context=request.context,
+            )
+            application_request = application_request.model_copy(
+                update={"context": request_context}
+            )
+            result = await self._engine.get_memory(application_request)
+            return get_memory_response_to_proto(result)
+
+        return await self._invoke(
+            context,
+            operation,
+            request_context=lambda: request_context,
+        )
+
+    async def DeleteMemory(self, request, context):
+        request_context: RequestContext | None = None
+
+        async def operation() -> memory_pb2.DeleteMemoryResponse:
+            nonlocal request_context
+            application_request = delete_memory_request_from_proto(request)
+            request_context = application_request.context
+            principal = self._auth.require_namespace(
+                context,
+                application_request.context.namespace_id,
+            )
+            request_context = _bind_authenticated_context(
+                application_request.context,
+                context,
+                principal,
+                wire_context=request.context,
+            )
+            application_request = application_request.model_copy(
+                update={"context": request_context}
+            )
+            result = await self._engine.delete_memory(application_request)
+            return delete_memory_response_to_proto(result)
+
+        return await self._invoke(
+            context,
+            operation,
+            request_context=lambda: request_context,
+        )
+
     async def SearchMemory(self, request, context):
         request_context: RequestContext | None = None
 
@@ -259,6 +389,68 @@ class MemoryGrpcService(_ServiceBase, memory_pb2_grpc.MemoryServiceServicer):
         )
 
 
+class JobGrpcService(_ServiceBase, job_pb2_grpc.JobServiceServicer):
+    async def SubmitDeleteBySource(self, request, context):
+        request_context: RequestContext | None = None
+
+        async def operation() -> job_pb2.SubmitDeleteBySourceResponse:
+            nonlocal request_context
+            application_request = delete_by_source_request_from_proto(request)
+            request_context = application_request.context
+            principal = self._auth.require_namespace(
+                context,
+                application_request.context.namespace_id,
+            )
+            request_context = _bind_authenticated_context(
+                application_request.context,
+                context,
+                principal,
+                wire_context=request.context,
+            )
+            application_request = application_request.model_copy(
+                update={"context": request_context}
+            )
+            job = await self._engine.submit_delete_by_source(application_request)
+            return job_pb2.SubmitDeleteBySourceResponse(job=job_info_to_proto(job))
+
+        return await self._invoke(
+            context,
+            operation,
+            request_context=lambda: request_context,
+        )
+
+    async def GetJob(self, request, context):
+        async def operation() -> job_pb2.GetJobResponse:
+            self._auth.require_namespace(context, request.namespace_id)
+            job = await self._engine.get_job(request.namespace_id, request.job_id)
+            return job_pb2.GetJobResponse(job=job_info_to_proto(job))
+
+        return await self._invoke(context, operation)
+
+    async def ListJobs(self, request, context):
+        async def operation() -> job_pb2.ListJobsResponse:
+            self._auth.require_namespace(context, request.namespace_id)
+            jobs, next_page_token = await self._engine.list_jobs_page(
+                request.namespace_id,
+                page_size=request.page_size if request.HasField("page_size") else 50,
+                page_token=request.page_token,
+            )
+            return job_pb2.ListJobsResponse(
+                jobs=[job_info_to_proto(item) for item in jobs],
+                next_page_token=next_page_token,
+            )
+
+        return await self._invoke(context, operation)
+
+    async def CancelJob(self, request, context):
+        async def operation() -> job_pb2.CancelJobResponse:
+            self._auth.require_namespace(context, request.namespace_id)
+            job = await self._engine.cancel_job(request.namespace_id, request.job_id)
+            return job_pb2.CancelJobResponse(job=job_info_to_proto(job))
+
+        return await self._invoke(context, operation)
+
+
 def register_services(
     server: grpc.aio.Server,
     engine: AMemorixEngine,
@@ -274,6 +466,10 @@ def register_services(
     )
     memory_pb2_grpc.add_MemoryServiceServicer_to_server(
         MemoryGrpcService(engine, auth),
+        server,
+    )
+    job_pb2_grpc.add_JobServiceServicer_to_server(
+        JobGrpcService(engine, auth),
         server,
     )
 

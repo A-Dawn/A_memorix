@@ -49,6 +49,82 @@ message IngestTextResponse {
   string detail = 5;
 }
 
+message IngestTextInput {
+  string external_id = 1;
+  string source_type = 2;
+  string text = 3;
+  repeated string person_ids = 4;
+  repeated string participants = 5;
+  google.protobuf.Timestamp observed_at = 6;
+  google.protobuf.Timestamp valid_from = 7;
+  google.protobuf.Timestamp valid_to = 8;
+  repeated string tags = 9;
+  google.protobuf.Struct metadata = 10;
+  repeated string entities = 11;
+  repeated RelationInput relations = 12;
+  optional bool respect_filter = 13;
+}
+
+message BatchIngestTextRequest {
+  RequestContext context = 1;
+  repeated IngestTextInput items = 2;
+}
+
+message BatchIngestItemResult {
+  uint32 index = 1;
+  oneof result {
+    IngestTextResponse response = 2;
+    ErrorDetail error = 3;
+  }
+}
+
+message BatchIngestTextResponse {
+  repeated BatchIngestItemResult results = 1;
+  uint32 succeeded = 2;
+  uint32 failed = 3;
+}
+
+message GetMemoryRequest {
+  RequestContext context = 1;
+  oneof selector {
+    string memory_id = 2;
+    string external_id = 3;
+  }
+}
+
+message MemoryRecord {
+  string memory_id = 1;
+  string external_id = 2;
+  string source_type = 3;
+  string source = 4;
+  string content = 5;
+  google.protobuf.Struct metadata = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp updated_at = 8;
+  google.protobuf.Timestamp observed_at = 9;
+  google.protobuf.Timestamp valid_from = 10;
+  google.protobuf.Timestamp valid_to = 11;
+}
+
+message GetMemoryResponse {
+  MemoryRecord memory = 1;
+}
+
+message DeleteMemoryRequest {
+  RequestContext context = 1;
+  oneof selector {
+    string memory_id = 2;
+    string external_id = 3;
+  }
+  string reason = 4;
+}
+
+message DeleteMemoryResponse {
+  string operation_id = 1;
+  uint32 deleted_count = 2;
+  repeated string deleted_memory_ids = 3;
+}
+
 message SearchMemoryRequest {
   RequestContext context = 1;
   string query = 2;
@@ -86,6 +162,27 @@ service MemoryService {
   rpc IngestText(IngestTextRequest) returns (IngestTextResponse) {
     option (google.api.http) = {
       post: "/v1/namespaces/{context.namespace_id}/memories:ingest"
+      body: "*"
+    };
+  }
+
+  rpc BatchIngestText(BatchIngestTextRequest) returns (BatchIngestTextResponse) {
+    option (google.api.http) = {
+      post: "/v1/namespaces/{context.namespace_id}/memories:batchIngest"
+      body: "*"
+    };
+  }
+
+  rpc GetMemory(GetMemoryRequest) returns (GetMemoryResponse) {
+    option (google.api.http) = {
+      post: "/v1/namespaces/{context.namespace_id}/memories:get"
+      body: "*"
+    };
+  }
+
+  rpc DeleteMemory(DeleteMemoryRequest) returns (DeleteMemoryResponse) {
+    option (google.api.http) = {
+      post: "/v1/namespaces/{context.namespace_id}/memories:delete"
       body: "*"
     };
   }
