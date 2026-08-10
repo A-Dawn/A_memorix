@@ -2129,7 +2129,6 @@ class VectorStore:
 
         with self._lock:
             self._raise_if_cleanup_checkpoint_broken_unlocked()
-            self._flush_write_buffer_unlocked()
             int_to_str: Dict[int, str] = {}
             for str_id in unique_ids:
                 int_id = self._generate_id(str_id)
@@ -2142,6 +2141,7 @@ class VectorStore:
             if not int_to_str:
                 return 0
 
+            self._flush_write_buffer_unlocked()
             persisted = self._read_persisted_vectors_unlocked(set(int_to_str))
             if not persisted:
                 return 0

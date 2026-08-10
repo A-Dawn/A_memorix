@@ -228,6 +228,9 @@ class MetadataFTSMixin:
 
     def _tokenize_paragraph_for_fts(self, text: str) -> str:
         source = str(text or "")
+        phrase_tokens = self._paragraph_phrase_tokens(source)
+        if re.search(r"[\u4e00-\u9fff]", source) is None:
+            return " ".join(dict.fromkeys(phrase_tokens))
         if HAS_JIEBA and JIEBA_MODULE is not None:
             try:
                 tokens = [token.strip().lower() for token in JIEBA_MODULE.cut_for_search(source) if token.strip()]
@@ -235,7 +238,7 @@ class MetadataFTSMixin:
                 tokens = list(source.lower())
         else:
             tokens = list(source.lower())
-        tokens.extend(self._paragraph_phrase_tokens(source))
+        tokens.extend(phrase_tokens)
         return " ".join(dict.fromkeys(token for token in tokens if token))
 
     def _refresh_paragraph_tokenized_fts_meta(self, conn: sqlite3.Connection) -> None:

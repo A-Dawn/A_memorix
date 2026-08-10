@@ -517,26 +517,11 @@ class AMemorixEngine:
                     "namespace runtime does not support text ingestion",
                     details={"namespace_id": context.namespace_id},
                 )
-            result = await ingest(
-                external_id=request.external_id,
-                source_type=request.source_type,
-                text=request.text,
-                chat_id=context.conversation_id or "",
-                person_ids=request.person_ids,
-                participants=request.participants,
-                timestamp=_optional_timestamp(request.observed_at),
-                time_start=_optional_timestamp(request.valid_from),
-                time_end=_optional_timestamp(request.valid_to),
-                tags=request.tags,
-                metadata=dict(request.metadata),
-                entities=request.entities,
-                relations=[
-                    item.model_dump(by_alias=True) for item in request.relations
-                ],
-                respect_filter=request.respect_filter,
-                user_id=context.user_id or "",
-                group_id=context.group_id or "",
-            )
+            result = await ingest(**self._runtime_ingest_payload(request))
+        return self._runtime_ingest_response(result)
+
+    @staticmethod
+    def _runtime_ingest_response(result: dict[str, object]) -> dict[str, object]:
         response = IngestTextResponse(
             stored_ids=tuple(str(item) for item in result.get("stored_ids", [])),
             skipped_ids=tuple(str(item) for item in result.get("skipped_ids", [])),
@@ -570,39 +555,99 @@ class AMemorixEngine:
         self,
         request: BatchIngestTextRequest,
     ) -> dict[str, object]:
-        results: list[BatchIngestItemResult] = []
-        succeeded = 0
-        for index, item in enumerate(request.items):
+        context = request.context
+        namespace = await self.get_namespace(context.namespace_id)
+        async with self.runtime(context) as runtime:
+            batch_ingest = getattr(runtime, "batch_ingest_text", None)
+            if (
+                callable(batch_ingest)
+                and namespace.quota.max_storage_bytes is None
+            ):
+                raw_results = await batch_ingest(
+                    items=[
+                        self._runtime_ingest_payload(
+                            IngestTextRequest(context=context, **item.model_dump())
+                        )
+                        for item in request.items
+                    ]
+                )
+                if len(raw_results) != len(request.items):
+                    raise RuntimeError(
+                        "namespace runtime returned an invalid batch result count"
+                    )
+                return self._batch_ingest_response(raw_results, context=context)
+
+        raw_results: list[dict[str, object] | Exception] = []
+        for item in request.items:
             ingest_request = IngestTextRequest(
                 context=request.context,
                 **item.model_dump(),
             )
             try:
-                payload = await self._ingest_text_locked(ingest_request)
-                results.append(
-                    BatchIngestItemResult(
-                        index=index,
-                        response=IngestTextResponse.model_validate(payload),
-                    )
-                )
-                succeeded += 1
-            except AMemorixError as exc:
-                results.append(
-                    BatchIngestItemResult(index=index, error=exc.to_envelope())
-                )
-            except Exception:
+                raw_results.append(await self._ingest_text_locked(ingest_request))
+            except Exception as exc:
+                raw_results.append(exc)
+        return self._batch_ingest_response(
+            raw_results,
+            context=context,
+        )
+
+    @staticmethod
+    def _runtime_ingest_payload(request: IngestTextRequest) -> dict[str, object]:
+        context = request.context
+        return {
+            "external_id": request.external_id,
+            "source_type": request.source_type,
+            "text": request.text,
+            "chat_id": context.conversation_id or "",
+            "person_ids": request.person_ids,
+            "participants": request.participants,
+            "timestamp": _optional_timestamp(request.observed_at),
+            "time_start": _optional_timestamp(request.valid_from),
+            "time_end": _optional_timestamp(request.valid_to),
+            "tags": request.tags,
+            "metadata": dict(request.metadata),
+            "entities": request.entities,
+            "relations": [item.model_dump(by_alias=True) for item in request.relations],
+            "respect_filter": request.respect_filter,
+            "user_id": context.user_id or "",
+            "group_id": context.group_id or "",
+        }
+
+    @staticmethod
+    def _batch_ingest_response(
+        raw_results: list[dict[str, object] | Exception],
+        *,
+        context: RequestContext,
+    ) -> dict[str, object]:
+        results: list[BatchIngestItemResult] = []
+        succeeded = 0
+        for index, item in enumerate(raw_results):
+            if isinstance(item, AMemorixError):
+                results.append(BatchIngestItemResult(index=index, error=item.to_envelope()))
+            elif isinstance(item, Exception):
                 results.append(
                     BatchIngestItemResult(
                         index=index,
                         error=ErrorEnvelope(
                             code=ErrorCode.INTERNAL_ERROR,
                             message="batch item failed",
-                            request_id=request.context.request_id,
-                            trace_id=request.context.trace_id,
+                            request_id=context.request_id,
+                            trace_id=context.trace_id,
                             retryable=True,
                         ),
                     )
                 )
+            else:
+                results.append(
+                    BatchIngestItemResult(
+                        index=index,
+                        response=IngestTextResponse.model_validate(
+                            AMemorixEngine._runtime_ingest_response(item)
+                        ),
+                    )
+                )
+                succeeded += 1
         response = BatchIngestTextResponse(
             results=tuple(results),
             succeeded=succeeded,
@@ -927,22 +972,30 @@ class AMemorixEngine:
         return response
 
     async def _enforce_write_admission(self, request: IngestTextRequest) -> None:
-        health = await self.namespace_health(request.context.namespace_id)
-        maximum = health.namespace.quota.max_storage_bytes
-        if maximum is None:
-            return
         serialized = json.dumps(
             request.model_dump(mode="json"),
             ensure_ascii=False,
             separators=(",", ":"),
         ).encode("utf-8")
         reservation = max(4096, len(serialized))
+        await self._enforce_storage_reservation(request.context, reservation)
+
+    async def _enforce_storage_reservation(
+        self,
+        context: RequestContext,
+        reservation: int,
+    ) -> None:
+        namespace = await self.get_namespace(context.namespace_id)
+        maximum = namespace.quota.max_storage_bytes
+        if maximum is None:
+            return
+        health = await self.namespace_health(context.namespace_id)
         projected = health.resource_usage.storage_bytes + reservation
         if projected > maximum:
             raise NamespaceCapacityError(
                 "namespace storage admission limit exceeded",
                 details={
-                    "namespace_id": request.context.namespace_id,
+                    "namespace_id": context.namespace_id,
                     "storage_bytes": health.resource_usage.storage_bytes,
                     "reservation_bytes": reservation,
                     "max_storage_bytes": maximum,

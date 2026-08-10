@@ -326,6 +326,7 @@ class MemoryIngestService(KernelServiceBase):
         respect_filter: bool = True,
         user_id: str = "",
         group_id: str = "",
+        _persist_after_write: bool = True,
     ) -> Dict[str, Any]:
         """按 ``external_id`` 幂等写入一条文本记忆及其派生数据。
 
@@ -445,7 +446,8 @@ class MemoryIngestService(KernelServiceBase):
             source_type=source_type,
             metadata={"chat_id": chat_id, "person_ids": person_tokens},
         )
-        self._persist()
+        if _persist_after_write:
+            self._persist()
         for person_id in person_tokens:
             self._mark_person_active(person_id)
             self._enqueue_person_profile_refresh(person_id, reason=str(source_type or "ingest_text"))
@@ -458,6 +460,29 @@ class MemoryIngestService(KernelServiceBase):
             payload["warnings"] = warnings
             payload["detail"] = "vector_degraded_write"
         return payload
+
+    async def ingest_text_batch(
+        self,
+        *,
+        items: Sequence[Dict[str, Any]],
+    ) -> List[Dict[str, Any] | Exception]:
+        """批量写入期间延迟向量和图持久化，批次结束时统一提交。"""
+        results: List[Dict[str, Any] | Exception] = []
+        try:
+            for item in items:
+                try:
+                    results.append(
+                        await self.ingest_text(
+                            **item,
+                            _persist_after_write=False,
+                        )
+                    )
+                except Exception as exc:
+                    results.append(exc)
+        finally:
+            if items:
+                self._persist()
+        return results
 
     async def _maintain_episode_source_lease(
         self,

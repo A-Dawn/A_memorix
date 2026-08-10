@@ -5,6 +5,28 @@ from a_memorix.core.retrieval.sparse_bm25 import (
     SparseBM25Index,
 )
 from a_memorix.core.storage.metadata_store import MetadataStore
+from a_memorix.core.storage import metadata_fts as metadata_fts_module
+
+
+def test_ascii_fts_tokenization_skips_jieba(monkeypatch, tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    class RecordingJieba:
+        @staticmethod
+        def cut_for_search(text: str) -> list[str]:
+            calls.append(text)
+            return ["温湿度计", "校准"]
+
+    monkeypatch.setattr(metadata_fts_module, "HAS_JIEBA", True)
+    monkeypatch.setattr(metadata_fts_module, "JIEBA_MODULE", RecordingJieba())
+    store = MetadataStore(data_dir=tmp_path)
+
+    assert store._tokenize_paragraph_for_fts("Parser token_1 recovery") == (
+        "parser token_1 recovery"
+    )
+    assert calls == []
+    assert "温湿度计" in store._tokenize_paragraph_for_fts("温湿度计校准")
+    assert calls == ["温湿度计校准"]
 
 
 def test_sparse_warmup_loads_index_and_runs_probe(tmp_path: Path) -> None:

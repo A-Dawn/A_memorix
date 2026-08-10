@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 try:
+    import a_memorix.core.storage.graph_store as graph_store_module
     from a_memorix.core.storage.graph_store import GraphStore
 except SystemExit as exc:
     GraphStore = None  # type: ignore[assignment]
@@ -181,6 +182,33 @@ def test_graph_store_cleanup_failure_does_not_mask_activated_snapshot(
 
     store.save()
 
+    reloaded = GraphStore(data_dir=data_dir)
+    reloaded.load()
+    assert reloaded.num_edges == 1
+
+
+def test_graph_store_retries_snapshot_promotion_after_windows_file_lock(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "graph"
+    store = GraphStore(data_dir=data_dir)
+    store.add_edges([("Alice", "Bob")], relation_hashes=["rel-1"])
+    original_replace = Path.replace
+    attempts = 0
+
+    def transient_lock(source: Path, target: Path) -> Path:
+        nonlocal attempts
+        if source.name.startswith(".graph-") and attempts < 2:
+            attempts += 1
+            raise PermissionError(5, "simulated Windows file lock", str(source))
+        return original_replace(source, target)
+
+    monkeypatch.setattr(graph_store_module.Path, "replace", transient_lock)
+
+    store.save()
+
+    assert attempts == 2
     reloaded = GraphStore(data_dir=data_dir)
     reloaded.load()
     assert reloaded.num_edges == 1

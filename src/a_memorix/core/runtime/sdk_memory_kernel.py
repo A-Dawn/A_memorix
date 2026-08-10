@@ -1071,6 +1071,14 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
             group_id=group_id,
         )
 
+    async def batch_ingest_text(
+        self,
+        *,
+        items: Sequence[Dict[str, Any]],
+    ) -> List[Dict[str, Any] | Exception]:
+        service = self._ingest_service
+        return await type(service).ingest_text_batch(service, items=items)
+
     async def contains_external_memory(self, external_id: str) -> bool:
         await self.initialize()
         assert self.metadata_store is not None
