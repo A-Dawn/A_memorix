@@ -28,6 +28,7 @@ from .common import (
 )
 from .engine_backend import (
     AMemorixEvaluationBackend,
+    AMemorixSharedNamespaceBackend,
     BackendOptions,
     RetrievalCase,
     RetrievalDocument,
@@ -62,6 +63,7 @@ DATASET_REPOSITORY = "https://github.com/xiaowu0162/LongMemEval"
 DATASET_REPOSITORY_COMMIT = "9e0b455f4ef0e2ab8f2e582289761153549043fc"
 
 Granularity = Literal["session", "turn"]
+NamespaceMode = Literal["isolated", "full"]
 
 
 @dataclass(frozen=True)
@@ -158,6 +160,7 @@ class RunOptions:
     output_dir: Path
     work_dir: Path
     granularity: Granularity = "turn"
+    namespace_mode: NamespaceMode = "isolated"
     top_k: int = 50
     limit: int = 0
     question_ids: tuple[str, ...] = ()
@@ -447,6 +450,7 @@ async def run_benchmark(
         "evaluation_schema_version": EVALUATION_SCHEMA_VERSION,
         "benchmark": "LongMemEval-S Cleaned retrieval",
         "granularity": options.granularity,
+        "namespace_mode": options.namespace_mode,
         "top_k": options.top_k,
         "selected_case_ids": selected_ids,
         "dataset_sha256": validation["sha256"],
@@ -459,22 +463,46 @@ async def run_benchmark(
     resumed_case_count = len(rows)
     completed_ids = {str(row["case_id"]) for row in rows}
     selected_id_set = set(selected_ids)
-    backend = AMemorixEvaluationBackend(
-        provider,
-        BackendOptions(
-            work_root=options.work_dir,
-            top_k=options.top_k,
-            embedding_batch_size=options.embedding_batch_size,
-            embedding_concurrency=options.embedding_concurrency,
-            keep_case_data=options.keep_case_data,
-        ),
+    backend_options = BackendOptions(
+        work_root=options.work_dir,
+        top_k=options.top_k,
+        embedding_batch_size=options.embedding_batch_size,
+        embedding_concurrency=options.embedding_concurrency,
+        keep_case_data=options.keep_case_data,
     )
-    for case in iter_cases(options.dataset_path):
-        if case.question_id not in selected_id_set or case.question_id in completed_ids:
-            continue
-        row = await backend.run_case(case.as_retrieval_case(options.granularity))
-        rows.append(row)
-        append_jsonl(output_dir / "results.jsonl", row)
+    corpus_report: dict[str, Any] | None = None
+    if options.namespace_mode == "full":
+        retrieval_cases = [
+            case.as_retrieval_case(options.granularity)
+            for case in iter_cases(options.dataset_path)
+            if case.question_id in selected_id_set
+        ]
+        backend = AMemorixSharedNamespaceBackend(provider, backend_options)
+        try:
+            corpus_report = await backend.prepare(retrieval_cases)
+            for case in retrieval_cases:
+                if case.case_id in completed_ids:
+                    continue
+                row = await backend.run_case(case)
+                rows.append(row)
+                append_jsonl(output_dir / "results.jsonl", row)
+        finally:
+            await backend.close()
+    elif options.namespace_mode == "isolated":
+        backend = AMemorixEvaluationBackend(provider, backend_options)
+        for case in iter_cases(options.dataset_path):
+            if (
+                case.question_id not in selected_id_set
+                or case.question_id in completed_ids
+            ):
+                continue
+            row = await backend.run_case(case.as_retrieval_case(options.granularity))
+            rows.append(row)
+            append_jsonl(output_dir / "results.jsonl", row)
+    else:
+        raise ValueError(
+            f"unsupported LongMemEval namespace mode: {options.namespace_mode}"
+        )
     order = {case_id: index for index, case_id in enumerate(selected_ids)}
     rows.sort(key=lambda row: order[str(row.get("case_id", ""))])
     write_jsonl(output_dir / "results.jsonl", rows)
@@ -484,6 +512,7 @@ async def run_benchmark(
         "evaluation_schema_version": EVALUATION_SCHEMA_VERSION,
         "benchmark": "LongMemEval-S Cleaned retrieval",
         "granularity": options.granularity,
+        "namespace_mode": options.namespace_mode,
         "top_k": options.top_k,
         "selected_case_count": len(selected_ids),
         "selected_case_ids": selected_ids,
@@ -494,5 +523,7 @@ async def run_benchmark(
         "runtime": runtime,
         "results": aggregate_results(rows),
     }
+    if corpus_report is not None:
+        summary["corpus"] = corpus_report
     write_json(output_dir / "summary.json", summary)
     return summary

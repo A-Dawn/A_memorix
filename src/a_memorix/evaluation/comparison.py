@@ -38,6 +38,7 @@ PERFORMANCE_ENVIRONMENT_FIELDS = (
 SCHEMA_V1_LEGACY_DEFAULTS = {
     "embedding_prewarm.batch_size": 16,
     "embedding_prewarm.max_concurrent": 3,
+    "namespace_mode": "isolated",
 }
 
 
@@ -65,6 +66,7 @@ def compare_summaries(
     fields = list(COMPATIBILITY_FIELDS)
     for suite_field in (
         "granularity",
+        "namespace_mode",
         "chunk_chars",
         "chunk_overlap_chars",
     ):
@@ -130,15 +132,28 @@ def compare_summaries(
             or _number(candidate, "embedding.cache_misses") != 0
         ):
             failures.append("performance_comparison_requires_warm_cache")
-        latency_limits = (
-            ("ingest_p95", max_ingest_p95_ratio),
-            ("search_p95", max_search_p95_ratio),
-            ("total_p95", max_total_p95_ratio),
-        )
-        for timing, raw_limit in latency_limits:
+        namespace_modes = {
+            _compatibility_value(baseline, "namespace_mode"),
+            _compatibility_value(candidate, "namespace_mode"),
+        }
+        if namespace_modes == {"full"}:
+            latency_limits = (
+                ("corpus_ingest", "corpus.timing_ms.ingest", max_ingest_p95_ratio),
+                ("search_p95", "results.timing_ms.search_p95", max_search_p95_ratio),
+                ("total_p95", "results.timing_ms.total_p95", max_total_p95_ratio),
+            )
+        elif len(namespace_modes) == 1:
+            latency_limits = (
+                ("ingest_p95", "results.timing_ms.ingest_p95", max_ingest_p95_ratio),
+                ("search_p95", "results.timing_ms.search_p95", max_search_p95_ratio),
+                ("total_p95", "results.timing_ms.total_p95", max_total_p95_ratio),
+            )
+        else:
+            latency_limits = ()
+        for timing, field, raw_limit in latency_limits:
             limit = max(1.0, float(raw_limit))
-            baseline_value = _number(baseline, f"results.timing_ms.{timing}")
-            candidate_value = _number(candidate, f"results.timing_ms.{timing}")
+            baseline_value = _number(baseline, field)
+            candidate_value = _number(candidate, field)
             ratio = candidate_value / baseline_value if baseline_value > 0 else None
             passed = ratio is not None and ratio <= limit
             performance.append(

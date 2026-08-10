@@ -80,6 +80,19 @@ a-memorix-eval longmemeval run `
 a-memorix-eval longmemeval run --granularity turn
 ```
 
+上述命令沿用逐题隔离模式，便于复现早期基线。更接近长期运行的全量模式会把所选案例中的 session 合并到一个 namespace，只建一次索引，再逐题查询：
+
+```powershell
+a-memorix-eval longmemeval run `
+  --namespace-mode full `
+  --granularity session `
+  --top-k 50 `
+  --output-dir data/public-benchmarks/longmemeval/results/full-namespace-session-470 `
+  --work-dir data/public-benchmarks/longmemeval/work-full
+```
+
+全量模式按官方 session ID 去重。同一个 session 在不同题目中内容必须一致，否则评测直接中止；日期不同时固定使用最早日期，避免案例顺序改变时间权重。不同 session 若文本完全相同，底层只保留一份 paragraph memory，评分映射仍保留官方 session ID。当前公开评测不调用 LLM，也没有可验证的关系抽取结果，因此只评价 paragraph vector 与 BM25 检索，不把空 graph 通道计入成绩。
+
 下载并运行 SWE-bench Lite：
 
 ```bash
@@ -123,6 +136,8 @@ a-memorix-eval swebench run `
 
 评测层先填充 SQLite embedding cache，再通过公开 `batch_ingest_text` API 写入，每个写入批次最多100条。`embedding_prewarm` 记录向量读取或生成时间，`ingest` 记录本地写入时间，`total` 包含两者。同一套 case 至少运行两次。第一次补齐 cache，用于确认端到端流程；第二次要求 `cache_misses=0`，用于记录本地写入和检索性能。冷 cache 与热 cache 的耗时不能直接比较。
 
+全量模式的 Embedding 预热、初始化和写入只发生一次，记录在 `corpus.timing_ms`；`results.timing_ms` 只统计逐题查询。比较两个全量结果时，compare 使用单次 corpus ingest、search P95 和 query total P95。逐题隔离与全量模式的候选范围不同，报告会将两者判为不可直接比较。
+
 比较 baseline 与 candidate：
 
 ```powershell
@@ -136,6 +151,12 @@ compare 会先核对 benchmark、case ID、数据 SHA-256、Embedding 指纹、�
 2026-08-10 的本地 smoke run 已完成：LongMemEval 6种 question type 各1题，SWE-bench Lite 1题，全部成功，至少一个目标均在Top-1命中。这部分结果只用于确认评测链路。
 
 同日完成的 LongMemEval session 粒度完整热 cache 基线包含470个可评分 case，全部成功且 ID 唯一。整体 MRR 为0.932080、`nDCG@10` 为0.926632、`Recall-any@10` 为0.995745、`Recall-fraction@10` 为0.977163。分类型 MRR 中，single-session-assistant 为1.000、knowledge-update 为0.980、multi-session 为0.960、single-session-user 为0.930、temporal-reasoning 为0.890、single-session-preference 为0.780。写入耗时中位数477毫秒、P95 559毫秒；检索耗时中位数38毫秒、P95 47毫秒；单 case 总耗时中位数618毫秒、P95 714毫秒。该轮 `cache_misses=0`、`request_count=0`，可作为同机性能对照。
+
+全量 namespace 压力测试也完成了470个可评分 case，全部成功。22,419次 session 出现合并为18,239个官方 session ID、17,599份 paragraph memory，其中4,180次为重复 session，640个 session 与其他 session 共享相同文本。整体 MRR 为0.313632、`nDCG@10` 为0.307984、`Recall-any@10` 为0.495745、`Recall-any@50` 为0.521277；225题没有在返回结果中命中任何 gold。分类型 MRR 中，single-session-assistant 为0.941539、knowledge-update 为0.416143、multi-session 为0.218312、temporal-reasoning 为0.194773、single-session-user 为0.181233、single-session-preference 为0.065595。该轮平均返回14.23条结果，最少4条、最多20条，因为公开检索 API 的 `limit=50` 是返回上限，候选预算与动态阈值仍会缩短结果。
+
+全量 corpus 的热 cache 预热耗时10.096秒、初始化56毫秒、写入695.967秒；查询耗时中位数624毫秒、P95 743毫秒，分别是逐题隔离基线的16.52倍与15.87倍。`cache_misses=0`、`request_count=0`。这轮结果说明，在没有用户、代码库或消息流隔离的情况下，大量无关历史会同时降低召回与查询速度。写入阶段还暴露出另一个问题：每100条批量请求结束后都会保存不断增大的完整 Faiss 索引，导致大 corpus 建库成本增长过快。该问题应在保留崩溃恢复语义的前提下单独优化。
+
+逐题隔离与全量 namespace 的候选范围不同，以上差值用于衡量跨历史干扰，不能当作同口径代码回归。全量模式把基准中的独立合成历史放进同一 namespace，属于最强干扰条件；实际部署仍应按用户、代码库和消息流边界划分 namespace。
 
 SWE-bench Lite 热 cache 基线包含全部300个 case，全部成功。整体 MRR 为0.689214、`nDCG@10` 为0.735735、`Recall-any@10` 与 `Recall-fraction@10` 均为0.876667。写入耗时中位数4.857秒、P95 19.047秒；检索耗时中位数153毫秒、P95 292毫秒；单 case 总耗时中位数5.417秒、P95 20.417秒。该轮共读取846,228条缓存向量，没有远程请求。按仓库看，`psf/requests`、`pydata/xarray`、`matplotlib/matplotlib` 的 MRR 较低，后续代码检索优化应优先检查这些场景。
 

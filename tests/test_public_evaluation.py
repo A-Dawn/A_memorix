@@ -22,6 +22,7 @@ from a_memorix.evaluation.cli import build_parser
 from a_memorix.evaluation.comparison import compare_summaries
 from a_memorix.evaluation.engine_backend import (
     AMemorixEvaluationBackend,
+    AMemorixSharedNamespaceBackend,
     BackendOptions,
     RetrievalCase,
     RetrievalDocument,
@@ -143,6 +144,12 @@ def test_evaluation_cli_accepts_explicit_embedding_throughput_options() -> None:
 
     assert args.embedding_batch_size == 32
     assert args.embedding_concurrency == 9
+
+
+def test_evaluation_cli_accepts_full_namespace_mode() -> None:
+    args = build_parser().parse_args(["longmemeval", "run", "--namespace-mode", "full"])
+
+    assert args.namespace_mode == "full"
 
 
 def test_embedding_config_supports_positional_file_without_exposing_key(
@@ -368,6 +375,41 @@ def test_summary_comparison_rejects_different_embedding_prewarm_settings() -> No
             "baseline": 3,
             "candidate": 9,
         }
+    ]
+
+
+def test_summary_comparison_rejects_different_namespace_modes() -> None:
+    baseline = _comparison_summary()
+    candidate = _comparison_summary()
+    candidate["namespace_mode"] = "full"
+
+    comparison = compare_summaries(baseline, candidate, quality_only=True)
+
+    assert comparison["status"] == "failed"
+    assert comparison["incompatibilities"] == [
+        {
+            "field": "namespace_mode",
+            "baseline": "isolated",
+            "candidate": "full",
+        }
+    ]
+
+
+def test_summary_comparison_uses_full_corpus_ingest_timing() -> None:
+    baseline = _comparison_summary()
+    candidate = _comparison_summary()
+    for summary in (baseline, candidate):
+        summary["namespace_mode"] = "full"
+        summary["corpus"] = {"timing_ms": {"ingest": 100.0}}
+        del summary["results"]["timing_ms"]["ingest_p95"]
+
+    comparison = compare_summaries(baseline, candidate)
+
+    assert comparison["status"] == "passed"
+    assert [item["timing"] for item in comparison["performance"]] == [
+        "corpus_ingest",
+        "search_p95",
+        "total_p95",
     ]
 
 
@@ -844,3 +886,95 @@ async def test_public_evaluation_backend_scores_code_file_metric_ids(
     assert result["metrics"]["recall_any@1"] == 1.0
     assert result["ranked_ids"][0] == "src/parser.py"
     assert result["ranked_ids"].count("src/parser.py") == 1
+
+
+@pytest.mark.asyncio
+async def test_shared_namespace_backend_builds_one_deduplicated_corpus(
+    tmp_path: Path,
+) -> None:
+    shared_document = RetrievalDocument(
+        document_id="shared-session",
+        text="The orbital beacon uses a reference clock.",
+        timestamp=200.0,
+    )
+    cases = (
+        RetrievalCase(
+            case_id="case-one",
+            case_type="cross-session-smoke",
+            query="orbital beacon reference clock",
+            documents=(
+                shared_document,
+                RetrievalDocument(
+                    document_id="noise-one",
+                    text="The garden irrigation begins before sunrise.",
+                ),
+            ),
+            gold_ids=("shared-session",),
+        ),
+        RetrievalCase(
+            case_id="case-two",
+            case_type="cross-session-smoke",
+            query="accounting invoice archive",
+            documents=(
+                RetrievalDocument(
+                    document_id="shared-session",
+                    text=shared_document.text,
+                    timestamp=100.0,
+                ),
+                RetrievalDocument(
+                    document_id="invoice-session",
+                    text="The accounting invoice archive is stored offsite.",
+                ),
+            ),
+            gold_ids=("invoice-session",),
+        ),
+    )
+    backend = AMemorixSharedNamespaceBackend(
+        DeterministicEmbeddingProvider(),  # type: ignore[arg-type]
+        BackendOptions(work_root=tmp_path / "work", top_k=3),
+    )
+    documents, _ = backend._build_corpus(cases)
+
+    try:
+        corpus = await backend.prepare(cases)
+        first = await backend.run_case(cases[0])
+        second = await backend.run_case(cases[1])
+    finally:
+        await backend.close()
+
+    assert corpus["occurrence_document_count"] == 4
+    assert corpus["logical_document_count"] == 3
+    assert corpus["unique_memory_count"] == 3
+    assert corpus["duplicate_occurrence_count"] == 1
+    assert corpus["date_variant_document_count"] == 1
+    canonical_shared = next(
+        item for item in documents if item.document_id == "shared-session"
+    )
+    assert canonical_shared.timestamp == 100.0
+    assert canonical_shared.metadata["evaluation_date_variant_count"] == 2
+    assert first["metrics"]["recall_any@1"] == 1.0
+    assert second["metrics"]["recall_any@1"] == 1.0
+    assert "ingest" not in first["timing_ms"]
+    assert list((tmp_path / "work").iterdir()) == []
+
+
+def test_shared_namespace_corpus_rejects_conflicting_document_content() -> None:
+    cases = (
+        RetrievalCase(
+            case_id="case-one",
+            case_type="smoke",
+            query="first",
+            documents=(RetrievalDocument(document_id="same", text="first"),),
+            gold_ids=("same",),
+        ),
+        RetrievalCase(
+            case_id="case-two",
+            case_type="smoke",
+            query="second",
+            documents=(RetrievalDocument(document_id="same", text="second"),),
+            gold_ids=("same",),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="conflicting content"):
+        AMemorixSharedNamespaceBackend._build_corpus(cases)

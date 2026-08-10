@@ -593,9 +593,10 @@ def aggregate_results(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         by_type[str(row.get("case_type", "unknown"))].append(row)
     timings = {
         key: [
-            float(row.get("timing_ms", {}).get(key, 0.0))
+            float(row.get("timing_ms", {})[key])
             for row in completed
             if isinstance(row.get("timing_ms"), Mapping)
+            and key in row.get("timing_ms", {})
         ]
         for key in ("embedding_prewarm", "initialize", "ingest", "search", "total")
     }

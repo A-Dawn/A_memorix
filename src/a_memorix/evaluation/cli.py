@@ -71,6 +71,11 @@ def _add_suite_commands(parser: ArgumentParser, *, suite: str) -> None:
     run.add_argument("--resume", action="store_true")
     if suite == "longmemeval":
         run.add_argument("--granularity", choices=("session", "turn"), default="turn")
+        run.add_argument(
+            "--namespace-mode",
+            choices=("isolated", "full"),
+            default="isolated",
+        )
         run.add_argument("--question-id", action="append", default=[])
         run.add_argument("--question-type", action="append", default=[])
         run.add_argument("--include-unscored", action="store_true")
@@ -120,6 +125,7 @@ async def _run(args: Namespace, paths: dict[str, Path]) -> dict[str, object]:
                     output_dir=paths["output"],
                     work_dir=paths["work"],
                     granularity=args.granularity,
+                    namespace_mode=args.namespace_mode,
                     top_k=args.top_k,
                     limit=max(0, args.limit),
                     question_ids=tuple(args.question_id),
@@ -205,3 +211,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise RuntimeError(f"unsupported evaluation command: {args.command}")
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
