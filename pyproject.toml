@@ -61,6 +61,9 @@ test = [
   "pytest-asyncio>=0.24.0",
   "ruff==0.16.2",
 ]
+evaluation = [
+  "pyarrow>=16.0.0",
+]
 build = [
   "build>=1.2.0",
   "twine>=6.0.0,<7",
@@ -85,6 +88,7 @@ Repository = "https://github.com/A-Dawn/A_memorix"
 
 [project.scripts]
 a-memorix = "a_memorix.cli:main"
+a-memorix-eval = "a_memorix.evaluation.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

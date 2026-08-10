@@ -206,6 +206,7 @@ ehthumbs.db
 # Temporary Verification Scripts
 verify_*.py
 config.toml
+config.txt
 
 # Test Artifacts & Generated Files
 MagicMock/

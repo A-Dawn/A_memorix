@@ -225,6 +225,10 @@ a-memorix --pretty adapter schema
 
 完整路线见 [通用架构与分发计划](docs/GENERIC_ARCHITECTURE_AND_DISTRIBUTION_PLAN.md)。
 
+## 公共量化评测
+
+LongMemEval-S Cleaned 用于衡量跨 session 与长上下文记忆，SWE-bench Lite 用于衡量 issue-to-source-file 的代码库检索。数据、模型凭据、cache 和结果均只保存在本地。评测 summary 会固定 case、数据、模型、运行参数和环境，`a-memorix-eval compare` 用于检查 candidate 相对 baseline 的质量与性能变化。当前完整基线包含470个 LongMemEval case 和300个 SWE-bench Lite case，均无失败，具体结果和复跑命令见[公共量化评测](docs/EVALUATION.md)。
+
 ## 开发验证
 
 ```powershell
