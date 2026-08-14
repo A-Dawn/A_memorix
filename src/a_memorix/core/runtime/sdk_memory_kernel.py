@@ -6,6 +6,8 @@ from threading import RLock
 from typing import Any, Callable, Coroutine, Dict, Iterable, List, Optional, Sequence
 
 import asyncio
+import hashlib
+import json
 import time  # noqa: F401
 
 from a_memorix.logging import get_logger
@@ -96,6 +98,74 @@ logger = get_logger("A_Memorix.SDKMemoryKernel")
 
 DUAL_VECTOR_AUTO_MIGRATION_INITIAL_DELAY_SECONDS = 5.0
 DUAL_VECTOR_AUTO_MIGRATION_LOCK_RETRY_DELAYS_SECONDS = (2.0, 5.0, 10.0)
+
+
+def _provider_runtime_status(
+    provider: object | None,
+    *,
+    available: bool,
+) -> Dict[str, Any]:
+    if provider is None:
+        return {
+            "configured": False,
+            "available": False,
+            "provider": "",
+            "model": "",
+            "dimension": None,
+            "fingerprint": "",
+            "last_error": "",
+        }
+    fingerprint_data: Dict[str, Any] = {}
+    last_error = ""
+    try:
+        fingerprint_method = getattr(provider, "fingerprint", None)
+        raw_fingerprint = (
+            fingerprint_method() if callable(fingerprint_method) else {}
+        )
+        if isinstance(raw_fingerprint, dict):
+            fingerprint_data = dict(raw_fingerprint)
+        elif hasattr(raw_fingerprint, "items"):
+            fingerprint_data = dict(raw_fingerprint.items())
+    except Exception as exc:
+        last_error = f"provider fingerprint failed: {exc}"[:500]
+        available = False
+    health_method = getattr(provider, "health_status", None)
+    if callable(health_method):
+        try:
+            raw_health = health_method()
+            if isinstance(raw_health, dict) or hasattr(raw_health, "get"):
+                available = bool(available and raw_health.get("available", True))
+                last_error = str(raw_health.get("last_error", last_error) or "")[
+                    :500
+                ]
+        except Exception as exc:
+            available = False
+            last_error = f"provider health check failed: {exc}"[:500]
+    fingerprint = str(fingerprint_data.get("hash", "") or "")
+    if not fingerprint and fingerprint_data:
+        digest = hashlib.sha256(
+            json.dumps(
+                fingerprint_data,
+                ensure_ascii=True,
+                sort_keys=True,
+                default=str,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        fingerprint = f"sha256:{digest}"
+    raw_dimension = fingerprint_data.get("dimension")
+    dimension = int(raw_dimension) if raw_dimension else None
+    return {
+        "configured": True,
+        "available": available,
+        "provider": str(
+            fingerprint_data.get("provider", type(provider).__name__) or ""
+        ),
+        "model": str(fingerprint_data.get("model", "") or ""),
+        "dimension": dimension,
+        "fingerprint": fingerprint,
+        "last_error": last_error,
+    }
 
 
 class SDKMemoryKernel(KernelCompatibilityMixin):
@@ -421,7 +491,63 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
                 "person_profiles": bool(self._cfg("person_profile.enabled", True)),
             }
         )
-        return {**status, "capabilities": capabilities}
+        embedding = _provider_runtime_status(
+            self.embedding_provider,
+            available=bool(capabilities.get("embedding", False)),
+        )
+        if self.embedding_manager is not None:
+            model_info = self.embedding_manager.get_model_info()
+            embedding.update(
+                {
+                    "dimension": int(model_info.get("dimension", 0) or 0),
+                    "fingerprint": str(
+                        self.embedding_manager.get_embedding_fingerprint().get(
+                            "hash", ""
+                        )
+                        or ""
+                    ),
+                }
+            )
+        llm = _provider_runtime_status(
+            self.llm_provider,
+            available=self.llm_provider is not None,
+        )
+        paragraph_pool_ready = bool(
+            capabilities.get("vector_read", False)
+            and capabilities.get("vector_write", False)
+            and self.paragraph_vector_store is not None
+            and self._dual_vector_pools_enabled()
+        )
+        relation_pool_ready = bool(
+            paragraph_pool_ready
+            and self.relation_vectors_enabled
+            and self.graph_vector_store is not None
+        )
+        degraded_reasons = list(status.get("unavailable_channels") or ())
+        vector_state = str(
+            (status.get("vector_health") or {}).get("state", "") or ""
+        )
+        if vector_state in {"degraded", "recovering", "unavailable"}:
+            degraded_reasons.append(f"vector:{vector_state}")
+        if not llm.get("available", False):
+            degraded_reasons.append("llm")
+        if not embedding.get("available", False):
+            degraded_reasons.append("embedding_provider")
+        if not paragraph_pool_ready:
+            degraded_reasons.append("paragraph_vector_pool")
+        if not relation_pool_ready:
+            degraded_reasons.append("relation_vector_pool")
+        degraded_reasons = list(dict.fromkeys(degraded_reasons))
+        return {
+            **status,
+            "capabilities": capabilities,
+            "degraded": bool(status.get("degraded", False) or degraded_reasons),
+            "degraded_reasons": degraded_reasons,
+            "embedding": embedding,
+            "llm": llm,
+            "paragraph_vector_pool_ready": paragraph_pool_ready,
+            "relation_vector_pool_ready": relation_pool_ready,
+        }
 
     def is_chat_enabled(
         self, stream_id: str, group_id: str | None = None, user_id: str | None = None

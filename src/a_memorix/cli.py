@@ -104,6 +104,12 @@ def _parser() -> argparse.ArgumentParser:
     mcp.add_argument("--data-dir")
     mcp.add_argument("--create-namespace", action="store_true")
     mcp.add_argument("--transport", default="stdio", choices=("stdio",))
+    mcp.add_argument("--mode", choices=("standard", "degraded"))
+    mcp.add_argument(
+        "--probe-llm",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
 
     commands.add_parser("config", help="print the effective redacted configuration")
 
@@ -240,23 +246,31 @@ def _run_serve(config: AMemorixConfig, args: argparse.Namespace) -> int:
     )
     configure_logging(observability.log_level, observability.log_format)
     try:
-        asyncio.run(_serve(server_config, observability))
+        asyncio.run(_serve(server_config, observability, config.providers))
     except KeyboardInterrupt:
         pass
     return 0
 
 
-async def _serve(server_config: ServerConfig, observability_config: Any) -> None:
+async def _serve(
+    server_config: ServerConfig,
+    observability_config: Any,
+    providers_config: Any,
+) -> None:
     from a_memorix.engine import AMemorixEngine
     from a_memorix.observability import ObservabilityRuntime
+    from a_memorix.providers import build_configured_providers
     from a_memorix.server import AMemorixGrpcServer
 
     admin_token = read_secret(
         environment_name="A_MEMORIX_ADMIN_TOKEN",
         file_path=server_config.admin_token_file,
     )
+    providers = build_configured_providers(providers_config)
     engine = AMemorixEngine(
         data_dir=server_config.data_dir,
+        config_factory=providers.runtime_config,
+        host_port_factory=providers.host_ports,
         max_active_namespaces=server_config.max_active_namespaces,
         max_concurrent_requests_per_namespace=(
             server_config.max_concurrent_requests_per_namespace
@@ -317,17 +331,51 @@ async def _wait_for_server_shutdown(server: Any) -> None:
 
 def _run_mcp(config: AMemorixConfig, args: argparse.Namespace) -> int:
     from a_memorix import AMemorixEngine, create_fixed_namespace_mcp
+    from a_memorix.core.storage.vector_store import HAS_FAISS
     from a_memorix.logging import configure_logging
+    from a_memorix.providers import build_configured_providers
 
     configure_logging(
         config.observability.log_level,
         config.observability.log_format,
     )
     data_dir = Path(args.data_dir) if args.data_dir else config.server.data_dir
+    mode = args.mode or config.mcp.mode
+    probe_llm = (
+        config.mcp.probe_llm if args.probe_llm is None else args.probe_llm
+    )
+    providers = build_configured_providers(config.providers)
+    if mode == "standard":
+        if not HAS_FAISS:
+            raise RuntimeError(
+                "standard MCP mode requires Faiss; install 'a-memorix[mcp,vector]'"
+            )
+        asyncio.run(providers.probe_standard(probe_llm=probe_llm))
+    required_capabilities = (
+        (
+            "metadata",
+            "sparse",
+            "graph",
+            "vector_read",
+            "vector_write",
+            "embedding",
+            "llm",
+            "paragraph_vector_pool",
+            "relation_vector_pool",
+        )
+        if mode == "standard"
+        else ()
+    )
     server = create_fixed_namespace_mcp(
-        AMemorixEngine(data_dir=data_dir),
+        AMemorixEngine(
+            data_dir=data_dir,
+            config_factory=providers.runtime_config,
+            host_port_factory=providers.host_ports,
+        ),
         args.namespace,
         create_namespace=args.create_namespace,
+        namespace_config=providers.namespace_config(),
+        required_capabilities=required_capabilities,
     )
     server.run(transport=args.transport)
     return 0

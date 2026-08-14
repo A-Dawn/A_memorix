@@ -91,12 +91,93 @@ class ObservabilityConfig(BaseModel):
     trace_sample_ratio: float = Field(default=0.1, ge=0.0, le=1.0)
 
 
+class EmbeddingProviderConfig(BaseModel):
+    """OpenAI-compatible Embedding configuration without inline secrets."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    provider: Literal["openai-compatible"] = "openai-compatible"
+    endpoint: str = Field(default="", max_length=2048)
+    model: str = Field(default="", max_length=256)
+    api_key_file: Path | None = None
+    dimension: int = Field(default=1024, ge=1)
+    dimension_request_mode: Literal["explicit", "always", "never"] = "explicit"
+    batch_size: int = Field(default=32, ge=1)
+    max_concurrent: int = Field(default=5, ge=1)
+    timeout_seconds: float = Field(default=60.0, gt=0)
+    max_attempts: int = Field(default=3, ge=1)
+    retry_delay_seconds: float = Field(default=1.0, ge=0)
+    retry_max_delay_seconds: float = Field(default=20.0, ge=0)
+    retry_backoff_multiplier: float = Field(default=2.0, ge=1.0)
+
+    @model_validator(mode="after")
+    def validate_provider(self) -> "EmbeddingProviderConfig":
+        _validate_provider_location(self.endpoint, self.model, "Embedding")
+        return self
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.endpoint and self.model)
+
+
+class LLMProviderConfig(BaseModel):
+    """OpenAI-compatible chat-completions configuration without inline secrets."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    provider: Literal["openai-compatible"] = "openai-compatible"
+    endpoint: str = Field(default="", max_length=2048)
+    model: str = Field(default="", max_length=256)
+    api_key_file: Path | None = None
+    max_concurrent: int = Field(default=3, ge=1)
+    max_tokens: int = Field(default=8192, ge=1)
+    temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    timeout_seconds: float = Field(default=120.0, gt=0)
+    max_attempts: int = Field(default=3, ge=1)
+    retry_delay_seconds: float = Field(default=1.0, ge=0)
+    retry_max_delay_seconds: float = Field(default=20.0, ge=0)
+    retry_backoff_multiplier: float = Field(default=2.0, ge=1.0)
+    enable_thinking: bool | None = None
+    thinking_mode: Literal["enabled", "disabled"] | None = None
+
+    @model_validator(mode="after")
+    def validate_provider(self) -> "LLMProviderConfig":
+        _validate_provider_location(self.endpoint, self.model, "LLM")
+        if self.enable_thinking is not None and self.thinking_mode is not None:
+            raise ValueError(
+                "LLM enable_thinking and thinking_mode cannot both be set"
+            )
+        return self
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.endpoint and self.model)
+
+
+class ProvidersConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    embedding: EmbeddingProviderConfig = Field(
+        default_factory=EmbeddingProviderConfig
+    )
+    llm: LLMProviderConfig = Field(default_factory=LLMProviderConfig)
+
+
+class MCPConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    mode: Literal["standard", "degraded"] = "standard"
+    probe_llm: bool = True
+
+
 class AMemorixConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     server: ServerConfig = Field(default_factory=ServerConfig)
     client: ClientConfig = Field(default_factory=ClientConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
+    providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
+    mcp: MCPConfig = Field(default_factory=MCPConfig)
 
     def redacted(self) -> dict[str, object]:
         return self.model_dump(mode="json")
@@ -156,6 +237,79 @@ _ENV_FIELDS: dict[str, tuple[str, ...]] = {
     "A_MEMORIX_OTLP_ENDPOINT": ("observability", "otlp_endpoint"),
     "A_MEMORIX_OTLP_INSECURE": ("observability", "otlp_insecure"),
     "A_MEMORIX_TRACE_SAMPLE_RATIO": ("observability", "trace_sample_ratio"),
+    "A_MEMORIX_EMBEDDING_BASE_URL": ("providers", "embedding", "endpoint"),
+    "A_MEMORIX_EMBEDDING_ENDPOINT": ("providers", "embedding", "endpoint"),
+    "A_MEMORIX_EMBEDDING_MODEL": ("providers", "embedding", "model"),
+    "A_MEMORIX_EMBEDDING_API_KEY_FILE": (
+        "providers",
+        "embedding",
+        "api_key_file",
+    ),
+    "A_MEMORIX_EMBEDDING_DIMENSION": ("providers", "embedding", "dimension"),
+    "A_MEMORIX_EMBEDDING_DIMENSION_REQUEST_MODE": (
+        "providers",
+        "embedding",
+        "dimension_request_mode",
+    ),
+    "A_MEMORIX_EMBEDDING_BATCH_SIZE": ("providers", "embedding", "batch_size"),
+    "A_MEMORIX_EMBEDDING_MAX_CONCURRENT": (
+        "providers",
+        "embedding",
+        "max_concurrent",
+    ),
+    "A_MEMORIX_EMBEDDING_TIMEOUT_SECONDS": (
+        "providers",
+        "embedding",
+        "timeout_seconds",
+    ),
+    "A_MEMORIX_EMBEDDING_MAX_ATTEMPTS": (
+        "providers",
+        "embedding",
+        "max_attempts",
+    ),
+    "A_MEMORIX_EMBEDDING_RETRY_DELAY_SECONDS": (
+        "providers",
+        "embedding",
+        "retry_delay_seconds",
+    ),
+    "A_MEMORIX_EMBEDDING_RETRY_MAX_DELAY_SECONDS": (
+        "providers",
+        "embedding",
+        "retry_max_delay_seconds",
+    ),
+    "A_MEMORIX_EMBEDDING_RETRY_BACKOFF_MULTIPLIER": (
+        "providers",
+        "embedding",
+        "retry_backoff_multiplier",
+    ),
+    "A_MEMORIX_LLM_BASE_URL": ("providers", "llm", "endpoint"),
+    "A_MEMORIX_LLM_ENDPOINT": ("providers", "llm", "endpoint"),
+    "A_MEMORIX_LLM_MODEL": ("providers", "llm", "model"),
+    "A_MEMORIX_LLM_API_KEY_FILE": ("providers", "llm", "api_key_file"),
+    "A_MEMORIX_LLM_MAX_CONCURRENT": ("providers", "llm", "max_concurrent"),
+    "A_MEMORIX_LLM_MAX_TOKENS": ("providers", "llm", "max_tokens"),
+    "A_MEMORIX_LLM_TEMPERATURE": ("providers", "llm", "temperature"),
+    "A_MEMORIX_LLM_TIMEOUT_SECONDS": ("providers", "llm", "timeout_seconds"),
+    "A_MEMORIX_LLM_MAX_ATTEMPTS": ("providers", "llm", "max_attempts"),
+    "A_MEMORIX_LLM_RETRY_DELAY_SECONDS": (
+        "providers",
+        "llm",
+        "retry_delay_seconds",
+    ),
+    "A_MEMORIX_LLM_RETRY_MAX_DELAY_SECONDS": (
+        "providers",
+        "llm",
+        "retry_max_delay_seconds",
+    ),
+    "A_MEMORIX_LLM_RETRY_BACKOFF_MULTIPLIER": (
+        "providers",
+        "llm",
+        "retry_backoff_multiplier",
+    ),
+    "A_MEMORIX_LLM_ENABLE_THINKING": ("providers", "llm", "enable_thinking"),
+    "A_MEMORIX_LLM_THINKING_MODE": ("providers", "llm", "thinking_mode"),
+    "A_MEMORIX_MCP_MODE": ("mcp", "mode"),
+    "A_MEMORIX_MCP_PROBE_LLM": ("mcp", "probe_llm"),
 }
 
 _BOOLEAN_ENV_FIELDS = {
@@ -164,6 +318,8 @@ _BOOLEAN_ENV_FIELDS = {
     "A_MEMORIX_CLIENT_TLS_ENABLED",
     "A_MEMORIX_ACCESS_LOG",
     "A_MEMORIX_OTLP_INSECURE",
+    "A_MEMORIX_LLM_ENABLE_THINKING",
+    "A_MEMORIX_MCP_PROBE_LLM",
 }
 
 
@@ -211,6 +367,8 @@ def _resolve_config_paths(raw: dict[str, object], base: Path) -> None:
         ("client", "tls", "ca_certificate"),
         ("client", "tls", "certificate"),
         ("client", "tls", "private_key"),
+        ("providers", "embedding", "api_key_file"),
+        ("providers", "llm", "api_key_file"),
     ):
         value = _get_nested(raw, field_path)
         if not isinstance(value, str) or not value:
@@ -251,3 +409,12 @@ def _parse_bool(value: str, variable: str) -> bool:
     if normalized in {"0", "false", "no", "off"}:
         return False
     raise ValueError(f"{variable} must be a boolean value")
+
+
+def _validate_provider_location(endpoint: str, model: str, label: str) -> None:
+    endpoint = endpoint.strip()
+    model = model.strip()
+    if bool(endpoint) != bool(model):
+        raise ValueError(f"{label} endpoint and model must be set together")
+    if endpoint and not endpoint.startswith(("http://", "https://")):
+        raise ValueError(f"{label} endpoint must be an HTTP(S) URL")

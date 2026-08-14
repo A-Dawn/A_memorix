@@ -17,6 +17,7 @@ from a_memorix.contracts import (
     NamespaceConflictError,
     NamespaceHealth,
     NamespaceInfo,
+    ProviderRuntimeStatus,
     NamespaceResourceUsage,
     NamespaceRuntimeError,
     NamespaceRuntimeState,
@@ -464,6 +465,7 @@ class NamespaceRuntimeRegistry:
             entry = self._entries.get(namespace_id)
             initializing = namespace_id in self._initializing
             active_requests = entry.active_requests if entry is not None else 0
+        runtime_status: dict[str, object] = {}
         if initializing:
             runtime_state = NamespaceRuntimeState.LOADING
         elif last_error:
@@ -477,6 +479,20 @@ class NamespaceRuntimeRegistry:
                     if entry.runtime.is_runtime_ready()
                     else NamespaceRuntimeState.DEGRADED
                 )
+                inspect_capabilities = getattr(
+                    entry.runtime,
+                    "runtime_capability_status",
+                    None,
+                )
+                raw_status = (
+                    inspect_capabilities()
+                    if callable(inspect_capabilities)
+                    else {}
+                )
+                if isinstance(raw_status, dict):
+                    runtime_status = raw_status
+                if runtime_status.get("degraded", False):
+                    runtime_state = NamespaceRuntimeState.DEGRADED
             except BaseException as exc:
                 runtime_state = NamespaceRuntimeState.FAILED
                 last_error = f"runtime health check failed: {exc}"
@@ -490,6 +506,15 @@ class NamespaceRuntimeRegistry:
             last_error = (
                 f"storage quota exceeded: {storage_bytes} > {quota.max_storage_bytes}"
             )
+        degraded_reasons = [
+            str(reason)
+            for reason in runtime_status.get("degraded_reasons", ())
+            if str(reason).strip()
+        ]
+        if over_storage_quota:
+            degraded_reasons.append("storage_quota")
+        degraded_reasons = list(dict.fromkeys(degraded_reasons))
+        degraded = runtime_state is NamespaceRuntimeState.DEGRADED
         healthy = bool(
             not last_error
             and record.info.status is not NamespaceStatus.PURGING
@@ -508,6 +533,20 @@ class NamespaceRuntimeRegistry:
                 storage_bytes=storage_bytes,
             ),
             last_error=last_error,
+            degraded=degraded,
+            degraded_reasons=tuple(degraded_reasons),
+            embedding=ProviderRuntimeStatus.model_validate(
+                runtime_status.get("embedding", {})
+            ),
+            llm=ProviderRuntimeStatus.model_validate(
+                runtime_status.get("llm", {})
+            ),
+            paragraph_vector_pool_ready=bool(
+                runtime_status.get("paragraph_vector_pool_ready", False)
+            ),
+            relation_vector_pool_ready=bool(
+                runtime_status.get("relation_vector_pool_ready", False)
+            ),
         )
 
     async def close_idle_runtimes(self) -> list[str]:

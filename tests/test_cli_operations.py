@@ -26,6 +26,7 @@ from a_memorix.config import ObservabilityConfig, ServerTLSConfig, load_config
 from a_memorix.engine import AMemorixEngine
 from a_memorix.logging import configure_logging
 from a_memorix.observability import ObservabilityRuntime
+from a_memorix.providers import build_configured_providers
 from a_memorix.server import AMemorixGrpcServer
 
 
@@ -77,6 +78,101 @@ def test_config_rejects_unknown_fields_and_incomplete_tls(tmp_path: Path) -> Non
         load_config(config_path, environ={})
     with pytest.raises(ValidationError):
         ServerTLSConfig(client_ca=tmp_path / "ca.pem")
+
+
+def test_provider_config_precedence_relative_secrets_and_redaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config" / "a-memorix.toml"
+    config_path.parent.mkdir()
+    config_path.write_text(
+        """
+[providers.embedding]
+endpoint = "https://file.example/v1"
+model = "embedding-file"
+api_key_file = "embedding-key"
+dimension = 768
+
+[providers.llm]
+endpoint = "https://llm.example/v1"
+model = "llm-file"
+api_key_file = "llm-key"
+
+[mcp]
+mode = "degraded"
+probe_llm = false
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("A_MEMORIX_EMBEDDING_ENDPOINT", "https://env.example/v1")
+    monkeypatch.setenv("A_MEMORIX_EMBEDDING_MODEL", "embedding-env")
+    monkeypatch.setenv("A_MEMORIX_EMBEDDING_DIMENSION", "1024")
+    monkeypatch.setenv("A_MEMORIX_EMBEDDING_API_KEY", "embedding-secret")
+    monkeypatch.setenv("A_MEMORIX_LLM_API_KEY", "llm-secret")
+    monkeypatch.setenv("A_MEMORIX_MCP_MODE", "standard")
+    monkeypatch.setenv("A_MEMORIX_MCP_PROBE_LLM", "true")
+
+    config = load_config(config_path)
+    providers = build_configured_providers(config.providers)
+
+    assert config.providers.embedding.endpoint == "https://env.example/v1"
+    assert config.providers.embedding.model == "embedding-env"
+    assert config.providers.embedding.dimension == 1024
+    assert config.providers.embedding.api_key_file == (
+        config_path.parent / "embedding-key"
+    ).resolve()
+    assert config.providers.llm.api_key_file == (
+        config_path.parent / "llm-key"
+    ).resolve()
+    assert config.mcp.mode == "standard"
+    assert config.mcp.probe_llm is True
+    assert providers.embedding is not None
+    assert providers.llm is not None
+    rendered = json.dumps(config.redacted()) + json.dumps(
+        providers.embedding.fingerprint()
+    )
+    assert "embedding-secret" not in rendered
+    assert "llm-secret" not in rendered
+
+
+def test_mcp_parser_supports_explicit_degraded_mode() -> None:
+    args = _parser().parse_args(
+        [
+            "mcp",
+            "--namespace",
+            "agent",
+            "--mode",
+            "degraded",
+            "--no-probe-llm",
+        ]
+    )
+
+    assert args.mode == "degraded"
+    assert args.probe_llm is False
+
+
+def test_standard_mcp_rejects_missing_providers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from a_memorix.cli import _run_mcp
+    from a_memorix.core.storage import vector_store
+
+    monkeypatch.setattr(vector_store, "HAS_FAISS", True)
+    config = load_config(environ={})
+    args = _parser().parse_args(
+        [
+            "mcp",
+            "--namespace",
+            "agent",
+            "--data-dir",
+            str(tmp_path),
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="requires an Embedding endpoint"):
+        _run_mcp(config, args)
 
 
 def test_json_logging_is_machine_readable(capsys: pytest.CaptureFixture[str]) -> None:

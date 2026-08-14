@@ -45,7 +45,7 @@ Manifest 使用 TOML。字段含义如下：
 | `source` | 不含凭据的 HTTPS 源码地址 |
 | `permissions` | API、网络、文件系统、环境变量和子进程声明 |
 
-权限字段必须明确出现，空权限使用空数组或 `false`。`permissions.api` 至少声明一项实际使用的公开 API。网络 origin 必须使用 `http`、`https`、`grpc`、`grpcs`，不接受路径、凭据和通配符；`a-memorix` 是部署时注入的服务地址占位符。环境变量只填写变量名，不能填写值。
+权限字段必须明确出现，空权限使用空数组或 `false`。`permissions.api` 至少声明一项实际使用的公开 API。网络 origin 必须使用 `http`、`https`、`grpc`、`grpcs`，不接受路径、凭据和通配符。`a-memorix`、`embedding-provider`、`llm-provider` 分别表示部署时注入的记忆服务、向量服务和文本生成服务地址。环境变量只填写变量名，不能填写值。
 
 Manifest 权限用于审核，不等同于沙箱。部署者仍需使用 Namespace API Key、容器权限、文件系统 ACL 和网络策略执行最小权限。
 

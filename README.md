@@ -2,7 +2,7 @@
 
 A_memorix 是面向 AI Agent 的长期记忆服务。2.x 正在从 MaiBot 插件演进为独立 Python 包，通过彼此独立的 Namespace 和统一协议，为不同 Agent 提供可组合的写入、检索、图关系、时序证据和记忆维护能力。
 
-当前版本为 `2.0.0a2`。这一版本已经完成通用核心迁移、MaiBot 依赖移除、Namespace Runtime、统一协议和基础部署支持。Protobuf 是唯一网络 IDL，服务原生提供 gRPC，HTTP/JSON 由 gRPC-Gateway 根据同一份注解生成。每个 MCP 服务固定绑定一个 Namespace。现阶段适合参与核心开发、Adapter 验证和数据兼容性测试，不应视为稳定服务版本。
+当前版本为 `2.0.0a3`。这一版本在通用核心、Namespace Runtime 和统一协议之上补齐了生产级 OpenAI 兼容 Provider、标准 MCP 启动门禁、Provider 与双向量池健康状态。Protobuf 是唯一网络 IDL，服务原生提供 gRPC，HTTP/JSON 由 gRPC-Gateway 根据同一份注解生成。每个 MCP 服务固定绑定一个 Namespace。现阶段适合参与核心开发、Adapter 验证和数据兼容性测试，不应视为稳定服务版本。
 
 ## 当前功能
 
@@ -174,6 +174,8 @@ a-memorix doctor --health-only
 远程地址、令牌文件和 TLS 参数放在命令组与子命令之间，例如 `a-memorix namespace --target memory.example:50051 --token-file ./admin-token list`。管理命令输出 JSON，错误输出到 stderr，并使用稳定错误码。
 
 配置采用 TOML，完整示例位于 [deploy/a-memorix.example.toml](deploy/a-memorix.example.toml)。优先级固定为命令行参数、环境变量、`--config` 或 `A_MEMORIX_CONFIG` 指定的文件、内置默认值。管理员令牌和 API Key 不写入 TOML，可通过 `A_MEMORIX_ADMIN_TOKEN`、`A_MEMORIX_API_KEY` 或只读令牌文件提供。执行 `a-memorix config` 可以查看不包含密钥值的生效配置。
+
+固定 Namespace MCP 默认使用 `standard` 模式。该模式要求安装 `a-memorix[mcp,vector]`，并配置 OpenAI 兼容的 Embedding、LLM 服务；启动时会验证 Faiss、实际向量维度、LLM、段落向量池和关系向量池。只有明确接受部分能力时才使用 `a-memorix mcp ... --mode degraded`。
 
 ## 可观测性
 

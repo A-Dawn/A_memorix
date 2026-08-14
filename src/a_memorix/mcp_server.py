@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from datetime import datetime
 
@@ -18,6 +18,7 @@ from a_memorix.contracts import (
     GetMemoryRequest,
     IngestTextInput,
     IngestTextRequest,
+    NamespaceConfig,
     NamespaceNotFoundError,
     RelationExtractionMode,
     RelationInput,
@@ -64,6 +65,8 @@ def create_fixed_namespace_mcp(
     *,
     create_namespace: bool = False,
     manage_engine_lifecycle: bool = True,
+    namespace_config: NamespaceConfig | None = None,
+    required_capabilities: Sequence[str] = (),
 ) -> MCPServer:
     """Create an MCP server whose tools cannot address another namespace."""
 
@@ -78,9 +81,19 @@ def create_fixed_namespace_mcp(
                 if not create_namespace:
                     raise
                 await engine.create_namespace(
-                    CreateNamespaceRequest(namespace_id=namespace_id)
+                    CreateNamespaceRequest(
+                        namespace_id=namespace_id,
+                        config=namespace_config or NamespaceConfig(),
+                    )
                 )
-            yield None
+            lease_context = RequestContext(
+                namespace_id=namespace_id,
+                agent_id="mcp",
+                principal_id="mcp:fixed-namespace",
+            )
+            async with engine.runtime(lease_context) as runtime:
+                _require_runtime_capabilities(runtime, required_capabilities)
+                yield None
         finally:
             if manage_engine_lifecycle:
                 await engine.shutdown()
@@ -288,6 +301,37 @@ def create_fixed_namespace_mcp(
         return health.model_dump(mode="json")
 
     return server
+
+
+def _require_runtime_capabilities(
+    runtime: object,
+    required_capabilities: Sequence[str],
+) -> None:
+    required = tuple(str(item).strip() for item in required_capabilities if item)
+    if not required:
+        return
+    inspect_capabilities = getattr(runtime, "runtime_capability_status", None)
+    raw_status = inspect_capabilities() if callable(inspect_capabilities) else {}
+    status = raw_status if isinstance(raw_status, dict) else {}
+    raw_capabilities = status.get("capabilities")
+    capabilities = (
+        raw_capabilities if isinstance(raw_capabilities, dict) else {}
+    )
+    available = {
+        **capabilities,
+        "paragraph_vector_pool": bool(
+            status.get("paragraph_vector_pool_ready", False)
+        ),
+        "relation_vector_pool": bool(
+            status.get("relation_vector_pool_ready", False)
+        ),
+    }
+    missing = [name for name in required if not available.get(name, False)]
+    if missing:
+        raise RuntimeError(
+            "standard MCP runtime is missing required capabilities: "
+            + ", ".join(sorted(set(missing)))
+        )
 
 
 def _request_context(

@@ -687,20 +687,118 @@ func (x *NamespaceResourceUsage) GetStorageBytes() uint64 {
 	return 0
 }
 
-type NamespaceHealth struct {
-	state         protoimpl.MessageState  `protogen:"open.v1"`
-	Namespace     *NamespaceInfo          `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
-	RuntimeState  NamespaceRuntimeState   `protobuf:"varint,2,opt,name=runtime_state,json=runtimeState,proto3,enum=a_memorix.api.v1.NamespaceRuntimeState" json:"runtime_state,omitempty"`
-	Healthy       bool                    `protobuf:"varint,3,opt,name=healthy,proto3" json:"healthy,omitempty"`
-	ResourceUsage *NamespaceResourceUsage `protobuf:"bytes,4,opt,name=resource_usage,json=resourceUsage,proto3" json:"resource_usage,omitempty"`
-	LastError     string                  `protobuf:"bytes,5,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
+type ProviderRuntimeStatus struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Configured    bool                   `protobuf:"varint,1,opt,name=configured,proto3" json:"configured,omitempty"`
+	Available     bool                   `protobuf:"varint,2,opt,name=available,proto3" json:"available,omitempty"`
+	Provider      string                 `protobuf:"bytes,3,opt,name=provider,proto3" json:"provider,omitempty"`
+	Model         string                 `protobuf:"bytes,4,opt,name=model,proto3" json:"model,omitempty"`
+	Dimension     *uint32                `protobuf:"varint,5,opt,name=dimension,proto3,oneof" json:"dimension,omitempty"`
+	Fingerprint   string                 `protobuf:"bytes,6,opt,name=fingerprint,proto3" json:"fingerprint,omitempty"`
+	LastError     string                 `protobuf:"bytes,7,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
+func (x *ProviderRuntimeStatus) Reset() {
+	*x = ProviderRuntimeStatus{}
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProviderRuntimeStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProviderRuntimeStatus) ProtoMessage() {}
+
+func (x *ProviderRuntimeStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProviderRuntimeStatus.ProtoReflect.Descriptor instead.
+func (*ProviderRuntimeStatus) Descriptor() ([]byte, []int) {
+	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *ProviderRuntimeStatus) GetConfigured() bool {
+	if x != nil {
+		return x.Configured
+	}
+	return false
+}
+
+func (x *ProviderRuntimeStatus) GetAvailable() bool {
+	if x != nil {
+		return x.Available
+	}
+	return false
+}
+
+func (x *ProviderRuntimeStatus) GetProvider() string {
+	if x != nil {
+		return x.Provider
+	}
+	return ""
+}
+
+func (x *ProviderRuntimeStatus) GetModel() string {
+	if x != nil {
+		return x.Model
+	}
+	return ""
+}
+
+func (x *ProviderRuntimeStatus) GetDimension() uint32 {
+	if x != nil && x.Dimension != nil {
+		return *x.Dimension
+	}
+	return 0
+}
+
+func (x *ProviderRuntimeStatus) GetFingerprint() string {
+	if x != nil {
+		return x.Fingerprint
+	}
+	return ""
+}
+
+func (x *ProviderRuntimeStatus) GetLastError() string {
+	if x != nil {
+		return x.LastError
+	}
+	return ""
+}
+
+type NamespaceHealth struct {
+	state                    protoimpl.MessageState  `protogen:"open.v1"`
+	Namespace                *NamespaceInfo          `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	RuntimeState             NamespaceRuntimeState   `protobuf:"varint,2,opt,name=runtime_state,json=runtimeState,proto3,enum=a_memorix.api.v1.NamespaceRuntimeState" json:"runtime_state,omitempty"`
+	Healthy                  bool                    `protobuf:"varint,3,opt,name=healthy,proto3" json:"healthy,omitempty"`
+	ResourceUsage            *NamespaceResourceUsage `protobuf:"bytes,4,opt,name=resource_usage,json=resourceUsage,proto3" json:"resource_usage,omitempty"`
+	LastError                string                  `protobuf:"bytes,5,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
+	Degraded                 bool                    `protobuf:"varint,6,opt,name=degraded,proto3" json:"degraded,omitempty"`
+	DegradedReasons          []string                `protobuf:"bytes,7,rep,name=degraded_reasons,json=degradedReasons,proto3" json:"degraded_reasons,omitempty"`
+	Embedding                *ProviderRuntimeStatus  `protobuf:"bytes,8,opt,name=embedding,proto3" json:"embedding,omitempty"`
+	Llm                      *ProviderRuntimeStatus  `protobuf:"bytes,9,opt,name=llm,proto3" json:"llm,omitempty"`
+	ParagraphVectorPoolReady bool                    `protobuf:"varint,10,opt,name=paragraph_vector_pool_ready,json=paragraphVectorPoolReady,proto3" json:"paragraph_vector_pool_ready,omitempty"`
+	RelationVectorPoolReady  bool                    `protobuf:"varint,11,opt,name=relation_vector_pool_ready,json=relationVectorPoolReady,proto3" json:"relation_vector_pool_ready,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
+}
+
 func (x *NamespaceHealth) Reset() {
 	*x = NamespaceHealth{}
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[7]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -712,7 +810,7 @@ func (x *NamespaceHealth) String() string {
 func (*NamespaceHealth) ProtoMessage() {}
 
 func (x *NamespaceHealth) ProtoReflect() protoreflect.Message {
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[7]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -725,7 +823,7 @@ func (x *NamespaceHealth) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NamespaceHealth.ProtoReflect.Descriptor instead.
 func (*NamespaceHealth) Descriptor() ([]byte, []int) {
-	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{7}
+	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *NamespaceHealth) GetNamespace() *NamespaceInfo {
@@ -763,6 +861,48 @@ func (x *NamespaceHealth) GetLastError() string {
 	return ""
 }
 
+func (x *NamespaceHealth) GetDegraded() bool {
+	if x != nil {
+		return x.Degraded
+	}
+	return false
+}
+
+func (x *NamespaceHealth) GetDegradedReasons() []string {
+	if x != nil {
+		return x.DegradedReasons
+	}
+	return nil
+}
+
+func (x *NamespaceHealth) GetEmbedding() *ProviderRuntimeStatus {
+	if x != nil {
+		return x.Embedding
+	}
+	return nil
+}
+
+func (x *NamespaceHealth) GetLlm() *ProviderRuntimeStatus {
+	if x != nil {
+		return x.Llm
+	}
+	return nil
+}
+
+func (x *NamespaceHealth) GetParagraphVectorPoolReady() bool {
+	if x != nil {
+		return x.ParagraphVectorPoolReady
+	}
+	return false
+}
+
+func (x *NamespaceHealth) GetRelationVectorPoolReady() bool {
+	if x != nil {
+		return x.RelationVectorPoolReady
+	}
+	return false
+}
+
 type CreateNamespaceRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	NamespaceId   string                 `protobuf:"bytes,1,opt,name=namespace_id,json=namespaceId,proto3" json:"namespace_id,omitempty"`
@@ -774,7 +914,7 @@ type CreateNamespaceRequest struct {
 
 func (x *CreateNamespaceRequest) Reset() {
 	*x = CreateNamespaceRequest{}
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[8]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -786,7 +926,7 @@ func (x *CreateNamespaceRequest) String() string {
 func (*CreateNamespaceRequest) ProtoMessage() {}
 
 func (x *CreateNamespaceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[8]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -799,7 +939,7 @@ func (x *CreateNamespaceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateNamespaceRequest.ProtoReflect.Descriptor instead.
 func (*CreateNamespaceRequest) Descriptor() ([]byte, []int) {
-	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{8}
+	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *CreateNamespaceRequest) GetNamespaceId() string {
@@ -832,7 +972,7 @@ type CreateNamespaceResponse struct {
 
 func (x *CreateNamespaceResponse) Reset() {
 	*x = CreateNamespaceResponse{}
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[9]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -844,7 +984,7 @@ func (x *CreateNamespaceResponse) String() string {
 func (*CreateNamespaceResponse) ProtoMessage() {}
 
 func (x *CreateNamespaceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[9]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -857,7 +997,7 @@ func (x *CreateNamespaceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateNamespaceResponse.ProtoReflect.Descriptor instead.
 func (*CreateNamespaceResponse) Descriptor() ([]byte, []int) {
-	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{9}
+	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *CreateNamespaceResponse) GetNamespace() *NamespaceInfo {
@@ -876,7 +1016,7 @@ type GetNamespaceRequest struct {
 
 func (x *GetNamespaceRequest) Reset() {
 	*x = GetNamespaceRequest{}
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[10]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -888,7 +1028,7 @@ func (x *GetNamespaceRequest) String() string {
 func (*GetNamespaceRequest) ProtoMessage() {}
 
 func (x *GetNamespaceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[10]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -901,7 +1041,7 @@ func (x *GetNamespaceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNamespaceRequest.ProtoReflect.Descriptor instead.
 func (*GetNamespaceRequest) Descriptor() ([]byte, []int) {
-	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{10}
+	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *GetNamespaceRequest) GetNamespaceId() string {
@@ -920,7 +1060,7 @@ type GetNamespaceResponse struct {
 
 func (x *GetNamespaceResponse) Reset() {
 	*x = GetNamespaceResponse{}
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[11]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -932,7 +1072,7 @@ func (x *GetNamespaceResponse) String() string {
 func (*GetNamespaceResponse) ProtoMessage() {}
 
 func (x *GetNamespaceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[11]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -945,7 +1085,7 @@ func (x *GetNamespaceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNamespaceResponse.ProtoReflect.Descriptor instead.
 func (*GetNamespaceResponse) Descriptor() ([]byte, []int) {
-	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{11}
+	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *GetNamespaceResponse) GetNamespace() *NamespaceInfo {
@@ -965,7 +1105,7 @@ type ListNamespacesRequest struct {
 
 func (x *ListNamespacesRequest) Reset() {
 	*x = ListNamespacesRequest{}
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[12]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -977,7 +1117,7 @@ func (x *ListNamespacesRequest) String() string {
 func (*ListNamespacesRequest) ProtoMessage() {}
 
 func (x *ListNamespacesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[12]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -990,7 +1130,7 @@ func (x *ListNamespacesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNamespacesRequest.ProtoReflect.Descriptor instead.
 func (*ListNamespacesRequest) Descriptor() ([]byte, []int) {
-	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{12}
+	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ListNamespacesRequest) GetPageSize() uint32 {
@@ -1017,7 +1157,7 @@ type ListNamespacesResponse struct {
 
 func (x *ListNamespacesResponse) Reset() {
 	*x = ListNamespacesResponse{}
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[13]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1029,7 +1169,7 @@ func (x *ListNamespacesResponse) String() string {
 func (*ListNamespacesResponse) ProtoMessage() {}
 
 func (x *ListNamespacesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[13]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1042,7 +1182,7 @@ func (x *ListNamespacesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNamespacesResponse.ProtoReflect.Descriptor instead.
 func (*ListNamespacesResponse) Descriptor() ([]byte, []int) {
-	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{13}
+	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ListNamespacesResponse) GetNamespaces() []*NamespaceInfo {
@@ -1070,7 +1210,7 @@ type UpdateNamespaceConfigRequest struct {
 
 func (x *UpdateNamespaceConfigRequest) Reset() {
 	*x = UpdateNamespaceConfigRequest{}
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[14]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1082,7 +1222,7 @@ func (x *UpdateNamespaceConfigRequest) String() string {
 func (*UpdateNamespaceConfigRequest) ProtoMessage() {}
 
 func (x *UpdateNamespaceConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[14]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1095,7 +1235,7 @@ func (x *UpdateNamespaceConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateNamespaceConfigRequest.ProtoReflect.Descriptor instead.
 func (*UpdateNamespaceConfigRequest) Descriptor() ([]byte, []int) {
-	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{14}
+	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *UpdateNamespaceConfigRequest) GetNamespaceId() string {
@@ -1128,7 +1268,7 @@ type UpdateNamespaceConfigResponse struct {
 
 func (x *UpdateNamespaceConfigResponse) Reset() {
 	*x = UpdateNamespaceConfigResponse{}
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[15]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1140,7 +1280,7 @@ func (x *UpdateNamespaceConfigResponse) String() string {
 func (*UpdateNamespaceConfigResponse) ProtoMessage() {}
 
 func (x *UpdateNamespaceConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[15]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1153,7 +1293,7 @@ func (x *UpdateNamespaceConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateNamespaceConfigResponse.ProtoReflect.Descriptor instead.
 func (*UpdateNamespaceConfigResponse) Descriptor() ([]byte, []int) {
-	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{15}
+	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *UpdateNamespaceConfigResponse) GetNamespace() *NamespaceInfo {
@@ -1172,7 +1312,7 @@ type GetNamespaceCapabilitiesRequest struct {
 
 func (x *GetNamespaceCapabilitiesRequest) Reset() {
 	*x = GetNamespaceCapabilitiesRequest{}
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[16]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1184,7 +1324,7 @@ func (x *GetNamespaceCapabilitiesRequest) String() string {
 func (*GetNamespaceCapabilitiesRequest) ProtoMessage() {}
 
 func (x *GetNamespaceCapabilitiesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[16]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1197,7 +1337,7 @@ func (x *GetNamespaceCapabilitiesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNamespaceCapabilitiesRequest.ProtoReflect.Descriptor instead.
 func (*GetNamespaceCapabilitiesRequest) Descriptor() ([]byte, []int) {
-	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{16}
+	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *GetNamespaceCapabilitiesRequest) GetNamespaceId() string {
@@ -1222,7 +1362,7 @@ type NamespaceCapabilities struct {
 
 func (x *NamespaceCapabilities) Reset() {
 	*x = NamespaceCapabilities{}
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[17]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1234,7 +1374,7 @@ func (x *NamespaceCapabilities) String() string {
 func (*NamespaceCapabilities) ProtoMessage() {}
 
 func (x *NamespaceCapabilities) ProtoReflect() protoreflect.Message {
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[17]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1247,7 +1387,7 @@ func (x *NamespaceCapabilities) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NamespaceCapabilities.ProtoReflect.Descriptor instead.
 func (*NamespaceCapabilities) Descriptor() ([]byte, []int) {
-	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{17}
+	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *NamespaceCapabilities) GetNamespaceId() string {
@@ -1308,7 +1448,7 @@ type GetNamespaceCapabilitiesResponse struct {
 
 func (x *GetNamespaceCapabilitiesResponse) Reset() {
 	*x = GetNamespaceCapabilitiesResponse{}
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[18]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1320,7 +1460,7 @@ func (x *GetNamespaceCapabilitiesResponse) String() string {
 func (*GetNamespaceCapabilitiesResponse) ProtoMessage() {}
 
 func (x *GetNamespaceCapabilitiesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[18]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1333,7 +1473,7 @@ func (x *GetNamespaceCapabilitiesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNamespaceCapabilitiesResponse.ProtoReflect.Descriptor instead.
 func (*GetNamespaceCapabilitiesResponse) Descriptor() ([]byte, []int) {
-	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{18}
+	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *GetNamespaceCapabilitiesResponse) GetCapabilities() *NamespaceCapabilities {
@@ -1352,7 +1492,7 @@ type DisableNamespaceRequest struct {
 
 func (x *DisableNamespaceRequest) Reset() {
 	*x = DisableNamespaceRequest{}
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[19]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1364,7 +1504,7 @@ func (x *DisableNamespaceRequest) String() string {
 func (*DisableNamespaceRequest) ProtoMessage() {}
 
 func (x *DisableNamespaceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[19]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1377,7 +1517,7 @@ func (x *DisableNamespaceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DisableNamespaceRequest.ProtoReflect.Descriptor instead.
 func (*DisableNamespaceRequest) Descriptor() ([]byte, []int) {
-	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{19}
+	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *DisableNamespaceRequest) GetNamespaceId() string {
@@ -1396,7 +1536,7 @@ type DisableNamespaceResponse struct {
 
 func (x *DisableNamespaceResponse) Reset() {
 	*x = DisableNamespaceResponse{}
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[20]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1408,7 +1548,7 @@ func (x *DisableNamespaceResponse) String() string {
 func (*DisableNamespaceResponse) ProtoMessage() {}
 
 func (x *DisableNamespaceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[20]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1421,7 +1561,7 @@ func (x *DisableNamespaceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DisableNamespaceResponse.ProtoReflect.Descriptor instead.
 func (*DisableNamespaceResponse) Descriptor() ([]byte, []int) {
-	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{20}
+	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *DisableNamespaceResponse) GetNamespace() *NamespaceInfo {
@@ -1440,7 +1580,7 @@ type EnableNamespaceRequest struct {
 
 func (x *EnableNamespaceRequest) Reset() {
 	*x = EnableNamespaceRequest{}
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[21]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1452,7 +1592,7 @@ func (x *EnableNamespaceRequest) String() string {
 func (*EnableNamespaceRequest) ProtoMessage() {}
 
 func (x *EnableNamespaceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[21]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1465,7 +1605,7 @@ func (x *EnableNamespaceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnableNamespaceRequest.ProtoReflect.Descriptor instead.
 func (*EnableNamespaceRequest) Descriptor() ([]byte, []int) {
-	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{21}
+	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *EnableNamespaceRequest) GetNamespaceId() string {
@@ -1484,7 +1624,7 @@ type EnableNamespaceResponse struct {
 
 func (x *EnableNamespaceResponse) Reset() {
 	*x = EnableNamespaceResponse{}
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[22]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1496,7 +1636,7 @@ func (x *EnableNamespaceResponse) String() string {
 func (*EnableNamespaceResponse) ProtoMessage() {}
 
 func (x *EnableNamespaceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[22]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1509,7 +1649,7 @@ func (x *EnableNamespaceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnableNamespaceResponse.ProtoReflect.Descriptor instead.
 func (*EnableNamespaceResponse) Descriptor() ([]byte, []int) {
-	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{22}
+	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *EnableNamespaceResponse) GetNamespace() *NamespaceInfo {
@@ -1528,7 +1668,7 @@ type DeleteNamespaceRequest struct {
 
 func (x *DeleteNamespaceRequest) Reset() {
 	*x = DeleteNamespaceRequest{}
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[23]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1540,7 +1680,7 @@ func (x *DeleteNamespaceRequest) String() string {
 func (*DeleteNamespaceRequest) ProtoMessage() {}
 
 func (x *DeleteNamespaceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[23]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1553,7 +1693,7 @@ func (x *DeleteNamespaceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteNamespaceRequest.ProtoReflect.Descriptor instead.
 func (*DeleteNamespaceRequest) Descriptor() ([]byte, []int) {
-	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{23}
+	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *DeleteNamespaceRequest) GetNamespaceId() string {
@@ -1572,7 +1712,7 @@ type DeleteNamespaceResponse struct {
 
 func (x *DeleteNamespaceResponse) Reset() {
 	*x = DeleteNamespaceResponse{}
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[24]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1584,7 +1724,7 @@ func (x *DeleteNamespaceResponse) String() string {
 func (*DeleteNamespaceResponse) ProtoMessage() {}
 
 func (x *DeleteNamespaceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[24]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1597,7 +1737,7 @@ func (x *DeleteNamespaceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteNamespaceResponse.ProtoReflect.Descriptor instead.
 func (*DeleteNamespaceResponse) Descriptor() ([]byte, []int) {
-	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{24}
+	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *DeleteNamespaceResponse) GetNamespace() *NamespaceInfo {
@@ -1616,7 +1756,7 @@ type RestoreNamespaceRequest struct {
 
 func (x *RestoreNamespaceRequest) Reset() {
 	*x = RestoreNamespaceRequest{}
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[25]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1628,7 +1768,7 @@ func (x *RestoreNamespaceRequest) String() string {
 func (*RestoreNamespaceRequest) ProtoMessage() {}
 
 func (x *RestoreNamespaceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[25]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1641,7 +1781,7 @@ func (x *RestoreNamespaceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RestoreNamespaceRequest.ProtoReflect.Descriptor instead.
 func (*RestoreNamespaceRequest) Descriptor() ([]byte, []int) {
-	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{25}
+	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *RestoreNamespaceRequest) GetNamespaceId() string {
@@ -1660,7 +1800,7 @@ type RestoreNamespaceResponse struct {
 
 func (x *RestoreNamespaceResponse) Reset() {
 	*x = RestoreNamespaceResponse{}
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[26]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1672,7 +1812,7 @@ func (x *RestoreNamespaceResponse) String() string {
 func (*RestoreNamespaceResponse) ProtoMessage() {}
 
 func (x *RestoreNamespaceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[26]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1685,7 +1825,7 @@ func (x *RestoreNamespaceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RestoreNamespaceResponse.ProtoReflect.Descriptor instead.
 func (*RestoreNamespaceResponse) Descriptor() ([]byte, []int) {
-	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{26}
+	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *RestoreNamespaceResponse) GetNamespace() *NamespaceInfo {
@@ -1704,7 +1844,7 @@ type PurgeNamespaceRequest struct {
 
 func (x *PurgeNamespaceRequest) Reset() {
 	*x = PurgeNamespaceRequest{}
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[27]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1716,7 +1856,7 @@ func (x *PurgeNamespaceRequest) String() string {
 func (*PurgeNamespaceRequest) ProtoMessage() {}
 
 func (x *PurgeNamespaceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[27]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1729,7 +1869,7 @@ func (x *PurgeNamespaceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PurgeNamespaceRequest.ProtoReflect.Descriptor instead.
 func (*PurgeNamespaceRequest) Descriptor() ([]byte, []int) {
-	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{27}
+	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *PurgeNamespaceRequest) GetNamespaceId() string {
@@ -1747,7 +1887,7 @@ type PurgeNamespaceResponse struct {
 
 func (x *PurgeNamespaceResponse) Reset() {
 	*x = PurgeNamespaceResponse{}
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[28]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1759,7 +1899,7 @@ func (x *PurgeNamespaceResponse) String() string {
 func (*PurgeNamespaceResponse) ProtoMessage() {}
 
 func (x *PurgeNamespaceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[28]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1772,7 +1912,7 @@ func (x *PurgeNamespaceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PurgeNamespaceResponse.ProtoReflect.Descriptor instead.
 func (*PurgeNamespaceResponse) Descriptor() ([]byte, []int) {
-	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{28}
+	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{29}
 }
 
 type GetNamespaceHealthRequest struct {
@@ -1784,7 +1924,7 @@ type GetNamespaceHealthRequest struct {
 
 func (x *GetNamespaceHealthRequest) Reset() {
 	*x = GetNamespaceHealthRequest{}
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[29]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1796,7 +1936,7 @@ func (x *GetNamespaceHealthRequest) String() string {
 func (*GetNamespaceHealthRequest) ProtoMessage() {}
 
 func (x *GetNamespaceHealthRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[29]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1809,7 +1949,7 @@ func (x *GetNamespaceHealthRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNamespaceHealthRequest.ProtoReflect.Descriptor instead.
 func (*GetNamespaceHealthRequest) Descriptor() ([]byte, []int) {
-	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{29}
+	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *GetNamespaceHealthRequest) GetNamespaceId() string {
@@ -1828,7 +1968,7 @@ type GetNamespaceHealthResponse struct {
 
 func (x *GetNamespaceHealthResponse) Reset() {
 	*x = GetNamespaceHealthResponse{}
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[30]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1840,7 +1980,7 @@ func (x *GetNamespaceHealthResponse) String() string {
 func (*GetNamespaceHealthResponse) ProtoMessage() {}
 
 func (x *GetNamespaceHealthResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[30]
+	mi := &file_a_memorix_api_v1_namespace_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1853,7 +1993,7 @@ func (x *GetNamespaceHealthResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNamespaceHealthResponse.ProtoReflect.Descriptor instead.
 func (*GetNamespaceHealthResponse) Descriptor() ([]byte, []int) {
-	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{30}
+	return file_a_memorix_api_v1_namespace_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *GetNamespaceHealthResponse) GetHealth() *NamespaceHealth {
@@ -1933,14 +2073,34 @@ const file_a_memorix_api_v1_namespace_proto_rawDesc = "" +
 	" \x01(\v2!.a_memorix.api.v1.NamespaceConfigR\x06config\"f\n" +
 	"\x16NamespaceResourceUsage\x12'\n" +
 	"\x0factive_requests\x18\x01 \x01(\rR\x0eactiveRequests\x12#\n" +
-	"\rstorage_bytes\x18\x02 \x01(\x04R\fstorageBytes\"\xa8\x02\n" +
+	"\rstorage_bytes\x18\x02 \x01(\x04R\fstorageBytes\"\xf9\x01\n" +
+	"\x15ProviderRuntimeStatus\x12\x1e\n" +
+	"\n" +
+	"configured\x18\x01 \x01(\bR\n" +
+	"configured\x12\x1c\n" +
+	"\tavailable\x18\x02 \x01(\bR\tavailable\x12\x1a\n" +
+	"\bprovider\x18\x03 \x01(\tR\bprovider\x12\x14\n" +
+	"\x05model\x18\x04 \x01(\tR\x05model\x12!\n" +
+	"\tdimension\x18\x05 \x01(\rH\x00R\tdimension\x88\x01\x01\x12 \n" +
+	"\vfingerprint\x18\x06 \x01(\tR\vfingerprint\x12\x1d\n" +
+	"\n" +
+	"last_error\x18\a \x01(\tR\tlastErrorB\f\n" +
+	"\n" +
+	"_dimension\"\xed\x04\n" +
 	"\x0fNamespaceHealth\x12=\n" +
 	"\tnamespace\x18\x01 \x01(\v2\x1f.a_memorix.api.v1.NamespaceInfoR\tnamespace\x12L\n" +
 	"\rruntime_state\x18\x02 \x01(\x0e2'.a_memorix.api.v1.NamespaceRuntimeStateR\fruntimeState\x12\x18\n" +
 	"\ahealthy\x18\x03 \x01(\bR\ahealthy\x12O\n" +
 	"\x0eresource_usage\x18\x04 \x01(\v2(.a_memorix.api.v1.NamespaceResourceUsageR\rresourceUsage\x12\x1d\n" +
 	"\n" +
-	"last_error\x18\x05 \x01(\tR\tlastError\"\xae\x01\n" +
+	"last_error\x18\x05 \x01(\tR\tlastError\x12\x1a\n" +
+	"\bdegraded\x18\x06 \x01(\bR\bdegraded\x12)\n" +
+	"\x10degraded_reasons\x18\a \x03(\tR\x0fdegradedReasons\x12E\n" +
+	"\tembedding\x18\b \x01(\v2'.a_memorix.api.v1.ProviderRuntimeStatusR\tembedding\x129\n" +
+	"\x03llm\x18\t \x01(\v2'.a_memorix.api.v1.ProviderRuntimeStatusR\x03llm\x12=\n" +
+	"\x1bparagraph_vector_pool_ready\x18\n" +
+	" \x01(\bR\x18paragraphVectorPoolReady\x12;\n" +
+	"\x1arelation_vector_pool_ready\x18\v \x01(\bR\x17relationVectorPoolReady\"\xae\x01\n" +
 	"\x16CreateNamespaceRequest\x12!\n" +
 	"\fnamespace_id\x18\x01 \x01(\tR\vnamespaceId\x126\n" +
 	"\x05quota\x18\x02 \x01(\v2 .a_memorix.api.v1.NamespaceQuotaR\x05quota\x129\n" +
@@ -2050,7 +2210,7 @@ func file_a_memorix_api_v1_namespace_proto_rawDescGZIP() []byte {
 }
 
 var file_a_memorix_api_v1_namespace_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_a_memorix_api_v1_namespace_proto_msgTypes = make([]protoimpl.MessageInfo, 32)
+var file_a_memorix_api_v1_namespace_proto_msgTypes = make([]protoimpl.MessageInfo, 33)
 var file_a_memorix_api_v1_namespace_proto_goTypes = []any{
 	(NamespaceStatus)(0),                     // 0: a_memorix.api.v1.NamespaceStatus
 	(NamespaceRuntimeState)(0),               // 1: a_memorix.api.v1.NamespaceRuntimeState
@@ -2061,32 +2221,33 @@ var file_a_memorix_api_v1_namespace_proto_goTypes = []any{
 	(*NamespaceConfig)(nil),                  // 6: a_memorix.api.v1.NamespaceConfig
 	(*NamespaceInfo)(nil),                    // 7: a_memorix.api.v1.NamespaceInfo
 	(*NamespaceResourceUsage)(nil),           // 8: a_memorix.api.v1.NamespaceResourceUsage
-	(*NamespaceHealth)(nil),                  // 9: a_memorix.api.v1.NamespaceHealth
-	(*CreateNamespaceRequest)(nil),           // 10: a_memorix.api.v1.CreateNamespaceRequest
-	(*CreateNamespaceResponse)(nil),          // 11: a_memorix.api.v1.CreateNamespaceResponse
-	(*GetNamespaceRequest)(nil),              // 12: a_memorix.api.v1.GetNamespaceRequest
-	(*GetNamespaceResponse)(nil),             // 13: a_memorix.api.v1.GetNamespaceResponse
-	(*ListNamespacesRequest)(nil),            // 14: a_memorix.api.v1.ListNamespacesRequest
-	(*ListNamespacesResponse)(nil),           // 15: a_memorix.api.v1.ListNamespacesResponse
-	(*UpdateNamespaceConfigRequest)(nil),     // 16: a_memorix.api.v1.UpdateNamespaceConfigRequest
-	(*UpdateNamespaceConfigResponse)(nil),    // 17: a_memorix.api.v1.UpdateNamespaceConfigResponse
-	(*GetNamespaceCapabilitiesRequest)(nil),  // 18: a_memorix.api.v1.GetNamespaceCapabilitiesRequest
-	(*NamespaceCapabilities)(nil),            // 19: a_memorix.api.v1.NamespaceCapabilities
-	(*GetNamespaceCapabilitiesResponse)(nil), // 20: a_memorix.api.v1.GetNamespaceCapabilitiesResponse
-	(*DisableNamespaceRequest)(nil),          // 21: a_memorix.api.v1.DisableNamespaceRequest
-	(*DisableNamespaceResponse)(nil),         // 22: a_memorix.api.v1.DisableNamespaceResponse
-	(*EnableNamespaceRequest)(nil),           // 23: a_memorix.api.v1.EnableNamespaceRequest
-	(*EnableNamespaceResponse)(nil),          // 24: a_memorix.api.v1.EnableNamespaceResponse
-	(*DeleteNamespaceRequest)(nil),           // 25: a_memorix.api.v1.DeleteNamespaceRequest
-	(*DeleteNamespaceResponse)(nil),          // 26: a_memorix.api.v1.DeleteNamespaceResponse
-	(*RestoreNamespaceRequest)(nil),          // 27: a_memorix.api.v1.RestoreNamespaceRequest
-	(*RestoreNamespaceResponse)(nil),         // 28: a_memorix.api.v1.RestoreNamespaceResponse
-	(*PurgeNamespaceRequest)(nil),            // 29: a_memorix.api.v1.PurgeNamespaceRequest
-	(*PurgeNamespaceResponse)(nil),           // 30: a_memorix.api.v1.PurgeNamespaceResponse
-	(*GetNamespaceHealthRequest)(nil),        // 31: a_memorix.api.v1.GetNamespaceHealthRequest
-	(*GetNamespaceHealthResponse)(nil),       // 32: a_memorix.api.v1.GetNamespaceHealthResponse
-	nil,                                      // 33: a_memorix.api.v1.NamespaceCapabilities.CapabilitiesEntry
-	(*timestamppb.Timestamp)(nil),            // 34: google.protobuf.Timestamp
+	(*ProviderRuntimeStatus)(nil),            // 9: a_memorix.api.v1.ProviderRuntimeStatus
+	(*NamespaceHealth)(nil),                  // 10: a_memorix.api.v1.NamespaceHealth
+	(*CreateNamespaceRequest)(nil),           // 11: a_memorix.api.v1.CreateNamespaceRequest
+	(*CreateNamespaceResponse)(nil),          // 12: a_memorix.api.v1.CreateNamespaceResponse
+	(*GetNamespaceRequest)(nil),              // 13: a_memorix.api.v1.GetNamespaceRequest
+	(*GetNamespaceResponse)(nil),             // 14: a_memorix.api.v1.GetNamespaceResponse
+	(*ListNamespacesRequest)(nil),            // 15: a_memorix.api.v1.ListNamespacesRequest
+	(*ListNamespacesResponse)(nil),           // 16: a_memorix.api.v1.ListNamespacesResponse
+	(*UpdateNamespaceConfigRequest)(nil),     // 17: a_memorix.api.v1.UpdateNamespaceConfigRequest
+	(*UpdateNamespaceConfigResponse)(nil),    // 18: a_memorix.api.v1.UpdateNamespaceConfigResponse
+	(*GetNamespaceCapabilitiesRequest)(nil),  // 19: a_memorix.api.v1.GetNamespaceCapabilitiesRequest
+	(*NamespaceCapabilities)(nil),            // 20: a_memorix.api.v1.NamespaceCapabilities
+	(*GetNamespaceCapabilitiesResponse)(nil), // 21: a_memorix.api.v1.GetNamespaceCapabilitiesResponse
+	(*DisableNamespaceRequest)(nil),          // 22: a_memorix.api.v1.DisableNamespaceRequest
+	(*DisableNamespaceResponse)(nil),         // 23: a_memorix.api.v1.DisableNamespaceResponse
+	(*EnableNamespaceRequest)(nil),           // 24: a_memorix.api.v1.EnableNamespaceRequest
+	(*EnableNamespaceResponse)(nil),          // 25: a_memorix.api.v1.EnableNamespaceResponse
+	(*DeleteNamespaceRequest)(nil),           // 26: a_memorix.api.v1.DeleteNamespaceRequest
+	(*DeleteNamespaceResponse)(nil),          // 27: a_memorix.api.v1.DeleteNamespaceResponse
+	(*RestoreNamespaceRequest)(nil),          // 28: a_memorix.api.v1.RestoreNamespaceRequest
+	(*RestoreNamespaceResponse)(nil),         // 29: a_memorix.api.v1.RestoreNamespaceResponse
+	(*PurgeNamespaceRequest)(nil),            // 30: a_memorix.api.v1.PurgeNamespaceRequest
+	(*PurgeNamespaceResponse)(nil),           // 31: a_memorix.api.v1.PurgeNamespaceResponse
+	(*GetNamespaceHealthRequest)(nil),        // 32: a_memorix.api.v1.GetNamespaceHealthRequest
+	(*GetNamespaceHealthResponse)(nil),       // 33: a_memorix.api.v1.GetNamespaceHealthResponse
+	nil,                                      // 34: a_memorix.api.v1.NamespaceCapabilities.CapabilitiesEntry
+	(*timestamppb.Timestamp)(nil),            // 35: google.protobuf.Timestamp
 }
 var file_a_memorix_api_v1_namespace_proto_depIdxs = []int32{
 	3,  // 0: a_memorix.api.v1.NamespaceConfig.embedding:type_name -> a_memorix.api.v1.ProviderReference
@@ -2096,56 +2257,58 @@ var file_a_memorix_api_v1_namespace_proto_depIdxs = []int32{
 	4,  // 4: a_memorix.api.v1.NamespaceConfig.features:type_name -> a_memorix.api.v1.NamespaceFeatureConfig
 	5,  // 5: a_memorix.api.v1.NamespaceConfig.relation_extraction:type_name -> a_memorix.api.v1.RelationExtractionConfig
 	0,  // 6: a_memorix.api.v1.NamespaceInfo.status:type_name -> a_memorix.api.v1.NamespaceStatus
-	34, // 7: a_memorix.api.v1.NamespaceInfo.created_at:type_name -> google.protobuf.Timestamp
-	34, // 8: a_memorix.api.v1.NamespaceInfo.updated_at:type_name -> google.protobuf.Timestamp
-	34, // 9: a_memorix.api.v1.NamespaceInfo.last_active_at:type_name -> google.protobuf.Timestamp
+	35, // 7: a_memorix.api.v1.NamespaceInfo.created_at:type_name -> google.protobuf.Timestamp
+	35, // 8: a_memorix.api.v1.NamespaceInfo.updated_at:type_name -> google.protobuf.Timestamp
+	35, // 9: a_memorix.api.v1.NamespaceInfo.last_active_at:type_name -> google.protobuf.Timestamp
 	2,  // 10: a_memorix.api.v1.NamespaceInfo.quota:type_name -> a_memorix.api.v1.NamespaceQuota
-	34, // 11: a_memorix.api.v1.NamespaceInfo.purge_after:type_name -> google.protobuf.Timestamp
+	35, // 11: a_memorix.api.v1.NamespaceInfo.purge_after:type_name -> google.protobuf.Timestamp
 	6,  // 12: a_memorix.api.v1.NamespaceInfo.config:type_name -> a_memorix.api.v1.NamespaceConfig
 	7,  // 13: a_memorix.api.v1.NamespaceHealth.namespace:type_name -> a_memorix.api.v1.NamespaceInfo
 	1,  // 14: a_memorix.api.v1.NamespaceHealth.runtime_state:type_name -> a_memorix.api.v1.NamespaceRuntimeState
 	8,  // 15: a_memorix.api.v1.NamespaceHealth.resource_usage:type_name -> a_memorix.api.v1.NamespaceResourceUsage
-	2,  // 16: a_memorix.api.v1.CreateNamespaceRequest.quota:type_name -> a_memorix.api.v1.NamespaceQuota
-	6,  // 17: a_memorix.api.v1.CreateNamespaceRequest.config:type_name -> a_memorix.api.v1.NamespaceConfig
-	7,  // 18: a_memorix.api.v1.CreateNamespaceResponse.namespace:type_name -> a_memorix.api.v1.NamespaceInfo
-	7,  // 19: a_memorix.api.v1.GetNamespaceResponse.namespace:type_name -> a_memorix.api.v1.NamespaceInfo
-	7,  // 20: a_memorix.api.v1.ListNamespacesResponse.namespaces:type_name -> a_memorix.api.v1.NamespaceInfo
-	6,  // 21: a_memorix.api.v1.UpdateNamespaceConfigRequest.config:type_name -> a_memorix.api.v1.NamespaceConfig
-	7,  // 22: a_memorix.api.v1.UpdateNamespaceConfigResponse.namespace:type_name -> a_memorix.api.v1.NamespaceInfo
-	33, // 23: a_memorix.api.v1.NamespaceCapabilities.capabilities:type_name -> a_memorix.api.v1.NamespaceCapabilities.CapabilitiesEntry
-	19, // 24: a_memorix.api.v1.GetNamespaceCapabilitiesResponse.capabilities:type_name -> a_memorix.api.v1.NamespaceCapabilities
-	7,  // 25: a_memorix.api.v1.DisableNamespaceResponse.namespace:type_name -> a_memorix.api.v1.NamespaceInfo
-	7,  // 26: a_memorix.api.v1.EnableNamespaceResponse.namespace:type_name -> a_memorix.api.v1.NamespaceInfo
-	7,  // 27: a_memorix.api.v1.DeleteNamespaceResponse.namespace:type_name -> a_memorix.api.v1.NamespaceInfo
-	7,  // 28: a_memorix.api.v1.RestoreNamespaceResponse.namespace:type_name -> a_memorix.api.v1.NamespaceInfo
-	9,  // 29: a_memorix.api.v1.GetNamespaceHealthResponse.health:type_name -> a_memorix.api.v1.NamespaceHealth
-	10, // 30: a_memorix.api.v1.NamespaceService.CreateNamespace:input_type -> a_memorix.api.v1.CreateNamespaceRequest
-	12, // 31: a_memorix.api.v1.NamespaceService.GetNamespace:input_type -> a_memorix.api.v1.GetNamespaceRequest
-	14, // 32: a_memorix.api.v1.NamespaceService.ListNamespaces:input_type -> a_memorix.api.v1.ListNamespacesRequest
-	16, // 33: a_memorix.api.v1.NamespaceService.UpdateNamespaceConfig:input_type -> a_memorix.api.v1.UpdateNamespaceConfigRequest
-	18, // 34: a_memorix.api.v1.NamespaceService.GetNamespaceCapabilities:input_type -> a_memorix.api.v1.GetNamespaceCapabilitiesRequest
-	21, // 35: a_memorix.api.v1.NamespaceService.DisableNamespace:input_type -> a_memorix.api.v1.DisableNamespaceRequest
-	23, // 36: a_memorix.api.v1.NamespaceService.EnableNamespace:input_type -> a_memorix.api.v1.EnableNamespaceRequest
-	25, // 37: a_memorix.api.v1.NamespaceService.DeleteNamespace:input_type -> a_memorix.api.v1.DeleteNamespaceRequest
-	27, // 38: a_memorix.api.v1.NamespaceService.RestoreNamespace:input_type -> a_memorix.api.v1.RestoreNamespaceRequest
-	29, // 39: a_memorix.api.v1.NamespaceService.PurgeNamespace:input_type -> a_memorix.api.v1.PurgeNamespaceRequest
-	31, // 40: a_memorix.api.v1.NamespaceService.GetNamespaceHealth:input_type -> a_memorix.api.v1.GetNamespaceHealthRequest
-	11, // 41: a_memorix.api.v1.NamespaceService.CreateNamespace:output_type -> a_memorix.api.v1.CreateNamespaceResponse
-	13, // 42: a_memorix.api.v1.NamespaceService.GetNamespace:output_type -> a_memorix.api.v1.GetNamespaceResponse
-	15, // 43: a_memorix.api.v1.NamespaceService.ListNamespaces:output_type -> a_memorix.api.v1.ListNamespacesResponse
-	17, // 44: a_memorix.api.v1.NamespaceService.UpdateNamespaceConfig:output_type -> a_memorix.api.v1.UpdateNamespaceConfigResponse
-	20, // 45: a_memorix.api.v1.NamespaceService.GetNamespaceCapabilities:output_type -> a_memorix.api.v1.GetNamespaceCapabilitiesResponse
-	22, // 46: a_memorix.api.v1.NamespaceService.DisableNamespace:output_type -> a_memorix.api.v1.DisableNamespaceResponse
-	24, // 47: a_memorix.api.v1.NamespaceService.EnableNamespace:output_type -> a_memorix.api.v1.EnableNamespaceResponse
-	26, // 48: a_memorix.api.v1.NamespaceService.DeleteNamespace:output_type -> a_memorix.api.v1.DeleteNamespaceResponse
-	28, // 49: a_memorix.api.v1.NamespaceService.RestoreNamespace:output_type -> a_memorix.api.v1.RestoreNamespaceResponse
-	30, // 50: a_memorix.api.v1.NamespaceService.PurgeNamespace:output_type -> a_memorix.api.v1.PurgeNamespaceResponse
-	32, // 51: a_memorix.api.v1.NamespaceService.GetNamespaceHealth:output_type -> a_memorix.api.v1.GetNamespaceHealthResponse
-	41, // [41:52] is the sub-list for method output_type
-	30, // [30:41] is the sub-list for method input_type
-	30, // [30:30] is the sub-list for extension type_name
-	30, // [30:30] is the sub-list for extension extendee
-	0,  // [0:30] is the sub-list for field type_name
+	9,  // 16: a_memorix.api.v1.NamespaceHealth.embedding:type_name -> a_memorix.api.v1.ProviderRuntimeStatus
+	9,  // 17: a_memorix.api.v1.NamespaceHealth.llm:type_name -> a_memorix.api.v1.ProviderRuntimeStatus
+	2,  // 18: a_memorix.api.v1.CreateNamespaceRequest.quota:type_name -> a_memorix.api.v1.NamespaceQuota
+	6,  // 19: a_memorix.api.v1.CreateNamespaceRequest.config:type_name -> a_memorix.api.v1.NamespaceConfig
+	7,  // 20: a_memorix.api.v1.CreateNamespaceResponse.namespace:type_name -> a_memorix.api.v1.NamespaceInfo
+	7,  // 21: a_memorix.api.v1.GetNamespaceResponse.namespace:type_name -> a_memorix.api.v1.NamespaceInfo
+	7,  // 22: a_memorix.api.v1.ListNamespacesResponse.namespaces:type_name -> a_memorix.api.v1.NamespaceInfo
+	6,  // 23: a_memorix.api.v1.UpdateNamespaceConfigRequest.config:type_name -> a_memorix.api.v1.NamespaceConfig
+	7,  // 24: a_memorix.api.v1.UpdateNamespaceConfigResponse.namespace:type_name -> a_memorix.api.v1.NamespaceInfo
+	34, // 25: a_memorix.api.v1.NamespaceCapabilities.capabilities:type_name -> a_memorix.api.v1.NamespaceCapabilities.CapabilitiesEntry
+	20, // 26: a_memorix.api.v1.GetNamespaceCapabilitiesResponse.capabilities:type_name -> a_memorix.api.v1.NamespaceCapabilities
+	7,  // 27: a_memorix.api.v1.DisableNamespaceResponse.namespace:type_name -> a_memorix.api.v1.NamespaceInfo
+	7,  // 28: a_memorix.api.v1.EnableNamespaceResponse.namespace:type_name -> a_memorix.api.v1.NamespaceInfo
+	7,  // 29: a_memorix.api.v1.DeleteNamespaceResponse.namespace:type_name -> a_memorix.api.v1.NamespaceInfo
+	7,  // 30: a_memorix.api.v1.RestoreNamespaceResponse.namespace:type_name -> a_memorix.api.v1.NamespaceInfo
+	10, // 31: a_memorix.api.v1.GetNamespaceHealthResponse.health:type_name -> a_memorix.api.v1.NamespaceHealth
+	11, // 32: a_memorix.api.v1.NamespaceService.CreateNamespace:input_type -> a_memorix.api.v1.CreateNamespaceRequest
+	13, // 33: a_memorix.api.v1.NamespaceService.GetNamespace:input_type -> a_memorix.api.v1.GetNamespaceRequest
+	15, // 34: a_memorix.api.v1.NamespaceService.ListNamespaces:input_type -> a_memorix.api.v1.ListNamespacesRequest
+	17, // 35: a_memorix.api.v1.NamespaceService.UpdateNamespaceConfig:input_type -> a_memorix.api.v1.UpdateNamespaceConfigRequest
+	19, // 36: a_memorix.api.v1.NamespaceService.GetNamespaceCapabilities:input_type -> a_memorix.api.v1.GetNamespaceCapabilitiesRequest
+	22, // 37: a_memorix.api.v1.NamespaceService.DisableNamespace:input_type -> a_memorix.api.v1.DisableNamespaceRequest
+	24, // 38: a_memorix.api.v1.NamespaceService.EnableNamespace:input_type -> a_memorix.api.v1.EnableNamespaceRequest
+	26, // 39: a_memorix.api.v1.NamespaceService.DeleteNamespace:input_type -> a_memorix.api.v1.DeleteNamespaceRequest
+	28, // 40: a_memorix.api.v1.NamespaceService.RestoreNamespace:input_type -> a_memorix.api.v1.RestoreNamespaceRequest
+	30, // 41: a_memorix.api.v1.NamespaceService.PurgeNamespace:input_type -> a_memorix.api.v1.PurgeNamespaceRequest
+	32, // 42: a_memorix.api.v1.NamespaceService.GetNamespaceHealth:input_type -> a_memorix.api.v1.GetNamespaceHealthRequest
+	12, // 43: a_memorix.api.v1.NamespaceService.CreateNamespace:output_type -> a_memorix.api.v1.CreateNamespaceResponse
+	14, // 44: a_memorix.api.v1.NamespaceService.GetNamespace:output_type -> a_memorix.api.v1.GetNamespaceResponse
+	16, // 45: a_memorix.api.v1.NamespaceService.ListNamespaces:output_type -> a_memorix.api.v1.ListNamespacesResponse
+	18, // 46: a_memorix.api.v1.NamespaceService.UpdateNamespaceConfig:output_type -> a_memorix.api.v1.UpdateNamespaceConfigResponse
+	21, // 47: a_memorix.api.v1.NamespaceService.GetNamespaceCapabilities:output_type -> a_memorix.api.v1.GetNamespaceCapabilitiesResponse
+	23, // 48: a_memorix.api.v1.NamespaceService.DisableNamespace:output_type -> a_memorix.api.v1.DisableNamespaceResponse
+	25, // 49: a_memorix.api.v1.NamespaceService.EnableNamespace:output_type -> a_memorix.api.v1.EnableNamespaceResponse
+	27, // 50: a_memorix.api.v1.NamespaceService.DeleteNamespace:output_type -> a_memorix.api.v1.DeleteNamespaceResponse
+	29, // 51: a_memorix.api.v1.NamespaceService.RestoreNamespace:output_type -> a_memorix.api.v1.RestoreNamespaceResponse
+	31, // 52: a_memorix.api.v1.NamespaceService.PurgeNamespace:output_type -> a_memorix.api.v1.PurgeNamespaceResponse
+	33, // 53: a_memorix.api.v1.NamespaceService.GetNamespaceHealth:output_type -> a_memorix.api.v1.GetNamespaceHealthResponse
+	43, // [43:54] is the sub-list for method output_type
+	32, // [32:43] is the sub-list for method input_type
+	32, // [32:32] is the sub-list for extension type_name
+	32, // [32:32] is the sub-list for extension extendee
+	0,  // [0:32] is the sub-list for field type_name
 }
 
 func init() { file_a_memorix_api_v1_namespace_proto_init() }
@@ -2156,15 +2319,16 @@ func file_a_memorix_api_v1_namespace_proto_init() {
 	file_a_memorix_api_v1_namespace_proto_msgTypes[0].OneofWrappers = []any{}
 	file_a_memorix_api_v1_namespace_proto_msgTypes[2].OneofWrappers = []any{}
 	file_a_memorix_api_v1_namespace_proto_msgTypes[3].OneofWrappers = []any{}
-	file_a_memorix_api_v1_namespace_proto_msgTypes[12].OneofWrappers = []any{}
-	file_a_memorix_api_v1_namespace_proto_msgTypes[14].OneofWrappers = []any{}
+	file_a_memorix_api_v1_namespace_proto_msgTypes[7].OneofWrappers = []any{}
+	file_a_memorix_api_v1_namespace_proto_msgTypes[13].OneofWrappers = []any{}
+	file_a_memorix_api_v1_namespace_proto_msgTypes[15].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_a_memorix_api_v1_namespace_proto_rawDesc), len(file_a_memorix_api_v1_namespace_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   32,
+			NumMessages:   33,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

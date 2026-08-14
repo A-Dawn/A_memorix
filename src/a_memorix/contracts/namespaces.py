@@ -158,6 +158,20 @@ class NamespaceResourceUsage(BaseModel):
     storage_bytes: int = Field(default=0, ge=0)
 
 
+class ProviderRuntimeStatus(BaseModel):
+    """Public, secret-free status for one injected provider."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    configured: bool = False
+    available: bool = False
+    provider: str = ""
+    model: str = ""
+    dimension: int | None = Field(default=None, ge=1)
+    fingerprint: str = ""
+    last_error: str = ""
+
+
 class NamespaceHealth(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -166,3 +180,9 @@ class NamespaceHealth(BaseModel):
     healthy: bool
     resource_usage: NamespaceResourceUsage
     last_error: str | None = None
+    degraded: bool = False
+    degraded_reasons: tuple[str, ...] = ()
+    embedding: ProviderRuntimeStatus = Field(default_factory=ProviderRuntimeStatus)
+    llm: ProviderRuntimeStatus = Field(default_factory=ProviderRuntimeStatus)
+    paragraph_vector_pool_ready: bool = False
+    relation_vector_pool_ready: bool = False

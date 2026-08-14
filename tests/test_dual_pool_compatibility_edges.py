@@ -400,8 +400,8 @@ async def test_runtime_admin_config_exposes_vector_pool_status(
     try:
         config = await kernel.memory_runtime_admin(action="get_config")
 
-        assert config["vector_pools_ready"] is False
-        assert config["vector_pools_effective_mode"] == "single"
+        assert config["vector_pools_ready"] is True
+        assert config["vector_pools_effective_mode"] == "dual"
         assert config["vector_pools"]["configured_mode"] == "dual"
         assert config["vector_pools"]["paragraph_pool"]["available"] is True
     finally:

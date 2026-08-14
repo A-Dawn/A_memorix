@@ -143,19 +143,49 @@ class NamespaceResourceUsage(_message.Message):
     storage_bytes: int
     def __init__(self, active_requests: _Optional[int] = ..., storage_bytes: _Optional[int] = ...) -> None: ...
 
+class ProviderRuntimeStatus(_message.Message):
+    __slots__ = ("configured", "available", "provider", "model", "dimension", "fingerprint", "last_error")
+    CONFIGURED_FIELD_NUMBER: _ClassVar[int]
+    AVAILABLE_FIELD_NUMBER: _ClassVar[int]
+    PROVIDER_FIELD_NUMBER: _ClassVar[int]
+    MODEL_FIELD_NUMBER: _ClassVar[int]
+    DIMENSION_FIELD_NUMBER: _ClassVar[int]
+    FINGERPRINT_FIELD_NUMBER: _ClassVar[int]
+    LAST_ERROR_FIELD_NUMBER: _ClassVar[int]
+    configured: bool
+    available: bool
+    provider: str
+    model: str
+    dimension: int
+    fingerprint: str
+    last_error: str
+    def __init__(self, configured: _Optional[bool] = ..., available: _Optional[bool] = ..., provider: _Optional[str] = ..., model: _Optional[str] = ..., dimension: _Optional[int] = ..., fingerprint: _Optional[str] = ..., last_error: _Optional[str] = ...) -> None: ...
+
 class NamespaceHealth(_message.Message):
-    __slots__ = ("namespace", "runtime_state", "healthy", "resource_usage", "last_error")
+    __slots__ = ("namespace", "runtime_state", "healthy", "resource_usage", "last_error", "degraded", "degraded_reasons", "embedding", "llm", "paragraph_vector_pool_ready", "relation_vector_pool_ready")
     NAMESPACE_FIELD_NUMBER: _ClassVar[int]
     RUNTIME_STATE_FIELD_NUMBER: _ClassVar[int]
     HEALTHY_FIELD_NUMBER: _ClassVar[int]
     RESOURCE_USAGE_FIELD_NUMBER: _ClassVar[int]
     LAST_ERROR_FIELD_NUMBER: _ClassVar[int]
+    DEGRADED_FIELD_NUMBER: _ClassVar[int]
+    DEGRADED_REASONS_FIELD_NUMBER: _ClassVar[int]
+    EMBEDDING_FIELD_NUMBER: _ClassVar[int]
+    LLM_FIELD_NUMBER: _ClassVar[int]
+    PARAGRAPH_VECTOR_POOL_READY_FIELD_NUMBER: _ClassVar[int]
+    RELATION_VECTOR_POOL_READY_FIELD_NUMBER: _ClassVar[int]
     namespace: NamespaceInfo
     runtime_state: NamespaceRuntimeState
     healthy: bool
     resource_usage: NamespaceResourceUsage
     last_error: str
-    def __init__(self, namespace: _Optional[_Union[NamespaceInfo, _Mapping]] = ..., runtime_state: _Optional[_Union[NamespaceRuntimeState, str]] = ..., healthy: _Optional[bool] = ..., resource_usage: _Optional[_Union[NamespaceResourceUsage, _Mapping]] = ..., last_error: _Optional[str] = ...) -> None: ...
+    degraded: bool
+    degraded_reasons: _containers.RepeatedScalarFieldContainer[str]
+    embedding: ProviderRuntimeStatus
+    llm: ProviderRuntimeStatus
+    paragraph_vector_pool_ready: bool
+    relation_vector_pool_ready: bool
+    def __init__(self, namespace: _Optional[_Union[NamespaceInfo, _Mapping]] = ..., runtime_state: _Optional[_Union[NamespaceRuntimeState, str]] = ..., healthy: _Optional[bool] = ..., resource_usage: _Optional[_Union[NamespaceResourceUsage, _Mapping]] = ..., last_error: _Optional[str] = ..., degraded: _Optional[bool] = ..., degraded_reasons: _Optional[_Iterable[str]] = ..., embedding: _Optional[_Union[ProviderRuntimeStatus, _Mapping]] = ..., llm: _Optional[_Union[ProviderRuntimeStatus, _Mapping]] = ..., paragraph_vector_pool_ready: _Optional[bool] = ..., relation_vector_pool_ready: _Optional[bool] = ...) -> None: ...
 
 class CreateNamespaceRequest(_message.Message):
     __slots__ = ("namespace_id", "quota", "config")

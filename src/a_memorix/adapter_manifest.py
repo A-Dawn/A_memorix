@@ -278,7 +278,7 @@ def _ensure_unique_sequence(value: object, label: str) -> None:
 
 def _validate_network_origin(value: str) -> str:
     normalized = value.strip()
-    if normalized == "a-memorix":
+    if normalized in {"a-memorix", "embedding-provider", "llm-provider"}:
         return normalized
     parsed = urlsplit(normalized)
     try:
@@ -296,6 +296,7 @@ def _validate_network_origin(value: str) -> str:
         or parsed.path not in {"", "/"}
     ):
         raise ValueError(
-            "network permissions must be a-memorix or an HTTP/gRPC origin without credentials or paths"
+            "network permissions must be a known service placeholder or an "
+            "HTTP/gRPC origin without credentials or paths"
         )
     return normalized.rstrip("/")

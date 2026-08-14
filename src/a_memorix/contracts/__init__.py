@@ -64,6 +64,7 @@ from .namespaces import (
     NamespaceRuntimeState,
     NamespaceStatus,
     ProviderReference,
+    ProviderRuntimeStatus,
     UpdateNamespaceConfigRequest,
 )
 
@@ -124,6 +125,7 @@ __all__ = [
     "RelationExtractionMode",
     "RestoreNamespaceBackupRequest",
     "ProviderReference",
+    "ProviderRuntimeStatus",
     "RemoteAMemorixError",
     "SearchMemoryRequest",
     "SearchMemoryResponse",

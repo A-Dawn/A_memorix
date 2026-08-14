@@ -40,3 +40,34 @@ metrics_host = "127.0.0.1"
 # otlp_endpoint = "http://127.0.0.1:4317"
 otlp_insecure = false
 trace_sample_ratio = 0.1
+
+[providers.embedding]
+endpoint = "https://provider.example/v1"
+model = "embedding-model"
+api_key_file = "./secrets/embedding-api-key"
+dimension = 1024
+dimension_request_mode = "explicit"
+batch_size = 32
+max_concurrent = 5
+timeout_seconds = 60
+max_attempts = 3
+retry_delay_seconds = 1
+retry_max_delay_seconds = 20
+retry_backoff_multiplier = 2
+
+[providers.llm]
+endpoint = "https://provider.example/v1"
+model = "chat-model"
+api_key_file = "./secrets/llm-api-key"
+max_concurrent = 3
+max_tokens = 8192
+temperature = 0
+timeout_seconds = 120
+max_attempts = 3
+retry_delay_seconds = 1
+retry_max_delay_seconds = 20
+retry_backoff_multiplier = 2
+
+[mcp]
+mode = "standard"
+probe_llm = true
