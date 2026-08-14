@@ -1,5 +1,9 @@
 # 更新日志 (Changelog)
 
+## [2.0.0a4] - 2026-08-14
+
+本版本为 Agent 适配器增加文件配置优先模式。`a-memorix --no-environment-overrides --config <path> ...` 会忽略非密钥 `A_MEMORIX_*` 配置覆盖，使宿主生成的 TOML 成为唯一普通配置来源；Embedding、LLM、服务管理和客户端认证密钥仍可由独立环境变量注入，不会写入 TOML。未使用该开关时，原有命令行、环境变量、配置文件、默认值优先级保持不变。
+
 ## [2.0.0a3] - 2026-08-14
 
 本版本补齐面向 Agent 插件分发的标准记忆栈。新增生产级 OpenAI 兼容 Embedding、LLM Provider，支持环境变量或只读文件密钥、超时、并发、重试、响应校验和无密钥指纹。

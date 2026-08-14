@@ -40,7 +40,10 @@ def main(argv: list[str] | None = None) -> int:
             result = _adapter_command(args)
             _print_value(result, pretty=args.pretty)
             return 0
-        config = load_config(args.config)
+        config = load_config(
+            args.config,
+            environ={} if args.no_environment_overrides else None,
+        )
         if args.command == "config":
             _print_value(config.redacted(), pretty=args.pretty)
             return 0
@@ -66,6 +69,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--config",
         help="explicit TOML configuration file; A_MEMORIX_CONFIG is the fallback",
+    )
+    parser.add_argument(
+        "--no-environment-overrides",
+        action="store_true",
+        help=(
+            "load non-secret settings only from --config and defaults; "
+            "provider and service credential environment variables remain available"
+        ),
     )
     parser.add_argument(
         "--pretty",

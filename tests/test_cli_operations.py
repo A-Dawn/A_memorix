@@ -20,7 +20,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 from pydantic import ValidationError
 
-from a_memorix.cli import _parser, _server_config
+from a_memorix.cli import _parser, _server_config, main
 from a_memorix.client import AMemorixClient
 from a_memorix.config import ObservabilityConfig, ServerTLSConfig, load_config
 from a_memorix.engine import AMemorixEngine
@@ -134,6 +134,44 @@ probe_llm = false
     )
     assert "embedding-secret" not in rendered
     assert "llm-secret" not in rendered
+
+
+def test_cli_can_disable_non_secret_environment_overrides(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "a-memorix.toml"
+    config_path.write_text(
+        """
+[providers.embedding]
+endpoint = "https://file.example/v1"
+model = "embedding-file"
+dimension = 768
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("A_MEMORIX_EMBEDDING_ENDPOINT", "https://env.example/v1")
+    monkeypatch.setenv("A_MEMORIX_EMBEDDING_MODEL", "embedding-env")
+    monkeypatch.setenv("A_MEMORIX_EMBEDDING_DIMENSION", "1024")
+    monkeypatch.setenv("A_MEMORIX_EMBEDDING_API_KEY", "embedding-secret")
+
+    result = main(
+        [
+            "--config",
+            str(config_path),
+            "--no-environment-overrides",
+            "config",
+        ]
+    )
+
+    assert result == 0
+    rendered = capsys.readouterr().out
+    payload = json.loads(rendered)
+    assert payload["providers"]["embedding"]["endpoint"] == "https://file.example/v1"
+    assert payload["providers"]["embedding"]["model"] == "embedding-file"
+    assert payload["providers"]["embedding"]["dimension"] == 768
+    assert "embedding-secret" not in rendered
 
 
 def test_mcp_parser_supports_explicit_degraded_mode() -> None:
