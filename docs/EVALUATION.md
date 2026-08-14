@@ -91,7 +91,22 @@ a-memorix-eval longmemeval run `
   --work-dir data/public-benchmarks/longmemeval/work-full
 ```
 
-全量模式按官方 session ID 去重。同一个 session 在不同题目中内容必须一致，否则评测直接中止；日期不同时固定使用最早日期，避免案例顺序改变时间权重。不同 session 若文本完全相同，底层只保留一份 paragraph memory，评分映射仍保留官方 session ID。当前公开评测不调用 LLM，也没有可验证的关系抽取结果，因此只评价 paragraph vector 与 BM25 检索，不把空 graph 通道计入成绩。
+全量模式按官方 session ID 去重。同一个 session 在不同题目中内容必须一致，否则评测直接中止；日期不同时固定使用最早日期，避免案例顺序改变时间权重。不同 session 若文本完全相同，底层只保留一份 paragraph memory，评分映射仍保留官方 session ID。默认评测不调用 LLM，只评价 paragraph vector 与 BM25 检索，不把空 graph 通道计入成绩。
+
+需要测量 relation extraction 和 graph 检索时显式增加 `--relation-extraction`。LongMemEval 默认使用 `agent-memory-v1`，也可通过 `--relation-extraction-profile` 修改：
+
+```powershell
+a-memorix-eval longmemeval run `
+  --namespace-mode full `
+  --granularity session `
+  --relation-extraction `
+  --relation-extraction-profile agent-memory-v1 `
+  --output-dir data/public-benchmarks/longmemeval/results/full-graph
+```
+
+LLM 配置从本地 `config.txt` 的 `llm_endpoint`、`llm_api_key`、`llm_model`、`llm_max_concurrent` 和 `llm_max_tokens` 读取。hybrid model 的 thinking 开关由 provider 协议决定，不只取决于 model：千问AI平台托管的 Qwen、DeepSeek V4 等混合模型使用 `llm_enable_thinking=false`；直接连接 DeepSeek 官方兼容接口时使用 `llm_thinking_mode=disabled`。两项不能同时配置；未配置时不会发送对应的扩展字段。成功结果缓存在 `data/public-benchmarks/cache/relation-extractions.sqlite3`，不会进入 Git。summary 只记录公开模型指纹、cache hit、cache miss 和远端请求数，不记录密钥。graph 结果必须与无 extraction 的同一组 case 分开报告，不能把冷 LLM cache 的 ingest 时间与 paragraph baseline 直接比较。
+
+Embedding endpoint 的429、502、503、504按偶发服务错误处理，默认最多请求3次，每次固定等待2秒，不采用指数退避。可通过 `embedding_max_attempts` 和 `embedding_retry_delay_seconds` 调整；其他 HTTP 错误不会重试。Embedding cache 会复用已成功写入的向量。
 
 下载并运行 SWE-bench Lite：
 

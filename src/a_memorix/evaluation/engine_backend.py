@@ -13,22 +13,99 @@ import gc
 import hashlib
 import shutil
 import time
+import asyncio
 
 from a_memorix.contracts import (
     BatchIngestTextRequest,
     CreateNamespaceRequest,
     IngestTextInput,
+    JobStatus,
     NamespaceConfig,
     NamespaceFeatureConfig,
     ProviderReference,
+    RelationExtractionConfig,
+    RelationExtractionMode,
     RequestContext,
     SearchMemoryRequest,
 )
 from a_memorix.engine import AMemorixEngine
 from a_memorix.core.utils.hash import compute_paragraph_hash, normalize_text
-from a_memorix.ports import NamespaceHostPorts
+from a_memorix.ports import LLMProvider, NamespaceHostPorts
 
 from .common import CachedEmbeddingProvider, evaluate_ranking
+
+
+DEFAULT_INGEST_BATCH_SIZE = 100
+RELATION_EXTRACTION_INGEST_BATCH_SIZE = 16
+RELATION_EXTRACTION_PENDING_LOW_WATERMARK = 32
+RELATION_EXTRACTION_PENDING_HIGH_WATERMARK = 48
+
+
+def _ingest_batch_size(relation_extraction: bool) -> int:
+    return (
+        RELATION_EXTRACTION_INGEST_BATCH_SIZE
+        if relation_extraction
+        else DEFAULT_INGEST_BATCH_SIZE
+    )
+
+
+async def _wait_for_extraction_jobs(
+    engine: AMemorixEngine,
+    namespace_id: str,
+    jobs: Sequence[tuple[str, str]],
+    metric_id_by_memory_id: dict[str, str],
+) -> Counter[str]:
+    pending = {job_id: metric_id for job_id, metric_id in jobs if job_id}
+    report: Counter[str] = Counter(jobs=len(pending))
+    report.update(
+        await _drain_extraction_jobs(
+            engine,
+            namespace_id,
+            pending,
+            metric_id_by_memory_id,
+        )
+    )
+    return report
+
+
+async def _drain_extraction_jobs(
+    engine: AMemorixEngine,
+    namespace_id: str,
+    pending: dict[str, str],
+    metric_id_by_memory_id: dict[str, str],
+    *,
+    target_pending: int = 0,
+) -> Counter[str]:
+    report: Counter[str] = Counter()
+    target = max(0, int(target_pending))
+    while len(pending) > target:
+        completed: list[str] = []
+        for job_id, metric_id in pending.items():
+            job = await engine.get_job(namespace_id, job_id)
+            if job.status in {JobStatus.PENDING, JobStatus.RUNNING}:
+                continue
+            if job.status is not JobStatus.SUCCEEDED:
+                message = (
+                    job.error.message if job.error is not None else job.status.value
+                )
+                raise RuntimeError(f"relation extraction job failed: {message}")
+            report["entities"] += int(job.result.get("entity_count", 0) or 0)
+            report["relations"] += int(job.result.get("relation_count", 0) or 0)
+            report["cache_hits"] += int(bool(job.result.get("cached", False)))
+            relation_ids = job.result.get("relation_ids", ())
+            if isinstance(relation_ids, Sequence) and not isinstance(
+                relation_ids, (str, bytes)
+            ):
+                for relation_id in relation_ids:
+                    token = str(relation_id or "").strip()
+                    if token:
+                        metric_id_by_memory_id[token] = metric_id
+            completed.append(job_id)
+        for job_id in completed:
+            pending.pop(job_id, None)
+        if len(pending) > target:
+            await asyncio.sleep(1.0)
+    return report
 
 
 @dataclass(frozen=True)
@@ -60,6 +137,9 @@ class BackendOptions:
     embedding_batch_size: int = 16
     embedding_concurrency: int = 3
     keep_case_data: bool = False
+    relation_extraction: bool = False
+    relation_extraction_profile: str = "general-v1"
+    llm_provider: LLMProvider | None = None
 
 
 class AMemorixEvaluationBackend:
@@ -90,7 +170,8 @@ class AMemorixEvaluationBackend:
             max_active_namespaces=1,
             config_factory=lambda _namespace: self._runtime_config(dimension),
             host_port_factory=lambda _namespace: NamespaceHostPorts(
-                embedding_provider=self.provider
+                embedding_provider=self.provider,
+                llm_provider=self.options.llm_provider,
             ),
         )
         timing: dict[str, float] = {}
@@ -119,8 +200,14 @@ class AMemorixEvaluationBackend:
                             episodes=False,
                             person_profiles=False,
                             sparse_retrieval=True,
-                            relation_vectors=False,
+                            relation_vectors=self.options.relation_extraction,
                             allow_metadata_only_write=False,
+                        ),
+                        llm=self._llm_reference(),
+                        relation_extraction=RelationExtractionConfig(
+                            enabled=self.options.relation_extraction,
+                            default_enabled=False,
+                            profile=self.options.relation_extraction_profile,
                         ),
                     ),
                 )
@@ -128,14 +215,20 @@ class AMemorixEvaluationBackend:
             timing["initialize"] = (perf_counter() - init_started) * 1000.0
 
             ingest_started = perf_counter()
-            for batch_start in range(0, len(documents), 100):
-                batch_documents = documents[batch_start : batch_start + 100]
+            extraction_counts: Counter[str] = Counter()
+            ingest_batch_size = _ingest_batch_size(self.options.relation_extraction)
+            for batch_start in range(0, len(documents), ingest_batch_size):
+                batch_documents = documents[
+                    batch_start : batch_start + ingest_batch_size
+                ]
                 ingest_response = await engine.batch_ingest_text(
                     BatchIngestTextRequest(
                         context=RequestContext(
                             namespace_id=namespace_id,
                             agent_id="a-memorix-evaluation",
-                            idempotency_key=f"ingest-batch-{batch_start // 100}",
+                            idempotency_key=(
+                                f"ingest-batch-{batch_start // ingest_batch_size}"
+                            ),
                         ),
                         items=tuple(
                             self._ingest_input(document) for document in batch_documents
@@ -159,6 +252,26 @@ class AMemorixEvaluationBackend:
                     )
                     for memory_id in memory_ids:
                         id_by_memory_hash[str(memory_id)] = document.effective_metric_id
+                extraction_jobs = [
+                    (
+                        item_result.response.relation_extraction_job_id,
+                        document.effective_metric_id,
+                    )
+                    for document, item_result in zip(
+                        batch_documents,
+                        ingest_response.results,
+                        strict=True,
+                    )
+                    if item_result.response is not None
+                    and item_result.response.relation_extraction_job_id
+                ]
+                report = await _wait_for_extraction_jobs(
+                    engine,
+                    namespace_id,
+                    extraction_jobs,
+                    id_by_memory_hash,
+                )
+                extraction_counts.update(report)
             timing["ingest"] = (perf_counter() - ingest_started) * 1000.0
 
             search_started = perf_counter()
@@ -213,6 +326,7 @@ class AMemorixEvaluationBackend:
                     "available_channels": list(search_response.available_channels),
                     "unavailable_channels": list(search_response.unavailable_channels),
                 },
+                "relation_extraction": dict(extraction_counts),
             }
         except Exception as exc:
             timing["total"] = (perf_counter() - started) * 1000.0
@@ -232,6 +346,9 @@ class AMemorixEvaluationBackend:
 
     def _runtime_config(self, dimension: int) -> dict[str, object]:
         return {
+            # Evaluation reuses one live runtime and flushes it during shutdown.
+            # Avoid rewriting growing vector and graph snapshots after every job.
+            "runtime": {"defer_relation_extraction_persist": True},
             "embedding": {
                 "dimension": int(dimension),
                 "dimension_request_mode": "never",
@@ -252,8 +369,8 @@ class AMemorixEvaluationBackend:
             "person_profile": {"enabled": False},
         }
 
-    @staticmethod
     def _ingest_input(
+        self,
         document: RetrievalDocument,
     ) -> IngestTextInput:
         metadata = dict(document.metadata)
@@ -274,8 +391,22 @@ class AMemorixEvaluationBackend:
             text=document.text,
             observed_at=observed_at,
             metadata=metadata,
+            relation_extraction=(
+                RelationExtractionMode.ENABLED
+                if self.options.relation_extraction
+                else RelationExtractionMode.INHERIT
+            ),
             respect_filter=False,
         )
+
+    def _llm_reference(self) -> ProviderReference | None:
+        provider = self.options.llm_provider
+        if provider is None:
+            return None
+        fingerprint = getattr(provider, "fingerprint", None)
+        raw = fingerprint() if callable(fingerprint) else {}
+        model = str(raw.get("model", "") if isinstance(raw, Mapping) else "")
+        return ProviderReference(provider_id="openai-compatible", model_id=model)
 
     def _case_dir(self, case_id: str) -> Path:
         digest = hashlib.sha256(case_id.encode("utf-8")).hexdigest()[:20]
@@ -341,7 +472,8 @@ class AMemorixSharedNamespaceBackend(AMemorixEvaluationBackend):
             max_active_namespaces=1,
             config_factory=lambda _namespace: self._runtime_config(dimension),
             host_port_factory=lambda _namespace: NamespaceHostPorts(
-                embedding_provider=self.provider
+                embedding_provider=self.provider,
+                llm_provider=self.options.llm_provider,
             ),
         )
         self._engine = engine
@@ -369,8 +501,14 @@ class AMemorixSharedNamespaceBackend(AMemorixEvaluationBackend):
                             episodes=False,
                             person_profiles=False,
                             sparse_retrieval=True,
-                            relation_vectors=False,
+                            relation_vectors=self.options.relation_extraction,
                             allow_metadata_only_write=False,
+                        ),
+                        llm=self._llm_reference(),
+                        relation_extraction=RelationExtractionConfig(
+                            enabled=self.options.relation_extraction,
+                            default_enabled=False,
+                            profile=self.options.relation_extraction_profile,
                         ),
                     ),
                 )
@@ -378,14 +516,22 @@ class AMemorixSharedNamespaceBackend(AMemorixEvaluationBackend):
             timing["initialize"] = (perf_counter() - init_started) * 1000.0
 
             ingest_started = perf_counter()
-            for batch_start in range(0, len(documents), 100):
-                batch_documents = documents[batch_start : batch_start + 100]
+            extraction_counts: Counter[str] = Counter()
+            pending_extraction_jobs: dict[str, str] = {}
+            relation_mapping: dict[str, str] = {}
+            ingest_batch_size = _ingest_batch_size(self.options.relation_extraction)
+            for batch_start in range(0, len(documents), ingest_batch_size):
+                batch_documents = documents[
+                    batch_start : batch_start + ingest_batch_size
+                ]
                 response = await engine.batch_ingest_text(
                     BatchIngestTextRequest(
                         context=RequestContext(
                             namespace_id=self._namespace_id,
                             agent_id="a-memorix-evaluation",
-                            idempotency_key=(f"full-ingest-batch-{batch_start // 100}"),
+                            idempotency_key=(
+                                f"full-ingest-batch-{batch_start // ingest_batch_size}"
+                            ),
                         ),
                         items=tuple(
                             self._ingest_input(document) for document in batch_documents
@@ -416,6 +562,48 @@ class AMemorixSharedNamespaceBackend(AMemorixEvaluationBackend):
                         self._metric_ids_by_memory_id[str(memory_id)].add(
                             document.effective_metric_id
                         )
+                extraction_jobs = [
+                    (
+                        item_result.response.relation_extraction_job_id,
+                        document.effective_metric_id,
+                    )
+                    for document, item_result in zip(
+                        batch_documents,
+                        response.results,
+                        strict=True,
+                    )
+                    if item_result.response is not None
+                    and item_result.response.relation_extraction_job_id
+                ]
+                pending_extraction_jobs.update(
+                    (job_id, metric_id)
+                    for job_id, metric_id in extraction_jobs
+                    if job_id
+                )
+                extraction_counts["jobs"] += len(extraction_jobs)
+                if (
+                    len(pending_extraction_jobs)
+                    >= RELATION_EXTRACTION_PENDING_HIGH_WATERMARK
+                ):
+                    extraction_counts.update(
+                        await _drain_extraction_jobs(
+                            engine,
+                            self._namespace_id,
+                            pending_extraction_jobs,
+                            relation_mapping,
+                            target_pending=(RELATION_EXTRACTION_PENDING_LOW_WATERMARK),
+                        )
+                    )
+            extraction_counts.update(
+                await _drain_extraction_jobs(
+                    engine,
+                    self._namespace_id,
+                    pending_extraction_jobs,
+                    relation_mapping,
+                )
+            )
+            for relation_id, metric_id in relation_mapping.items():
+                self._metric_ids_by_memory_id[relation_id].add(metric_id)
             timing["ingest"] = (perf_counter() - ingest_started) * 1000.0
         except Exception:
             await self.close()
@@ -423,6 +611,7 @@ class AMemorixSharedNamespaceBackend(AMemorixEvaluationBackend):
 
         return {
             **corpus,
+            "relation_extraction": dict(extraction_counts),
             "timing_ms": {key: round(value, 3) for key, value in timing.items()},
         }
 

@@ -22,6 +22,9 @@ import json
 import os
 import re
 import sqlite3
+import time
+
+from a_memorix.ports import LLMRequest, LLMResult
 
 
 DEFAULT_CUTOFFS = (1, 3, 5, 10, 20, 50)
@@ -110,6 +113,8 @@ class EmbeddingConfig:
     api_key: str = field(repr=False)
     model: str
     timeout_seconds: float = 60.0
+    max_attempts: int = 3
+    retry_delay_seconds: float = 2.0
 
     @classmethod
     def from_file(cls, path: str | Path) -> "EmbeddingConfig":
@@ -142,18 +147,40 @@ class EmbeddingConfig:
             endpoint = _first_value(keyed, "endpoint", "base_url", "url")
             api_key = _first_value(keyed, "api_key", "key", "token")
             model = _first_value(keyed, "model", "model_id", "model_name")
-        elif len(lines) == 3:
-            endpoint, api_key, model = lines
         else:
-            raise ValueError(
-                "config.txt must contain endpoint, API key and model on three lines, "
-                "or use endpoint/api_key/model key-value entries"
-            )
+            legacy_lines: list[str] = []
+            for line in lines:
+                match = key_pattern.match(line)
+                key = match.group(1).lower() if match else ""
+                if key.startswith(("llm_", "embedding_")):
+                    continue
+                legacy_lines.append(line)
+            if len(legacy_lines) == 3:
+                endpoint, api_key, model = legacy_lines
+            else:
+                raise ValueError(
+                    "config.txt must contain endpoint, API key and model on three lines, "
+                    "or use endpoint/api_key/model key-value entries"
+                )
         if not endpoint.startswith(("http://", "https://")):
             raise ValueError("Embedding endpoint must be an HTTP(S) URL")
         if not api_key or not model:
             raise ValueError("Embedding API key and model must be non-empty")
-        return cls(endpoint=endpoint, api_key=api_key, model=model)
+        max_attempts = int(_first_value(keyed, "embedding_max_attempts") or 3)
+        retry_delay_seconds = float(
+            _first_value(keyed, "embedding_retry_delay_seconds") or 2.0
+        )
+        if max_attempts < 1 or retry_delay_seconds < 0:
+            raise ValueError(
+                "Embedding max attempts must be positive and retry delay non-negative"
+            )
+        return cls(
+            endpoint=endpoint,
+            api_key=api_key,
+            model=model,
+            max_attempts=max_attempts,
+            retry_delay_seconds=retry_delay_seconds,
+        )
 
     @property
     def embeddings_url(self) -> str:
@@ -177,12 +204,306 @@ class EmbeddingConfig:
         }
 
 
+@dataclass(frozen=True)
+class LLMConfig:
+    """OpenAI-compatible text generation settings kept separate from Embedding."""
+
+    endpoint: str
+    api_key: str = field(repr=False)
+    model: str
+    timeout_seconds: float = 120.0
+    max_concurrent: int = 3
+    max_tokens: int = 8192
+    enable_thinking: bool | None = None
+    thinking_mode: str | None = None
+
+    @classmethod
+    def from_file(cls, path: str | Path) -> "LLMConfig":
+        config_path = Path(path).resolve()
+        if not config_path.is_file():
+            raise FileNotFoundError(config_path)
+        keyed: dict[str, str] = {}
+        pattern = re.compile(r"^([A-Za-z_][A-Za-z0-9_.-]*)\s*[:=]\s*(.*)$")
+        for raw_line in config_path.read_text(encoding="utf-8-sig").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith(("#", ";")):
+                continue
+            match = pattern.match(line)
+            if match:
+                keyed[match.group(1).lower()] = match.group(2).strip()
+        endpoint = _first_value(keyed, "llm_endpoint", "llm_base_url", "llm_url")
+        api_key = _first_value(keyed, "llm_api_key", "llm_key", "llm_token")
+        model = _first_value(keyed, "llm_model", "llm_model_id")
+        max_concurrent = int(_first_value(keyed, "llm_max_concurrent") or 3)
+        max_tokens = int(_first_value(keyed, "llm_max_tokens") or 8192)
+        enable_thinking = _optional_bool(keyed, "llm_enable_thinking")
+        thinking_mode = (
+            _first_value(keyed, "llm_thinking_mode").strip().lower() or None
+        )
+        if not endpoint.startswith(("http://", "https://")):
+            raise ValueError("LLM endpoint must be an HTTP(S) URL")
+        if not api_key or not model:
+            raise ValueError("LLM API key and model must be non-empty")
+        if max_concurrent < 1 or max_tokens < 1:
+            raise ValueError("LLM concurrency and max tokens must be positive")
+        if thinking_mode not in {None, "enabled", "disabled"}:
+            raise ValueError("llm_thinking_mode must be enabled or disabled")
+        if enable_thinking is not None and thinking_mode is not None:
+            raise ValueError(
+                "llm_enable_thinking and llm_thinking_mode cannot both be set"
+            )
+        return cls(
+            endpoint=endpoint,
+            api_key=api_key,
+            model=model,
+            max_concurrent=max_concurrent,
+            max_tokens=max_tokens,
+            enable_thinking=enable_thinking,
+            thinking_mode=thinking_mode,
+        )
+
+    @property
+    def chat_completions_url(self) -> str:
+        parsed = urlparse(self.endpoint.strip())
+        path = parsed.path.rstrip("/")
+        if path.endswith("/chat/completions"):
+            effective_path = path
+        elif path.endswith("/v1"):
+            effective_path = f"{path}/chat/completions"
+        elif not path:
+            effective_path = "/v1/chat/completions"
+        else:
+            effective_path = f"{path}/chat/completions"
+        return urlunparse(parsed._replace(path=effective_path))
+
+    def public_fingerprint(self) -> Mapping[str, object]:
+        fingerprint: dict[str, object] = {
+            "provider": "openai-compatible",
+            "model": self.model,
+            "endpoint_sha256": sha256(
+                self.chat_completions_url.encode("utf-8")
+            ).hexdigest(),
+        }
+        if self.enable_thinking is not None:
+            fingerprint["enable_thinking"] = self.enable_thinking
+        if self.thinking_mode is not None:
+            fingerprint["thinking_mode"] = self.thinking_mode
+        return fingerprint
+
+
+@dataclass(frozen=True)
+class _LLMTaskConfig:
+    model_list: tuple[str, ...]
+    max_tokens: int = 8192
+    temperature: float = 0.0
+    selection_strategy: str = "fixed"
+    slow_threshold: float = 0.0
+    hard_timeout: float = 0.0
+
+
+class OpenAICompatibleLLMProvider:
+    """Minimal chat-completions adapter for public evaluation tasks."""
+
+    def __init__(self, config: LLMConfig) -> None:
+        self.config = config
+        self.request_count = 0
+        self._semaphore = asyncio.Semaphore(max(1, int(config.max_concurrent)))
+
+    def get_available_models(self) -> Mapping[str, object]:
+        return {
+            "memory": _LLMTaskConfig(
+                model_list=(self.config.model,),
+                max_tokens=self.config.max_tokens,
+            ),
+        }
+
+    async def generate(self, request: LLMRequest) -> LLMResult:
+        async with self._semaphore:
+            return await asyncio.to_thread(self._request, request)
+
+    def fingerprint(self) -> Mapping[str, object]:
+        return self.config.public_fingerprint()
+
+    def _request(self, request: LLMRequest) -> LLMResult:
+        payload: dict[str, object] = {
+            "model": request.model or self.config.model,
+            "messages": [{"role": "user", "content": request.prompt}],
+            "temperature": 0.0
+            if request.temperature is None
+            else float(request.temperature),
+            "max_tokens": max(1, int(request.max_tokens or self.config.max_tokens)),
+        }
+        if self.config.enable_thinking is not None:
+            payload["enable_thinking"] = self.config.enable_thinking
+        if self.config.thinking_mode is not None:
+            payload["thinking"] = {"type": self.config.thinking_mode}
+        http_request = Request(
+            self.config.chat_completions_url,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.config.api_key}",
+                "Content-Type": "application/json",
+                "User-Agent": "A_memorix-evaluation/1.0",
+            },
+            method="POST",
+        )
+        self.request_count += 1
+        try:
+            with urlopen(
+                http_request,
+                timeout=self.config.timeout_seconds,
+            ) as response:
+                body = response.read()
+        except HTTPError as exc:
+            detail = exc.read(2048).decode("utf-8", errors="replace")
+            return LLMResult.from_error(
+                f"LLM request failed with HTTP {exc.code}: {detail}"
+            )
+        except (URLError, TimeoutError, OSError) as exc:
+            return LLMResult.from_error(f"LLM request failed: {type(exc).__name__}")
+        try:
+            decoded = json.loads(body)
+            choice = decoded["choices"][0]
+            message = choice["message"]
+            content = str(message.get("content", "") or "").strip()
+            finish_reason = str(choice.get("finish_reason", "") or "")
+        except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError):
+            return LLMResult.from_error(
+                "LLM response does not match the OpenAI chat-completions schema"
+            )
+        if not content:
+            return LLMResult.from_error(
+                "LLM response contained no final content"
+                + (f" (finish_reason={finish_reason})" if finish_reason else "")
+            )
+        return LLMResult(
+            success=True,
+            content=content,
+            metadata={
+                "model": str(decoded.get("model", self.config.model)),
+                "finish_reason": finish_reason,
+                "usage": decoded.get("usage", {}),
+            },
+        )
+
+
+class CachedLLMProvider:
+    """Persist successful evaluation LLM results without storing credentials."""
+
+    def __init__(
+        self,
+        provider: OpenAICompatibleLLMProvider,
+        cache_path: str | Path,
+    ) -> None:
+        self.provider = provider
+        self.cache_path = Path(cache_path).resolve()
+        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+        self._connection = sqlite3.connect(self.cache_path)
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS llm_results (
+                cache_key TEXT PRIMARY KEY,
+                content TEXT NOT NULL,
+                metadata_json TEXT NOT NULL,
+                created_at REAL NOT NULL
+            )
+            """
+        )
+        self._connection.commit()
+        self._lock = asyncio.Lock()
+        self.cache_hits = 0
+        self.cache_misses = 0
+
+    def get_available_models(self) -> Mapping[str, object]:
+        return self.provider.get_available_models()
+
+    def fingerprint(self) -> Mapping[str, object]:
+        return self.provider.fingerprint()
+
+    async def generate(self, request: LLMRequest) -> LLMResult:
+        cache_key = self._cache_key(request)
+        async with self._lock:
+            row = self._connection.execute(
+                "SELECT content, metadata_json FROM llm_results WHERE cache_key = ?",
+                (cache_key,),
+            ).fetchone()
+        if row is not None:
+            self.cache_hits += 1
+            metadata = json.loads(str(row[1] or "{}"))
+            return LLMResult(
+                success=True,
+                content=str(row[0]),
+                metadata=metadata if isinstance(metadata, dict) else {},
+            )
+
+        self.cache_misses += 1
+        result = await self.provider.generate(request)
+        if result.success and str(result.content or "").strip():
+            async with self._lock:
+                self._connection.execute(
+                    """
+                    INSERT OR REPLACE INTO llm_results (
+                        cache_key, content, metadata_json, created_at
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        cache_key,
+                        result.content,
+                        json.dumps(dict(result.metadata), ensure_ascii=False),
+                        time.time(),
+                    ),
+                )
+                self._connection.commit()
+        return result
+
+    def stats(self) -> Mapping[str, object]:
+        return {
+            **self.fingerprint(),
+            "cache_hits": self.cache_hits,
+            "cache_misses": self.cache_misses,
+            "remote_requests": self.provider.request_count,
+        }
+
+    def close(self) -> None:
+        self._connection.close()
+
+    def _cache_key(self, request: LLMRequest) -> str:
+        payload = {
+            "provider": dict(self.fingerprint()),
+            "prompt": request.prompt,
+            "request_type": request.request_type,
+            "task_name": request.task_name,
+            "model": request.model,
+            "temperature": request.temperature,
+            "max_tokens": request.max_tokens,
+        }
+        return sha256(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+
+
 def _first_value(values: Mapping[str, str], *keys: str) -> str:
     for key in keys:
         value = values.get(key, "").strip()
         if value:
             return value
     return ""
+
+
+def _optional_bool(values: Mapping[str, str], key: str) -> bool | None:
+    value = values.get(key, "").strip().lower()
+    if not value:
+        return None
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{key} must be true or false")
 
 
 class OpenAICompatibleEmbeddingProvider:
@@ -218,29 +539,38 @@ class OpenAICompatibleEmbeddingProvider:
         }
         if dimensions is not None:
             payload["dimensions"] = int(dimensions)
-        request = Request(
-            self.config.embeddings_url,
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.config.api_key}",
-                "Content-Type": "application/json",
-                "User-Agent": "A_memorix-evaluation/1.0",
-            },
-            method="POST",
-        )
-        self.request_count += 1
-        try:
-            with urlopen(request, timeout=self.config.timeout_seconds) as response:
-                body = response.read()
-        except HTTPError as exc:
-            detail = exc.read(2048).decode("utf-8", errors="replace")
-            raise RuntimeError(
-                f"Embedding request failed with HTTP {exc.code}: {detail}"
-            ) from exc
-        except (URLError, TimeoutError, OSError) as exc:
-            raise RuntimeError(
-                f"Embedding request failed: {type(exc).__name__}"
-            ) from exc
+        request_body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        retryable_statuses = {429, 502, 503, 504}
+        body = b""
+        for attempt in range(1, self.config.max_attempts + 1):
+            request = Request(
+                self.config.embeddings_url,
+                data=request_body,
+                headers={
+                    "Authorization": f"Bearer {self.config.api_key}",
+                    "Content-Type": "application/json",
+                    "User-Agent": "A_memorix-evaluation/1.0",
+                },
+                method="POST",
+            )
+            self.request_count += 1
+            try:
+                with urlopen(
+                    request, timeout=self.config.timeout_seconds
+                ) as response:
+                    body = response.read()
+                break
+            except HTTPError as exc:
+                detail = exc.read(2048).decode("utf-8", errors="replace")
+                if exc.code not in retryable_statuses or attempt >= self.config.max_attempts:
+                    raise RuntimeError(
+                        f"Embedding request failed with HTTP {exc.code}: {detail}"
+                    ) from exc
+                time.sleep(self.config.retry_delay_seconds)
+            except (URLError, TimeoutError, OSError) as exc:
+                raise RuntimeError(
+                    f"Embedding request failed: {type(exc).__name__}"
+                ) from exc
         try:
             decoded = json.loads(body)
             rows = sorted(decoded["data"], key=lambda item: int(item["index"]))
@@ -492,14 +822,7 @@ class CachedEmbeddingProvider:
 
         async def fill(batch: list[str]) -> None:
             async with semaphore:
-                for attempt in range(5):
-                    try:
-                        await self.embed(batch)
-                        return
-                    except RuntimeError:
-                        if attempt >= 4:
-                            raise
-                        await asyncio.sleep(min(8.0, 2.0**attempt))
+                await self.embed(batch)
 
         await asyncio.gather(
             *(

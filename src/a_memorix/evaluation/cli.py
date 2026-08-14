@@ -10,9 +10,12 @@ import asyncio
 import json
 
 from .common import (
+    CachedLLMProvider,
     CachedEmbeddingProvider,
     EmbeddingConfig,
+    LLMConfig,
     OpenAICompatibleEmbeddingProvider,
+    OpenAICompatibleLLMProvider,
     evaluation_run_lock,
 )
 from .comparison import compare_summaries, load_summary
@@ -79,6 +82,9 @@ def _add_suite_commands(parser: ArgumentParser, *, suite: str) -> None:
         run.add_argument("--question-id", action="append", default=[])
         run.add_argument("--question-type", action="append", default=[])
         run.add_argument("--include-unscored", action="store_true")
+        run.add_argument("--relation-extraction", action="store_true")
+        run.add_argument("--relation-extraction-profile", default="agent-memory-v1")
+        run.add_argument("--relation-extraction-cache", type=Path)
     else:
         run.add_argument("--instance-id", action="append", default=[])
         run.add_argument("--repo-cache-dir", type=Path)
@@ -107,6 +113,9 @@ def _paths(args: Namespace) -> dict[str, Path]:
         "cache": Path(args.embedding_cache).resolve()
         if getattr(args, "embedding_cache", None)
         else root / "cache" / "embeddings.sqlite3",
+        "relation_cache": Path(args.relation_extraction_cache).resolve()
+        if getattr(args, "relation_extraction_cache", None)
+        else root / "cache" / "relation-extractions.sqlite3",
     }
 
 
@@ -116,6 +125,12 @@ async def _run(args: Namespace, paths: dict[str, Path]) -> dict[str, object]:
         OpenAICompatibleEmbeddingProvider(config),
         paths["cache"],
     )
+    llm_provider: CachedLLMProvider | None = None
+    if args.suite == "longmemeval" and args.relation_extraction:
+        llm_provider = CachedLLMProvider(
+            OpenAICompatibleLLMProvider(LLMConfig.from_file(args.config)),
+            paths["relation_cache"],
+        )
     try:
         if args.suite == "longmemeval":
             return await longmemeval.run_benchmark(
@@ -135,7 +150,10 @@ async def _run(args: Namespace, paths: dict[str, Path]) -> dict[str, object]:
                     resume=args.resume,
                     embedding_batch_size=max(1, args.embedding_batch_size),
                     embedding_concurrency=max(1, args.embedding_concurrency),
+                    relation_extraction=args.relation_extraction,
+                    relation_extraction_profile=args.relation_extraction_profile,
                 ),
+                llm_provider=llm_provider,
             )
         repo_cache = (
             Path(args.repo_cache_dir).resolve()
@@ -161,6 +179,8 @@ async def _run(args: Namespace, paths: dict[str, Path]) -> dict[str, object]:
             ),
         )
     finally:
+        if llm_provider is not None:
+            llm_provider.close()
         provider.close()
 
 

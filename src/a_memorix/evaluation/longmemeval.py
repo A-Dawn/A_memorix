@@ -33,6 +33,7 @@ from .engine_backend import (
     RetrievalCase,
     RetrievalDocument,
 )
+from a_memorix.ports import LLMProvider
 
 
 DATASET_URLS = (
@@ -170,6 +171,8 @@ class RunOptions:
     resume: bool = False
     embedding_batch_size: int = 16
     embedding_concurrency: int = 3
+    relation_extraction: bool = False
+    relation_extraction_profile: str = "agent-memory-v1"
 
 
 def parse_datetime(value: str) -> float:
@@ -421,6 +424,8 @@ def download_dataset(path: str | Path, *, retries: int = 6) -> dict[str, Any]:
 async def run_benchmark(
     provider: CachedEmbeddingProvider,
     options: RunOptions,
+    *,
+    llm_provider: LLMProvider | None = None,
 ) -> dict[str, Any]:
     validation = validate_dataset(options.dataset_path)
     id_filter = set(options.question_ids)
@@ -456,6 +461,10 @@ async def run_benchmark(
         "dataset_sha256": validation["sha256"],
         "embedding_fingerprint": dict(provider.fingerprint()),
         "embedding_prewarm": embedding_prewarm,
+        "relation_extraction": {
+            "enabled": options.relation_extraction,
+            "profile": options.relation_extraction_profile,
+        },
         "runtime": runtime,
     }
     output_dir = Path(options.output_dir).resolve()
@@ -469,6 +478,9 @@ async def run_benchmark(
         embedding_batch_size=options.embedding_batch_size,
         embedding_concurrency=options.embedding_concurrency,
         keep_case_data=options.keep_case_data,
+        relation_extraction=options.relation_extraction,
+        relation_extraction_profile=options.relation_extraction_profile,
+        llm_provider=llm_provider,
     )
     corpus_report: dict[str, Any] | None = None
     if options.namespace_mode == "full":
@@ -520,6 +532,16 @@ async def run_benchmark(
         "dataset": dataset_report,
         "embedding": embedding_report,
         "embedding_prewarm": embedding_prewarm,
+        "relation_extraction": {
+            "enabled": options.relation_extraction,
+            "profile": options.relation_extraction_profile,
+            "provider": (
+                dict(llm_provider.stats())
+                if options.relation_extraction
+                and callable(getattr(llm_provider, "stats", None))
+                else {}
+            ),
+        },
         "runtime": runtime,
         "results": aggregate_results(rows),
     }

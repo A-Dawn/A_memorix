@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 from typing import Mapping, Sequence
+from urllib.error import HTTPError
 
 import json
 import re
@@ -13,11 +15,15 @@ import pytest
 from a_memorix.evaluation.common import (
     CachedEmbeddingProvider,
     EmbeddingConfig,
+    LLMConfig,
+    OpenAICompatibleEmbeddingProvider,
+    OpenAICompatibleLLMProvider,
     append_jsonl,
     evaluation_run_lock,
     evaluate_ranking,
     prepare_result_log,
 )
+from a_memorix.ports import LLMRequest, LLMResult
 from a_memorix.evaluation.cli import build_parser
 from a_memorix.evaluation.comparison import compare_summaries
 from a_memorix.evaluation.engine_backend import (
@@ -26,6 +32,7 @@ from a_memorix.evaluation.engine_backend import (
     BackendOptions,
     RetrievalCase,
     RetrievalDocument,
+    _ingest_batch_size,
 )
 from a_memorix.evaluation.longmemeval import iter_json_array, parse_case
 from a_memorix.evaluation.swebench import (
@@ -46,6 +53,8 @@ class DeterministicEmbeddingProvider:
     def __init__(self, dimension: int = 256) -> None:
         self.dimension = dimension
         self._token_indices: dict[str, int] = {}
+        self.batch_sizes: list[int] = []
+        self.batches: list[tuple[str, ...]] = []
 
     async def initialize(self) -> int:
         return self.dimension
@@ -57,6 +66,8 @@ class DeterministicEmbeddingProvider:
         dimensions: int | None = None,
     ) -> Sequence[Sequence[float]]:
         assert dimensions in {None, self.dimension}
+        self.batch_sizes.append(len(texts))
+        self.batches.append(tuple(texts))
         return [self._vector(text) for text in texts]
 
     async def prewarm(
@@ -90,6 +101,67 @@ class DeterministicEmbeddingProvider:
 
     def stats(self) -> Mapping[str, object]:
         return self.fingerprint()
+
+
+class DeterministicRelationLLMProvider:
+    def __init__(self) -> None:
+        self.request_count = 0
+
+    def get_available_models(self) -> Mapping[str, object]:
+        class _Config:
+            model_list = ("deterministic-relation-model",)
+            max_tokens = 1024
+
+        return {"memory": _Config()}
+
+    def fingerprint(self) -> Mapping[str, object]:
+        return {"provider": "deterministic-test", "model": "relation-model"}
+
+    async def generate(self, request: LLMRequest) -> LLMResult:
+        self.request_count += 1
+        if "Alice works at Lumina" in request.prompt:
+            content = {
+                "entities": [
+                    {"name": "Alice batch entity", "type": "person"},
+                    {"name": "Lumina batch entity", "type": "organization"},
+                ],
+                "relations": [
+                    {
+                        "subject": "Alice",
+                        "predicate": "works_at",
+                        "object": "Lumina",
+                        "confidence": 0.98,
+                    },
+                    {
+                        "subject": "Alice",
+                        "predicate": "works_on",
+                        "object": "memory project",
+                        "confidence": 0.94,
+                    },
+                ],
+            }
+        else:
+            content = {
+                "entities": [
+                    {"name": "garden batch entity", "type": "place"},
+                    {"name": "sunrise batch entity", "type": "time"},
+                ],
+                "relations": [
+                    {
+                        "subject": "garden irrigation",
+                        "predicate": "starts_before",
+                        "object": "sunrise",
+                        "confidence": 0.92,
+                    },
+                    {
+                        "subject": "garden irrigation",
+                        "predicate": "occurs_at",
+                        "object": "sunrise",
+                        "confidence": 0.88,
+                    },
+                ],
+            }
+        return LLMResult(success=True, content=json.dumps(content))
 
 
 def test_evaluation_run_lock_rejects_concurrent_output_directory(
@@ -147,9 +219,24 @@ def test_evaluation_cli_accepts_explicit_embedding_throughput_options() -> None:
 
 
 def test_evaluation_cli_accepts_full_namespace_mode() -> None:
-    args = build_parser().parse_args(["longmemeval", "run", "--namespace-mode", "full"])
+    args = build_parser().parse_args(
+        [
+            "longmemeval",
+            "run",
+            "--namespace-mode",
+            "full",
+            "--relation-extraction",
+        ]
+    )
 
     assert args.namespace_mode == "full"
+    assert args.relation_extraction is True
+    assert args.relation_extraction_profile == "agent-memory-v1"
+
+
+def test_relation_extraction_ingest_batch_stays_below_namespace_limit() -> None:
+    assert _ingest_batch_size(False) == 100
+    assert _ingest_batch_size(True) == 16
 
 
 def test_embedding_config_supports_positional_file_without_exposing_key(
@@ -180,6 +267,183 @@ def test_embedding_config_supports_key_value_file(tmp_path: Path) -> None:
 
     assert config.embeddings_url == "https://embedding.example/v1/embeddings"
     assert config.model == "model-name"
+
+
+def test_embedding_and_llm_config_can_share_file_without_exposing_keys(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "config.txt"
+    path.write_text(
+        "https://embedding.example/v1\nembedding-secret\nembedding-model\n"
+        "llm_endpoint = https://llm.example/v1\n"
+        "llm_api_key = llm-secret\n"
+        "llm_model = reasoning-model\n"
+        "embedding_max_attempts = 4\n"
+        "embedding_retry_delay_seconds = 1.5\n",
+        encoding="utf-8",
+    )
+
+    embedding = EmbeddingConfig.from_file(path)
+    llm = LLMConfig.from_file(path)
+
+    assert embedding.model == "embedding-model"
+    assert embedding.max_attempts == 4
+    assert embedding.retry_delay_seconds == 1.5
+    assert llm.chat_completions_url == "https://llm.example/v1/chat/completions"
+    assert llm.model == "reasoning-model"
+    assert "embedding-secret" not in repr(embedding)
+    assert "llm-secret" not in repr(llm)
+    assert "llm-secret" not in str(llm.public_fingerprint())
+
+
+def test_llm_config_parses_optional_thinking_mode(tmp_path: Path) -> None:
+    path = tmp_path / "config.txt"
+    path.write_text(
+        "https://embedding.example/v1\nembedding-secret\nembedding-model\n"
+        "llm_endpoint=https://llm.example/v1\n"
+        "llm_api_key=llm-secret\n"
+        "llm_model=qwen3.6-flash\n"
+        "llm_enable_thinking=false\n",
+        encoding="utf-8",
+    )
+
+    config = LLMConfig.from_file(path)
+
+    assert config.enable_thinking is False
+    assert config.public_fingerprint()["enable_thinking"] is False
+
+
+def test_llm_config_parses_deepseek_thinking_mode(tmp_path: Path) -> None:
+    path = tmp_path / "config.txt"
+    path.write_text(
+        "https://embedding.example/v1\nembedding-secret\nembedding-model\n"
+        "llm_endpoint=https://llm.example/v1\n"
+        "llm_api_key=llm-secret\n"
+        "llm_model=deepseek-v4-flash\n"
+        "llm_thinking_mode=disabled\n",
+        encoding="utf-8",
+    )
+
+    config = LLMConfig.from_file(path)
+
+    assert config.thinking_mode == "disabled"
+    assert config.public_fingerprint()["thinking_mode"] == "disabled"
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_llm_provider_rejects_empty_final_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Response:
+        def __enter__(self) -> "_Response":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {"content": "", "reasoning_content": "hidden"},
+                            "finish_reason": "length",
+                        }
+                    ]
+                }
+            ).encode()
+
+    monkeypatch.setattr(common_module, "urlopen", lambda *_args, **_kwargs: _Response())
+    provider = OpenAICompatibleLLMProvider(
+        LLMConfig(endpoint="https://llm.example/v1", api_key="secret", model="model")
+    )
+
+    result = await provider.generate(
+        LLMRequest(prompt="JSON only", request_type="test", max_tokens=128)
+    )
+
+    assert result.success is False
+    assert "finish_reason=length" in result.error
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_llm_provider_sends_thinking_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payloads: list[dict[str, object]] = []
+
+    class _Response:
+        def __enter__(self) -> "_Response":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {"choices": [{"message": {"content": "{}"}}]}
+            ).encode()
+
+    def _urlopen(request: object, **_kwargs: object) -> _Response:
+        payloads.append(json.loads(request.data))  # type: ignore[attr-defined]
+        return _Response()
+
+    monkeypatch.setattr(common_module, "urlopen", _urlopen)
+    provider = OpenAICompatibleLLMProvider(
+        LLMConfig(
+            endpoint="https://llm.example/v1",
+            api_key="secret",
+            model="qwen3.6-flash",
+            enable_thinking=False,
+        )
+    )
+
+    result = await provider.generate(
+        LLMRequest(prompt="JSON only", request_type="test")
+    )
+
+    assert result.success is True
+    assert payloads[0]["enable_thinking"] is False
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_llm_provider_sends_deepseek_thinking_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payloads: list[dict[str, object]] = []
+
+    class _Response:
+        def __enter__(self) -> "_Response":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {"choices": [{"message": {"content": "{}"}}]}
+            ).encode()
+
+    def _urlopen(request: object, **_kwargs: object) -> _Response:
+        payloads.append(json.loads(request.data))  # type: ignore[attr-defined]
+        return _Response()
+
+    monkeypatch.setattr(common_module, "urlopen", _urlopen)
+    provider = OpenAICompatibleLLMProvider(
+        LLMConfig(
+            endpoint="https://llm.example/v1",
+            api_key="secret",
+            model="deepseek-v4-flash",
+            thinking_mode="disabled",
+        )
+    )
+
+    result = await provider.generate(
+        LLMRequest(prompt="JSON only", request_type="test")
+    )
+
+    assert result.success is True
+    assert payloads[0]["thinking"] == {"type": "disabled"}
 
 
 @pytest.mark.asyncio
@@ -225,47 +489,55 @@ async def test_embedding_cache_prewarms_unique_texts_in_batches(
 
 
 @pytest.mark.asyncio
-async def test_embedding_cache_prewarms_retry_transient_failures(
-    tmp_path: Path,
-) -> None:
-    raw = CountingEmbeddingProvider()
-    provider = CachedEmbeddingProvider(  # type: ignore[arg-type]
-        raw,
-        tmp_path / "embeddings.sqlite3",
-    )
-    try:
-        await provider.initialize()
-        raw.failures_remaining = 1
-        await provider.prewarm(["one"], batch_size=1, max_concurrent=1)
-    finally:
-        provider.close()
-
-    assert raw.request_count == 3
-
-
-@pytest.mark.asyncio
-async def test_embedding_cache_tolerates_sustained_transient_overload(
+async def test_embedding_provider_retries_transient_http_errors_with_fixed_delay(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
 ) -> None:
-    raw = CountingEmbeddingProvider()
-    provider = CachedEmbeddingProvider(  # type: ignore[arg-type]
-        raw,
-        tmp_path / "embeddings.sqlite3",
-    )
-    try:
-        await provider.initialize()
-        raw.failures_remaining = 4
+    attempts = 0
+    delays: list[float] = []
 
-        async def no_sleep(_seconds: float) -> None:
+    class _Response:
+        def __enter__(self) -> "_Response":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
             return None
 
-        monkeypatch.setattr(common_module.asyncio, "sleep", no_sleep)
-        await provider.prewarm(["one"], batch_size=1, max_concurrent=1)
-    finally:
-        provider.close()
+        def read(self) -> bytes:
+            return json.dumps(
+                {"data": [{"index": 0, "embedding": [1.0, 2.0]}]}
+            ).encode()
 
-    assert raw.request_count == 6
+    def _urlopen(*_args: object, **_kwargs: object) -> _Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise HTTPError(
+                "https://embedding.example/v1/embeddings",
+                503,
+                "overloaded",
+                None,
+                BytesIO(b'{"error":"overloaded"}'),
+            )
+        return _Response()
+
+    monkeypatch.setattr(common_module, "urlopen", _urlopen)
+    monkeypatch.setattr(common_module.time, "sleep", delays.append)
+    provider = OpenAICompatibleEmbeddingProvider(
+        EmbeddingConfig(
+            endpoint="https://embedding.example/v1",
+            api_key="secret",
+            model="embedding-model",
+            max_attempts=3,
+            retry_delay_seconds=2.0,
+        )
+    )
+
+    vectors = await provider.embed(["one"])
+
+    assert vectors == [[1.0, 2.0]]
+    assert attempts == 3
+    assert provider.request_count == 3
+    assert delays == [2.0, 2.0]
 
 
 def test_longmemeval_json_array_streams_across_small_chunks(tmp_path: Path) -> None:
@@ -956,6 +1228,73 @@ async def test_shared_namespace_backend_builds_one_deduplicated_corpus(
     assert second["metrics"]["recall_any@1"] == 1.0
     assert "ingest" not in first["timing_ms"]
     assert list((tmp_path / "work").iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_shared_namespace_backend_extracts_relations_before_search(
+    tmp_path: Path,
+) -> None:
+    llm = DeterministicRelationLLMProvider()
+    embedding = DeterministicEmbeddingProvider()
+    case = RetrievalCase(
+        case_id="relation-case",
+        case_type="graph-smoke",
+        query="Where does Alice work?",
+        documents=(
+            RetrievalDocument(
+                document_id="relevant",
+                text="Alice works at Lumina on the memory project.",
+            ),
+            RetrievalDocument(
+                document_id="noise",
+                text="The garden irrigation starts before sunrise.",
+            ),
+        ),
+        gold_ids=("relevant",),
+    )
+    backend = AMemorixSharedNamespaceBackend(
+        embedding,  # type: ignore[arg-type]
+        BackendOptions(
+            work_root=tmp_path / "work",
+            top_k=3,
+            relation_extraction=True,
+            llm_provider=llm,
+        ),
+    )
+
+    try:
+        corpus = await backend.prepare((case,))
+        result = await backend.run_case(case)
+    finally:
+        await backend.close()
+
+    assert llm.request_count == 2
+    assert corpus["relation_extraction"]["jobs"] == 2
+    assert corpus["relation_extraction"]["relations"] == 4
+    assert any(
+        {"Alice batch entity", "Lumina batch entity"}.issubset(set(batch))
+        for batch in embedding.batches
+    )
+    assert any(
+        any("works_at" in text for text in batch)
+        and any("works_on" in text for text in batch)
+        for batch in embedding.batches
+    )
+    assert result["status"] == "completed", result
+    assert result["metrics"]["recall_any@3"] == 1.0
+
+
+def test_evaluation_runtime_defers_relation_extraction_snapshots(
+    tmp_path: Path,
+) -> None:
+    backend = AMemorixEvaluationBackend(
+        DeterministicEmbeddingProvider(),  # type: ignore[arg-type]
+        BackendOptions(work_root=tmp_path / "work"),
+    )
+
+    config = backend._runtime_config(8)
+
+    assert config["runtime"] == {"defer_relation_extraction_persist": True}
 
 
 def test_shared_namespace_corpus_rejects_conflicting_document_content() -> None:
