@@ -2300,6 +2300,27 @@
         },
         "lastError": {
           "type": "string"
+        },
+        "degraded": {
+          "type": "boolean"
+        },
+        "degradedReasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "embedding": {
+          "$ref": "#/definitions/v1ProviderRuntimeStatus"
+        },
+        "llm": {
+          "$ref": "#/definitions/v1ProviderRuntimeStatus"
+        },
+        "paragraphVectorPoolReady": {
+          "type": "boolean"
+        },
+        "relationVectorPoolReady": {
+          "type": "boolean"
         }
       }
     },
@@ -2404,6 +2425,33 @@
           "type": "string"
         },
         "secretRef": {
+          "type": "string"
+        }
+      }
+    },
+    "v1ProviderRuntimeStatus": {
+      "type": "object",
+      "properties": {
+        "configured": {
+          "type": "boolean"
+        },
+        "available": {
+          "type": "boolean"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "dimension": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "lastError": {
           "type": "string"
         }
       }

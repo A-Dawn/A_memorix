@@ -72,6 +72,7 @@ from .contracts import (
     RelationExtractionMode,
     RestoreNamespaceBackupRequest,
     ProviderReference,
+    ProviderRuntimeStatus,
     RemoteAMemorixError,
     SearchMemoryRequest,
     SearchMemoryResponse,
@@ -93,6 +94,11 @@ from .ports import (
     MessageSource,
     NamespaceHostPorts,
     SystemClock,
+)
+from .providers import (
+    LLMTaskConfig,
+    OpenAICompatibleEmbeddingProvider,
+    OpenAICompatibleLLMProvider,
 )
 
 __all__ = [
@@ -141,6 +147,7 @@ __all__ = [
     "LLMProvider",
     "LLMRequest",
     "LLMResult",
+    "LLMTaskConfig",
     "MessageRecord",
     "MessageSource",
     "MigrationRequiredError",
@@ -168,12 +175,15 @@ __all__ = [
     "NamespaceStateError",
     "NamespaceStatus",
     "NotFoundError",
+    "OpenAICompatibleEmbeddingProvider",
+    "OpenAICompatibleLLMProvider",
     "RequestContext",
     "RelationInput",
     "RelationExtractionConfig",
     "RelationExtractionMode",
     "RestoreNamespaceBackupRequest",
     "ProviderReference",
+    "ProviderRuntimeStatus",
     "RemoteAMemorixError",
     "SDKMemoryKernel",
     "SearchMemoryRequest",
@@ -187,7 +197,7 @@ __all__ = [
     "load_adapter_manifest",
     "__version__",
 ]
-__version__ = "2.0.0a2"
+__version__ = "2.0.0a3"
 
 
 def __getattr__(name: str) -> Any:

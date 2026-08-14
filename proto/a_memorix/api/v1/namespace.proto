@@ -81,12 +81,28 @@ message NamespaceResourceUsage {
   uint64 storage_bytes = 2;
 }
 
+message ProviderRuntimeStatus {
+  bool configured = 1;
+  bool available = 2;
+  string provider = 3;
+  string model = 4;
+  optional uint32 dimension = 5;
+  string fingerprint = 6;
+  string last_error = 7;
+}
+
 message NamespaceHealth {
   NamespaceInfo namespace = 1;
   NamespaceRuntimeState runtime_state = 2;
   bool healthy = 3;
   NamespaceResourceUsage resource_usage = 4;
   string last_error = 5;
+  bool degraded = 6;
+  repeated string degraded_reasons = 7;
+  ProviderRuntimeStatus embedding = 8;
+  ProviderRuntimeStatus llm = 9;
+  bool paragraph_vector_pool_ready = 10;
+  bool relation_vector_pool_ready = 11;
 }
 
 message CreateNamespaceRequest {

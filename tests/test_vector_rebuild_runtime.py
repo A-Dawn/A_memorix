@@ -678,7 +678,7 @@ def test_dual_cleanup_keeps_activated_directories_when_ready_manifest_is_missing
 
 
 @pytest.mark.asyncio
-async def test_default_dual_mode_does_not_start_historical_reembedding(
+async def test_default_dual_mode_activates_empty_pools_without_reembedding(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -701,15 +701,16 @@ async def test_default_dual_mode_does_not_start_historical_reembedding(
     monkeypatch.setattr(kernel, "_rebuild_all_vectors", _unexpected_rebuild)
     await kernel.initialize()
     try:
-        assert kernel.retriever.config.vector_pools.mode == "single"
-        assert kernel._dual_vector_pools_enabled() is False
+        assert kernel.retriever.config.vector_pools.mode == "dual"
+        assert kernel._dual_vector_pools_enabled() is True
         await asyncio.sleep(0)
         config = await kernel.memory_runtime_admin(action="get_config")
         assert config["vector_pools"]["configured_mode"] == "dual"
-        assert config["vector_pools_effective_mode"] == "single"
+        assert config["vector_pools_effective_mode"] == "dual"
         assert config["vector_pools"]["auto_migration"]["running"] is False
         assert config["vector_pools"]["auto_migration"]["attempted"] is False
         assert "dual_vector_auto_migration" not in kernel._background_tasks
+        assert (data_dir / "vectors" / "dual_ready.json").exists()
         assert rebuild_calls == 0
     finally:
         await kernel.shutdown()
@@ -760,7 +761,7 @@ async def test_existing_single_pool_is_not_automatically_reembedded_into_dual_po
 
 
 @pytest.mark.asyncio
-async def test_dual_auto_migration_callback_is_never_invoked(
+async def test_empty_dual_pools_do_not_invoke_auto_migration_callback(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -786,9 +787,9 @@ async def test_dual_auto_migration_callback_is_never_invoked(
     try:
         await asyncio.sleep(0)
         assert rebuild_calls == 0
-        assert kernel._dual_vector_pools_enabled() is False
-        assert kernel.retriever.config.vector_pools.mode == "single"
-        assert not (data_dir / "vectors" / "dual_ready.json").exists()
+        assert kernel._dual_vector_pools_enabled() is True
+        assert kernel.retriever.config.vector_pools.mode == "dual"
+        assert (data_dir / "vectors" / "dual_ready.json").exists()
         config = await kernel.memory_runtime_admin(action="get_config")
         assert config["vector_pools"]["auto_migration"]["attempted"] is False
         assert config["vector_pools"]["auto_migration"]["last_error"] == ""
@@ -797,7 +798,7 @@ async def test_dual_auto_migration_callback_is_never_invoked(
 
 
 @pytest.mark.asyncio
-async def test_dual_auto_migration_does_not_wait_for_manual_rebuild_lock(
+async def test_empty_dual_pool_activation_does_not_wait_for_manual_rebuild_lock(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -826,14 +827,14 @@ async def test_dual_auto_migration_does_not_wait_for_manual_rebuild_lock(
         await asyncio.sleep(0)
 
     assert rebuild_calls == 0
-    assert kernel._dual_vector_pools_enabled() is False
+    assert kernel._dual_vector_pools_enabled() is True
     assert "dual_vector_auto_migration" not in kernel._background_tasks
 
     await kernel.shutdown()
 
 
 @pytest.mark.asyncio
-async def test_failed_dual_rebuild_keeps_single_pool_and_drops_temp_dirs(
+async def test_failed_dual_rebuild_keeps_existing_dual_pools_and_drops_temp_dirs(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -863,10 +864,10 @@ async def test_failed_dual_rebuild_keeps_single_pool_and_drops_temp_dirs(
 
     assert result["success"] is False
     assert result["failed"] == 1
-    assert not (data_dir / "vectors" / "dual_ready.json").exists()
+    assert (data_dir / "vectors" / "dual_ready.json").exists()
     assert not list((data_dir / "vectors").glob("dual_build_*"))
-    assert kernel._dual_vector_pools_enabled() is False
-    assert kernel.retriever.config.vector_pools.mode == "single"
+    assert kernel._dual_vector_pools_enabled() is True
+    assert kernel.retriever.config.vector_pools.mode == "dual"
 
     await kernel.shutdown()
 

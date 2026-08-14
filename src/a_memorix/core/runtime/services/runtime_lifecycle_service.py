@@ -218,7 +218,19 @@ class MemoryRuntimeLifecycleService(KernelServiceBase):
 
             dual_loaded = False
             if self._dual_vector_pools_config_enabled():
-                dual_loaded = self._reload_dual_vector_stores_from_disk()
+                if not any(
+                    store.has_data()
+                    for store in (
+                        self.vector_store,
+                        self.paragraph_vector_store,
+                        self.graph_vector_store,
+                    )
+                ):
+                    self._dual_vector_pools_ready = True
+                    self._refresh_dual_vector_ready_manifest_from_stores()
+                    dual_loaded = True
+                else:
+                    dual_loaded = self._reload_dual_vector_stores_from_disk()
             if dual_loaded and self._legacy_vector_view is None:
                 self._set_vector_health(
                     state="healthy",

@@ -125,6 +125,25 @@ def test_remote_network_transport_requires_a_memorix_origin() -> None:
     assert "must declare the a-memorix network origin" in str(error.value)
 
 
+def test_provider_network_placeholders_are_valid_permissions() -> None:
+    payload = _remote_manifest()
+    permissions = payload["permissions"]
+    assert isinstance(permissions, dict)
+    permissions["network"] = [
+        "a-memorix",
+        "embedding-provider",
+        "llm-provider",
+    ]
+
+    manifest = AdapterManifest.model_validate(payload)
+
+    assert manifest.permissions.network == (
+        "a-memorix",
+        "embedding-provider",
+        "llm-provider",
+    )
+
+
 def test_adapter_compatibility_uses_the_declared_core_range() -> None:
     manifest = AdapterManifest.model_validate(_remote_manifest())
 

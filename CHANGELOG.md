@@ -1,5 +1,14 @@
 # 更新日志 (Changelog)
 
+## [2.0.0a3] - 2026-08-14
+
+本版本补齐面向 Agent 插件分发的标准记忆栈。新增生产级 OpenAI 兼容 Embedding、LLM Provider，支持环境变量或只读文件密钥、超时、并发、重试、响应校验和无密钥指纹。
+
+- `a-memorix mcp` 默认进入标准模式，启动前验证 Faiss、Provider、Embedding 实际维度、LLM 和双向量池；显式 `degraded` 模式保留部分能力运行方式。
+- `serve` 与 `mcp` 都会从统一配置注入 Provider。新 Namespace 立即启用段落、关系双向量池，默认写入继续维护元数据、稀疏索引、段落向量、关系图和关系向量。
+- Namespace 健康协议新增 Provider 配置及可用状态、模型、向量维度、无密钥指纹、降级原因和双向量池就绪状态，并同步生成 Python、Go、OpenAPI 代码。
+- Adapter Manifest 网络权限增加 Embedding、LLM Provider 占位符，为外部 Agent bundle 提供可审核的出站权限声明。
+
 ## [2.0.0a2] - 2026-08-09
 
 本版本完成 A_memorix 2.0 的阶段5开发，使服务可以通过 Python 包、命令行、独立网关和双容器部署方式运行。

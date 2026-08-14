@@ -50,6 +50,20 @@ class EmbeddingAPIAdapter:
         self.backoff_multiplier = max(1.0, float(self.retry_config.get("backoff_multiplier", 2)))
         self._dimension: Optional[int] = None
         self._dimension_detected = False
+        provider_fingerprint = self._provider_fingerprint()
+        if provider_fingerprint.get("dimension_verified") is True:
+            observed_dimension = int(provider_fingerprint.get("dimension", 0) or 0)
+            if observed_dimension <= 0:
+                raise ValueError(
+                    "embedding provider declared an invalid verified dimension"
+                )
+            if observed_dimension != self.default_dimension:
+                raise ValueError(
+                    "verified embedding dimension does not match runtime config: "
+                    f"configured={self.default_dimension}, observed={observed_dimension}"
+                )
+            self._dimension = observed_dimension
+            self._dimension_detected = True
         self._total_encoded = 0
         self._total_errors = 0
         self._total_time = 0.0

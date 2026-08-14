@@ -450,7 +450,7 @@ def namespace_capabilities_to_proto(
 
 
 def namespace_health_to_proto(value: NamespaceHealth) -> namespace_pb2.NamespaceHealth:
-    return namespace_pb2.NamespaceHealth(
+    result = namespace_pb2.NamespaceHealth(
         namespace=namespace_info_to_proto(value.namespace),
         runtime_state=_RUNTIME_STATE_TO_PROTO[value.runtime_state.value],
         healthy=value.healthy,
@@ -459,7 +459,32 @@ def namespace_health_to_proto(value: NamespaceHealth) -> namespace_pb2.Namespace
             storage_bytes=value.resource_usage.storage_bytes,
         ),
         last_error=value.last_error or "",
+        degraded=value.degraded,
+        degraded_reasons=value.degraded_reasons,
+        embedding=namespace_pb2.ProviderRuntimeStatus(
+            configured=value.embedding.configured,
+            available=value.embedding.available,
+            provider=value.embedding.provider,
+            model=value.embedding.model,
+            fingerprint=value.embedding.fingerprint,
+            last_error=value.embedding.last_error,
+        ),
+        llm=namespace_pb2.ProviderRuntimeStatus(
+            configured=value.llm.configured,
+            available=value.llm.available,
+            provider=value.llm.provider,
+            model=value.llm.model,
+            fingerprint=value.llm.fingerprint,
+            last_error=value.llm.last_error,
+        ),
+        paragraph_vector_pool_ready=value.paragraph_vector_pool_ready,
+        relation_vector_pool_ready=value.relation_vector_pool_ready,
     )
+    if value.embedding.dimension is not None:
+        result.embedding.dimension = value.embedding.dimension
+    if value.llm.dimension is not None:
+        result.llm.dimension = value.llm.dimension
+    return result
 
 
 def api_key_info_to_proto(value: ApiKeyInfo) -> auth_pb2.ApiKeyInfo:
