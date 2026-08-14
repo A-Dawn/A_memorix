@@ -51,6 +51,7 @@ from a_memorix.contracts import (
     NamespaceStatus,
     NotFoundError,
     RequestContext,
+    RelationExtractionMode,
     SearchMemoryRequest,
     SearchMemoryResponse,
     RestoreNamespaceBackupRequest,
@@ -234,6 +235,13 @@ class AMemorixEngine:
                     "delete_by_source": callable(
                         getattr(runtime, "memory_source_admin", None)
                     ),
+                    "relation_extraction": (
+                        namespace.config.relation_extraction.enabled
+                        and capabilities.get("llm", True)
+                        and callable(
+                            getattr(runtime, "extract_relations_for_memory", None)
+                        )
+                    ),
                 }
             )
         operations = tuple(
@@ -245,6 +253,7 @@ class AMemorixEngine:
                 "get_memory",
                 "delete_memory",
                 "delete_by_source",
+                "relation_extraction",
             )
             if capabilities.get(
                 "ingest_text" if name == "batch_ingest_text" else name,
@@ -324,9 +333,7 @@ class AMemorixEngine:
         page_token: str = "",
     ) -> tuple[list[NamespaceBackupInfo], str]:
         return _paginate(
-            await self.list_namespace_backups(
-                source_namespace_id=source_namespace_id
-            ),
+            await self.list_namespace_backups(source_namespace_id=source_namespace_id),
             page_size=page_size,
             page_token=page_token,
             token_kind=f"backups:{source_namespace_id}",
@@ -508,7 +515,37 @@ class AMemorixEngine:
         request: IngestTextRequest,
     ) -> dict[str, object]:
         context = request.context
+        namespace = await self.get_namespace(context.namespace_id)
+        extraction_config = namespace.config.relation_extraction
+        extract_relations = _resolve_relation_extraction(
+            request.relation_extraction,
+            enabled=extraction_config.enabled,
+            default_enabled=extraction_config.default_enabled,
+        )
         async with self.runtime(context) as runtime:
+            if extract_relations:
+                inspect_capabilities = getattr(
+                    runtime, "runtime_capability_status", None
+                )
+                raw_status = (
+                    inspect_capabilities() if callable(inspect_capabilities) else {}
+                )
+                raw_capabilities = (
+                    raw_status.get("capabilities")
+                    if isinstance(raw_status, dict)
+                    else None
+                )
+                if (
+                    isinstance(raw_capabilities, dict)
+                    and "llm" in raw_capabilities
+                    and not bool(raw_capabilities["llm"])
+                ):
+                    if request.relation_extraction is RelationExtractionMode.ENABLED:
+                        raise CapabilityUnavailableError(
+                            "relation extraction requires an available LLM provider",
+                            details={"namespace_id": context.namespace_id},
+                        )
+                    extract_relations = False
             if not await _contains_external_memory(runtime, request.external_id):
                 await self._enforce_write_admission(request)
             ingest = getattr(runtime, "ingest_text", None)
@@ -517,26 +554,27 @@ class AMemorixEngine:
                     "namespace runtime does not support text ingestion",
                     details={"namespace_id": context.namespace_id},
                 )
-            result = await ingest(
-                external_id=request.external_id,
-                source_type=request.source_type,
-                text=request.text,
-                chat_id=context.conversation_id or "",
-                person_ids=request.person_ids,
-                participants=request.participants,
-                timestamp=_optional_timestamp(request.observed_at),
-                time_start=_optional_timestamp(request.valid_from),
-                time_end=_optional_timestamp(request.valid_to),
-                tags=request.tags,
-                metadata=dict(request.metadata),
-                entities=request.entities,
-                relations=[
-                    item.model_dump(by_alias=True) for item in request.relations
-                ],
-                respect_filter=request.respect_filter,
-                user_id=context.user_id or "",
-                group_id=context.group_id or "",
+            result = await ingest(**self._runtime_ingest_payload(request))
+        response = self._runtime_ingest_response(result)
+        stored_ids = tuple(str(item) for item in result.get("stored_ids", ()))
+        skipped_ids = tuple(str(item) for item in result.get("skipped_ids", ()))
+        existing_memory_id = (
+            skipped_ids[0]
+            if str(result.get("reason", "") or "") == "exists" and skipped_ids
+            else ""
+        )
+        extraction_memory_id = stored_ids[0] if stored_ids else existing_memory_id
+        if extract_relations and extraction_memory_id:
+            job = self._submit_relation_extraction(
+                request,
+                memory_id=extraction_memory_id,
+                extraction_config=extraction_config.model_dump(mode="json"),
             )
+            response["relation_extraction_job_id"] = job.job_id
+        return response
+
+    @staticmethod
+    def _runtime_ingest_response(result: dict[str, object]) -> dict[str, object]:
         response = IngestTextResponse(
             stored_ids=tuple(str(item) for item in result.get("stored_ids", [])),
             skipped_ids=tuple(str(item) for item in result.get("skipped_ids", [])),
@@ -545,6 +583,9 @@ class AMemorixEngine:
             ),
             warnings=tuple(str(item) for item in result.get("warnings", [])),
             detail=str(result.get("detail", result.get("reason", "")) or ""),
+            relation_extraction_job_id=str(
+                result.get("relation_extraction_job_id", "") or ""
+            ),
         )
         return response.model_dump(mode="json")
 
@@ -570,39 +611,222 @@ class AMemorixEngine:
         self,
         request: BatchIngestTextRequest,
     ) -> dict[str, object]:
-        results: list[BatchIngestItemResult] = []
-        succeeded = 0
-        for index, item in enumerate(request.items):
+        context = request.context
+        namespace = await self.get_namespace(context.namespace_id)
+        extraction_policy = namespace.config.relation_extraction
+        requires_individual_ingest = any(
+            item.relation_extraction is RelationExtractionMode.ENABLED
+            or (
+                item.relation_extraction is RelationExtractionMode.INHERIT
+                and extraction_policy.enabled
+                and extraction_policy.default_enabled
+            )
+            for item in request.items
+        )
+        async with self.runtime(context) as runtime:
+            batch_ingest = getattr(runtime, "batch_ingest_text", None)
+            if (
+                callable(batch_ingest)
+                and namespace.quota.max_storage_bytes is None
+                and not requires_individual_ingest
+            ):
+                raw_results = await batch_ingest(
+                    items=[
+                        self._runtime_ingest_payload(
+                            IngestTextRequest(context=context, **item.model_dump())
+                        )
+                        for item in request.items
+                    ]
+                )
+                if len(raw_results) != len(request.items):
+                    raise RuntimeError(
+                        "namespace runtime returned an invalid batch result count"
+                    )
+                return self._batch_ingest_response(raw_results, context=context)
+
+        raw_results: list[dict[str, object] | Exception] = []
+        for item in request.items:
             ingest_request = IngestTextRequest(
                 context=request.context,
                 **item.model_dump(),
             )
             try:
-                payload = await self._ingest_text_locked(ingest_request)
-                results.append(
-                    BatchIngestItemResult(
-                        index=index,
-                        response=IngestTextResponse.model_validate(payload),
+                raw_results.append(await self._ingest_text_locked(ingest_request))
+            except Exception as exc:
+                raw_results.append(exc)
+        return self._batch_ingest_response(
+            raw_results,
+            context=context,
+        )
+
+    @staticmethod
+    def _runtime_ingest_payload(request: IngestTextRequest) -> dict[str, object]:
+        context = request.context
+        return {
+            "external_id": request.external_id,
+            "source_type": request.source_type,
+            "text": request.text,
+            "chat_id": context.conversation_id or "",
+            "person_ids": request.person_ids,
+            "participants": request.participants,
+            "timestamp": _optional_timestamp(request.observed_at),
+            "time_start": _optional_timestamp(request.valid_from),
+            "time_end": _optional_timestamp(request.valid_to),
+            "tags": request.tags,
+            "metadata": dict(request.metadata),
+            "entities": request.entities,
+            "relations": [item.model_dump(by_alias=True) for item in request.relations],
+            "respect_filter": request.respect_filter,
+            "user_id": context.user_id or "",
+            "group_id": context.group_id or "",
+        }
+
+    def _submit_relation_extraction(
+        self,
+        request: IngestTextRequest,
+        *,
+        memory_id: str,
+        extraction_config: dict[str, object],
+    ) -> JobInfo:
+        if self._shutting_down:
+            raise RuntimeError("AMemorixEngine is shutting down")
+        job_id = uuid4().hex
+        job = self._require_store().create_job(
+            job_id=job_id,
+            namespace_id=request.context.namespace_id,
+            job_type=JobType.RELATION_EXTRACTION,
+            payload={
+                "memory_id": memory_id,
+                "profile": str(extraction_config.get("profile", "general-v1")),
+            },
+            now=self._time(),
+        )
+        task = asyncio.create_task(
+            self._run_relation_extraction(
+                job_id,
+                request,
+                memory_id=memory_id,
+                extraction_config=extraction_config,
+            ),
+            name=f"a-memorix-job-{job_id}",
+        )
+        self._job_tasks[job_id] = task
+        task.add_done_callback(lambda _task: self._job_tasks.pop(job_id, None))
+        return job
+
+    async def _run_relation_extraction(
+        self,
+        job_id: str,
+        request: IngestTextRequest,
+        *,
+        memory_id: str,
+        extraction_config: dict[str, object],
+    ) -> None:
+        namespace_id = request.context.namespace_id
+        store = self._require_store()
+        started = store.start_job(namespace_id, job_id, now=self._time())
+        if started.status is not JobStatus.RUNNING:
+            return
+        try:
+            async with self.runtime(request.context) as runtime:
+                extract = getattr(runtime, "extract_relations_for_memory", None)
+                if not callable(extract):
+                    raise CapabilityUnavailableError(
+                        "namespace runtime does not support relation extraction",
+                        details={"namespace_id": namespace_id},
                     )
+                get_record = getattr(runtime, "get_memory_record", None)
+                if not callable(get_record):
+                    raise CapabilityUnavailableError(
+                        "relation extraction requires authoritative memory reads",
+                        details={"namespace_id": namespace_id},
+                    )
+                record = await get_record(memory_id=memory_id)
+                if not isinstance(record, dict):
+                    raise NotFoundError(
+                        "memory not found for relation extraction",
+                        details={
+                            "namespace_id": namespace_id,
+                            "memory_id": memory_id,
+                        },
+                    )
+                source_text = str(record.get("content", "") or "").strip()
+                if not source_text:
+                    raise InvalidArgumentError(
+                        "stored memory text is empty",
+                        details={
+                            "namespace_id": namespace_id,
+                            "memory_id": memory_id,
+                        },
+                    )
+                result = await extract(
+                    memory_id=memory_id,
+                    text=source_text,
+                    extraction_config=extraction_config,
                 )
-                succeeded += 1
-            except AMemorixError as exc:
+            store.complete_job(
+                namespace_id,
+                job_id,
+                result=dict(result),
+                now=self._time(),
+            )
+        except AMemorixError as exc:
+            store.fail_job(
+                namespace_id,
+                job_id,
+                error=exc.to_envelope(),
+                now=self._time(),
+            )
+        except Exception:
+            store.fail_job(
+                namespace_id,
+                job_id,
+                error=ErrorEnvelope(
+                    code=ErrorCode.INTERNAL_ERROR,
+                    message="relation extraction job failed",
+                    request_id=request.context.request_id,
+                    trace_id=request.context.trace_id,
+                    retryable=True,
+                ),
+                now=self._time(),
+            )
+
+    @staticmethod
+    def _batch_ingest_response(
+        raw_results: list[dict[str, object] | Exception],
+        *,
+        context: RequestContext,
+    ) -> dict[str, object]:
+        results: list[BatchIngestItemResult] = []
+        succeeded = 0
+        for index, item in enumerate(raw_results):
+            if isinstance(item, AMemorixError):
                 results.append(
-                    BatchIngestItemResult(index=index, error=exc.to_envelope())
+                    BatchIngestItemResult(index=index, error=item.to_envelope())
                 )
-            except Exception:
+            elif isinstance(item, Exception):
                 results.append(
                     BatchIngestItemResult(
                         index=index,
                         error=ErrorEnvelope(
                             code=ErrorCode.INTERNAL_ERROR,
                             message="batch item failed",
-                            request_id=request.context.request_id,
-                            trace_id=request.context.trace_id,
+                            request_id=context.request_id,
+                            trace_id=context.trace_id,
                             retryable=True,
                         ),
                     )
                 )
+            else:
+                results.append(
+                    BatchIngestItemResult(
+                        index=index,
+                        response=IngestTextResponse.model_validate(
+                            AMemorixEngine._runtime_ingest_response(item)
+                        ),
+                    )
+                )
+                succeeded += 1
         response = BatchIngestTextResponse(
             results=tuple(results),
             succeeded=succeeded,
@@ -927,22 +1151,30 @@ class AMemorixEngine:
         return response
 
     async def _enforce_write_admission(self, request: IngestTextRequest) -> None:
-        health = await self.namespace_health(request.context.namespace_id)
-        maximum = health.namespace.quota.max_storage_bytes
-        if maximum is None:
-            return
         serialized = json.dumps(
             request.model_dump(mode="json"),
             ensure_ascii=False,
             separators=(",", ":"),
         ).encode("utf-8")
         reservation = max(4096, len(serialized))
+        await self._enforce_storage_reservation(request.context, reservation)
+
+    async def _enforce_storage_reservation(
+        self,
+        context: RequestContext,
+        reservation: int,
+    ) -> None:
+        namespace = await self.get_namespace(context.namespace_id)
+        maximum = namespace.quota.max_storage_bytes
+        if maximum is None:
+            return
+        health = await self.namespace_health(context.namespace_id)
         projected = health.resource_usage.storage_bytes + reservation
         if projected > maximum:
             raise NamespaceCapacityError(
                 "namespace storage admission limit exceeded",
                 details={
-                    "namespace_id": request.context.namespace_id,
+                    "namespace_id": context.namespace_id,
                     "storage_bytes": health.resource_usage.storage_bytes,
                     "reservation_bytes": reservation,
                     "max_storage_bytes": maximum,
@@ -981,6 +1213,23 @@ def _optional_timestamp(value: datetime | None) -> float | None:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.timestamp()
+
+
+def _resolve_relation_extraction(
+    mode: RelationExtractionMode,
+    *,
+    enabled: bool,
+    default_enabled: bool,
+) -> bool:
+    if mode is RelationExtractionMode.ENABLED:
+        if not enabled:
+            raise CapabilityUnavailableError(
+                "relation extraction is disabled for this namespace"
+            )
+        return True
+    if mode is RelationExtractionMode.DISABLED:
+        return False
+    return enabled and default_enabled
 
 
 async def _contains_external_memory(runtime: object, external_id: str) -> bool:

@@ -73,19 +73,43 @@ class NamespaceFeatureConfig(_message.Message):
     allow_metadata_only_write: bool
     def __init__(self, episodes: _Optional[bool] = ..., person_profiles: _Optional[bool] = ..., sparse_retrieval: _Optional[bool] = ..., relation_vectors: _Optional[bool] = ..., allow_metadata_only_write: _Optional[bool] = ...) -> None: ...
 
+class RelationExtractionConfig(_message.Message):
+    __slots__ = ("enabled", "default_enabled", "profile", "entity_types", "predicates", "max_entities", "max_relations", "max_chunk_chars", "chunk_overlap_chars")
+    ENABLED_FIELD_NUMBER: _ClassVar[int]
+    DEFAULT_ENABLED_FIELD_NUMBER: _ClassVar[int]
+    PROFILE_FIELD_NUMBER: _ClassVar[int]
+    ENTITY_TYPES_FIELD_NUMBER: _ClassVar[int]
+    PREDICATES_FIELD_NUMBER: _ClassVar[int]
+    MAX_ENTITIES_FIELD_NUMBER: _ClassVar[int]
+    MAX_RELATIONS_FIELD_NUMBER: _ClassVar[int]
+    MAX_CHUNK_CHARS_FIELD_NUMBER: _ClassVar[int]
+    CHUNK_OVERLAP_CHARS_FIELD_NUMBER: _ClassVar[int]
+    enabled: bool
+    default_enabled: bool
+    profile: str
+    entity_types: _containers.RepeatedScalarFieldContainer[str]
+    predicates: _containers.RepeatedScalarFieldContainer[str]
+    max_entities: int
+    max_relations: int
+    max_chunk_chars: int
+    chunk_overlap_chars: int
+    def __init__(self, enabled: _Optional[bool] = ..., default_enabled: _Optional[bool] = ..., profile: _Optional[str] = ..., entity_types: _Optional[_Iterable[str]] = ..., predicates: _Optional[_Iterable[str]] = ..., max_entities: _Optional[int] = ..., max_relations: _Optional[int] = ..., max_chunk_chars: _Optional[int] = ..., chunk_overlap_chars: _Optional[int] = ...) -> None: ...
+
 class NamespaceConfig(_message.Message):
-    __slots__ = ("embedding", "llm", "identity_resolver", "message_source", "features")
+    __slots__ = ("embedding", "llm", "identity_resolver", "message_source", "features", "relation_extraction")
     EMBEDDING_FIELD_NUMBER: _ClassVar[int]
     LLM_FIELD_NUMBER: _ClassVar[int]
     IDENTITY_RESOLVER_FIELD_NUMBER: _ClassVar[int]
     MESSAGE_SOURCE_FIELD_NUMBER: _ClassVar[int]
     FEATURES_FIELD_NUMBER: _ClassVar[int]
+    RELATION_EXTRACTION_FIELD_NUMBER: _ClassVar[int]
     embedding: ProviderReference
     llm: ProviderReference
     identity_resolver: ProviderReference
     message_source: ProviderReference
     features: NamespaceFeatureConfig
-    def __init__(self, embedding: _Optional[_Union[ProviderReference, _Mapping]] = ..., llm: _Optional[_Union[ProviderReference, _Mapping]] = ..., identity_resolver: _Optional[_Union[ProviderReference, _Mapping]] = ..., message_source: _Optional[_Union[ProviderReference, _Mapping]] = ..., features: _Optional[_Union[NamespaceFeatureConfig, _Mapping]] = ...) -> None: ...
+    relation_extraction: RelationExtractionConfig
+    def __init__(self, embedding: _Optional[_Union[ProviderReference, _Mapping]] = ..., llm: _Optional[_Union[ProviderReference, _Mapping]] = ..., identity_resolver: _Optional[_Union[ProviderReference, _Mapping]] = ..., message_source: _Optional[_Union[ProviderReference, _Mapping]] = ..., features: _Optional[_Union[NamespaceFeatureConfig, _Mapping]] = ..., relation_extraction: _Optional[_Union[RelationExtractionConfig, _Mapping]] = ...) -> None: ...
 
 class NamespaceInfo(_message.Message):
     __slots__ = ("namespace_id", "status", "created_at", "updated_at", "last_active_at", "version", "quota", "purge_after", "config_version", "config")

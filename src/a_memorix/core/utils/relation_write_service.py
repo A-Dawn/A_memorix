@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import numpy as np
@@ -26,6 +26,15 @@ class RelationWriteResult:
     vector_written: bool
     vector_already_exists: bool
     vector_state: str
+
+
+@dataclass(frozen=True)
+class RelationWriteInput:
+    subject: str
+    predicate: str
+    obj: str
+    confidence: float = 1.0
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -313,6 +322,89 @@ class RelationWriteService:
                 for record in records
             ]
 
+        return await self._ensure_relation_vectors(
+            records,
+            typed_id=self.use_typed_relation_ids,
+        )
+
+    async def upsert_relation_inputs_with_vectors(
+        self,
+        relations: List[RelationWriteInput],
+        source_paragraph: Optional[str] = None,
+        *,
+        write_vector: bool = True,
+    ) -> List[RelationWriteResult]:
+        """批量写入具有独立置信度和 metadata 的关系。"""
+        normalized = [
+            RelationWriteInput(
+                subject=str(relation.subject).strip(),
+                predicate=str(relation.predicate).strip(),
+                obj=str(relation.obj).strip(),
+                confidence=float(relation.confidence),
+                metadata=dict(relation.metadata),
+            )
+            for relation in relations
+            if str(relation.subject).strip()
+            and str(relation.predicate).strip()
+            and str(relation.obj).strip()
+        ]
+        if not normalized:
+            return []
+
+        relation_hashes: List[str] = []
+        with self.metadata_store.transaction(immediate=True):
+            for relation in normalized:
+                relation_hashes.append(
+                    self.metadata_store.add_relation(
+                        subject=relation.subject,
+                        predicate=relation.predicate,
+                        obj=relation.obj,
+                        confidence=relation.confidence,
+                        source_paragraph=source_paragraph,
+                        metadata=relation.metadata,
+                    )
+                )
+
+        statuses = self.metadata_store.get_relation_status_batch(relation_hashes)
+        if self.graph_store is not None:
+            active = [
+                (relation, relation_hash)
+                for relation, relation_hash in zip(
+                    normalized, relation_hashes, strict=True
+                )
+                if not bool((statuses.get(relation_hash) or {}).get("is_inactive"))
+            ]
+            if active:
+                try:
+                    with self.graph_store.batch_update():
+                        self.graph_store.add_edges(
+                            [(relation.subject, relation.obj) for relation, _ in active],
+                            relation_hashes=[relation_hash for _, relation_hash in active],
+                        )
+                except Exception as exc:
+                    logger.exception(f"关系元数据已写入，但图谱投影失败: {exc}")
+
+        records = [
+            _RelationVectorRecord(
+                hash_value=relation_hash,
+                subject=relation.subject,
+                predicate=relation.predicate,
+                obj=relation.obj,
+            )
+            for relation, relation_hash in zip(
+                normalized, relation_hashes, strict=True
+            )
+        ]
+        if not write_vector:
+            return [
+                RelationWriteResult(
+                    hash_value=record.hash_value,
+                    vector_written=False,
+                    vector_already_exists=False,
+                    vector_state="none",
+                )
+                for record in records
+            ]
         return await self._ensure_relation_vectors(
             records,
             typed_id=self.use_typed_relation_ids,

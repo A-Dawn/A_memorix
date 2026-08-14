@@ -16,6 +16,12 @@ enum SearchMode {
   SEARCH_MODE_AGGREGATE = 5;
 }
 
+enum RelationExtractionMode {
+  RELATION_EXTRACTION_MODE_UNSPECIFIED = 0;
+  RELATION_EXTRACTION_MODE_ENABLED = 1;
+  RELATION_EXTRACTION_MODE_DISABLED = 2;
+}
+
 message RelationInput {
   string subject = 1;
   string predicate = 2;
@@ -39,6 +45,7 @@ message IngestTextRequest {
   repeated string entities = 12;
   repeated RelationInput relations = 13;
   optional bool respect_filter = 14;
+  RelationExtractionMode relation_extraction = 15;
 }
 
 message IngestTextResponse {
@@ -47,6 +54,7 @@ message IngestTextResponse {
   repeated string fact_claim_ids = 3;
   repeated string warnings = 4;
   string detail = 5;
+  string relation_extraction_job_id = 6;
 }
 
 message IngestTextInput {
@@ -63,6 +71,7 @@ message IngestTextInput {
   repeated string entities = 11;
   repeated RelationInput relations = 12;
   optional bool respect_filter = 13;
+  RelationExtractionMode relation_extraction = 14;
 }
 
 message BatchIngestTextRequest {

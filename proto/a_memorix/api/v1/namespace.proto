@@ -42,12 +42,25 @@ message NamespaceFeatureConfig {
   optional bool allow_metadata_only_write = 5;
 }
 
+message RelationExtractionConfig {
+  optional bool enabled = 1;
+  optional bool default_enabled = 2;
+  string profile = 3;
+  repeated string entity_types = 4;
+  repeated string predicates = 5;
+  optional uint32 max_entities = 6;
+  optional uint32 max_relations = 7;
+  optional uint32 max_chunk_chars = 8;
+  optional uint32 chunk_overlap_chars = 9;
+}
+
 message NamespaceConfig {
   ProviderReference embedding = 1;
   ProviderReference llm = 2;
   ProviderReference identity_resolver = 3;
   ProviderReference message_source = 4;
   NamespaceFeatureConfig features = 5;
+  RelationExtractionConfig relation_extraction = 6;
 }
 
 message NamespaceInfo {

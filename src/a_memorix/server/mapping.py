@@ -43,6 +43,8 @@ from a_memorix.contracts import (
     NamespaceInfo,
     NamespaceQuota,
     ProviderReference,
+    RelationExtractionConfig,
+    RelationExtractionMode,
     RelationInput,
     RequestContext,
     SearchMemoryRequest,
@@ -76,8 +78,14 @@ _SEARCH_MODE_FROM_PROTO = {
     memory_pb2.SEARCH_MODE_EPISODE: SearchMode.EPISODE,
     memory_pb2.SEARCH_MODE_AGGREGATE: SearchMode.AGGREGATE,
 }
+_RELATION_EXTRACTION_MODE_FROM_PROTO = {
+    memory_pb2.RELATION_EXTRACTION_MODE_UNSPECIFIED: RelationExtractionMode.INHERIT,
+    memory_pb2.RELATION_EXTRACTION_MODE_ENABLED: RelationExtractionMode.ENABLED,
+    memory_pb2.RELATION_EXTRACTION_MODE_DISABLED: RelationExtractionMode.DISABLED,
+}
 _JOB_TYPE_TO_PROTO = {
     JobType.DELETE_BY_SOURCE: job_pb2.JOB_TYPE_DELETE_BY_SOURCE,
+    JobType.RELATION_EXTRACTION: job_pb2.JOB_TYPE_RELATION_EXTRACTION,
 }
 _JOB_STATUS_TO_PROTO = {
     JobStatus.PENDING: job_pb2.JOB_STATUS_PENDING,
@@ -164,12 +172,52 @@ def namespace_config_from_proto(
                 raw.sparse_retrieval if raw.HasField("sparse_retrieval") else True
             ),
             relation_vectors=(
-                raw.relation_vectors if raw.HasField("relation_vectors") else False
+                raw.relation_vectors if raw.HasField("relation_vectors") else True
             ),
             allow_metadata_only_write=(
                 raw.allow_metadata_only_write
                 if raw.HasField("allow_metadata_only_write")
                 else True
+            ),
+        )
+    extraction = RelationExtractionConfig()
+    if value.HasField("relation_extraction"):
+        raw_extraction = value.relation_extraction
+        extraction = RelationExtractionConfig(
+            enabled=(
+                raw_extraction.enabled if raw_extraction.HasField("enabled") else True
+            ),
+            default_enabled=(
+                raw_extraction.default_enabled
+                if raw_extraction.HasField("default_enabled")
+                else (
+                    raw_extraction.enabled
+                    if raw_extraction.HasField("enabled")
+                    else True
+                )
+            ),
+            profile=raw_extraction.profile or "general-v1",
+            entity_types=tuple(raw_extraction.entity_types),
+            predicates=tuple(raw_extraction.predicates),
+            max_entities=(
+                raw_extraction.max_entities
+                if raw_extraction.HasField("max_entities")
+                else 64
+            ),
+            max_relations=(
+                raw_extraction.max_relations
+                if raw_extraction.HasField("max_relations")
+                else 64
+            ),
+            max_chunk_chars=(
+                raw_extraction.max_chunk_chars
+                if raw_extraction.HasField("max_chunk_chars")
+                else 8_000
+            ),
+            chunk_overlap_chars=(
+                raw_extraction.chunk_overlap_chars
+                if raw_extraction.HasField("chunk_overlap_chars")
+                else 500
             ),
         )
     return NamespaceConfig(
@@ -178,6 +226,7 @@ def namespace_config_from_proto(
         identity_resolver=_provider_reference_from_proto(value, "identity_resolver"),
         message_source=_provider_reference_from_proto(value, "message_source"),
         features=features,
+        relation_extraction=extraction,
     )
 
 
@@ -219,7 +268,13 @@ def ingest_request_from_proto(value: memory_pb2.IngestTextRequest) -> IngestText
             )
             for item in value.relations
         ),
-        respect_filter=(value.respect_filter if value.HasField("respect_filter") else True),
+        relation_extraction=_RELATION_EXTRACTION_MODE_FROM_PROTO.get(
+            value.relation_extraction,
+            RelationExtractionMode.INHERIT,
+        ),
+        respect_filter=(
+            value.respect_filter if value.HasField("respect_filter") else True
+        ),
     )
 
 
@@ -246,6 +301,10 @@ def ingest_input_from_proto(value: memory_pb2.IngestTextInput) -> IngestTextInpu
             )
             for item in value.relations
         ),
+        relation_extraction=_RELATION_EXTRACTION_MODE_FROM_PROTO.get(
+            value.relation_extraction,
+            RelationExtractionMode.INHERIT,
+        ),
         respect_filter=(
             value.respect_filter if value.HasField("respect_filter") else True
         ),
@@ -266,7 +325,9 @@ def get_memory_request_from_proto(
 ) -> GetMemoryRequest:
     return GetMemoryRequest(
         context=request_context_from_proto(value.context),
-        memory_id=value.memory_id if value.WhichOneof("selector") == "memory_id" else "",
+        memory_id=value.memory_id
+        if value.WhichOneof("selector") == "memory_id"
+        else "",
         external_id=(
             value.external_id if value.WhichOneof("selector") == "external_id" else ""
         ),
@@ -278,7 +339,9 @@ def delete_memory_request_from_proto(
 ) -> DeleteMemoryRequest:
     return DeleteMemoryRequest(
         context=request_context_from_proto(value.context),
-        memory_id=value.memory_id if value.WhichOneof("selector") == "memory_id" else "",
+        memory_id=value.memory_id
+        if value.WhichOneof("selector") == "memory_id"
+        else "",
         external_id=(
             value.external_id if value.WhichOneof("selector") == "external_id" else ""
         ),
@@ -296,7 +359,9 @@ def delete_by_source_request_from_proto(
     )
 
 
-def search_request_from_proto(value: memory_pb2.SearchMemoryRequest) -> SearchMemoryRequest:
+def search_request_from_proto(
+    value: memory_pb2.SearchMemoryRequest,
+) -> SearchMemoryRequest:
     return SearchMemoryRequest(
         context=request_context_from_proto(value.context),
         query=value.query,
@@ -306,7 +371,9 @@ def search_request_from_proto(value: memory_pb2.SearchMemoryRequest) -> SearchMe
         person_id=value.person_id,
         time_start=_optional_datetime(value, "time_start"),
         time_end=_optional_datetime(value, "time_end"),
-        respect_filter=(value.respect_filter if value.HasField("respect_filter") else True),
+        respect_filter=(
+            value.respect_filter if value.HasField("respect_filter") else True
+        ),
     )
 
 
@@ -341,7 +408,18 @@ def namespace_config_to_proto(
             sparse_retrieval=value.features.sparse_retrieval,
             relation_vectors=value.features.relation_vectors,
             allow_metadata_only_write=value.features.allow_metadata_only_write,
-        )
+        ),
+        relation_extraction=namespace_pb2.RelationExtractionConfig(
+            enabled=value.relation_extraction.enabled,
+            default_enabled=value.relation_extraction.default_enabled,
+            profile=value.relation_extraction.profile,
+            entity_types=value.relation_extraction.entity_types,
+            predicates=value.relation_extraction.predicates,
+            max_entities=value.relation_extraction.max_entities,
+            max_relations=value.relation_extraction.max_relations,
+            max_chunk_chars=value.relation_extraction.max_chunk_chars,
+            chunk_overlap_chars=value.relation_extraction.chunk_overlap_chars,
+        ),
     )
     for field in ("embedding", "llm", "identity_resolver", "message_source"):
         reference = getattr(value, field)
@@ -417,13 +495,16 @@ def namespace_backup_info_to_proto(
     )
 
 
-def ingest_response_to_proto(value: IngestTextResponse) -> memory_pb2.IngestTextResponse:
+def ingest_response_to_proto(
+    value: IngestTextResponse,
+) -> memory_pb2.IngestTextResponse:
     return memory_pb2.IngestTextResponse(
         stored_ids=value.stored_ids,
         skipped_ids=value.skipped_ids,
         fact_claim_ids=value.fact_claim_ids,
         warnings=value.warnings,
         detail=value.detail,
+        relation_extraction_job_id=value.relation_extraction_job_id,
     )
 
 
@@ -514,7 +595,9 @@ def error_envelope_to_proto(value: ErrorEnvelope) -> common_pb2.ErrorDetail:
     )
 
 
-def search_response_to_proto(value: SearchMemoryResponse) -> memory_pb2.SearchMemoryResponse:
+def search_response_to_proto(
+    value: SearchMemoryResponse,
+) -> memory_pb2.SearchMemoryResponse:
     return memory_pb2.SearchMemoryResponse(
         summary=value.summary,
         hits=[memory_hit_to_proto(item) for item in value.hits],

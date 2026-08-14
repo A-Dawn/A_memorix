@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 import asyncio
+import json
+import numpy as np
 import time
 
 from a_memorix.logging import get_logger
@@ -11,7 +13,12 @@ from ...storage import VectorStore
 from ...utils import profile_policy
 from ...utils.hash import compute_hash, normalize_text
 from ...utils.metadata import coerce_metadata_dict
-from ...utils.relation_write_service import RelationWriteService
+from ...utils.relation_write_service import RelationWriteInput, RelationWriteService
+from ...utils.relation_extraction_service import (
+    RELATION_EXTRACTION_PROMPT_VERSION,
+    RelationExtractionService,
+    relation_extraction_model_identity,
+)
 from ...utils.runtime_payloads import (
     build_source,
     merge_tokens,
@@ -29,6 +36,80 @@ _TRUSTED_FACT_ORIGINS = {"manual_confirmed", "server_verified", "trusted_import"
 
 class MemoryIngestService(KernelServiceBase):
     """协调段落元数据、向量、实体关系和后续派生任务的写入。"""
+
+    async def _ensure_entity_vectors_batch(
+        self,
+        entities: Sequence[tuple[str, str]],
+    ) -> None:
+        """批量补齐关系抽取产生的 entity vectors。"""
+        if not entities or self.embedding_manager is None:
+            return
+        target_store = (
+            self._graph_vector_store()
+            if self._dual_vector_pools_enabled()
+            else self.vector_store
+        )
+        if target_store is None:
+            return
+        typed_ids = self._dual_vector_pools_enabled()
+        unique: dict[str, tuple[str, str]] = {}
+        for entity_hash, name in entities:
+            token = str(entity_hash or "").strip()
+            text = str(name or "").strip()
+            if not token or not text:
+                continue
+            vector_id = self._graph_vector_id("entity", token) if typed_ids else token
+            unique.setdefault(vector_id, (text, vector_id))
+
+        pending = [item for item in unique.values() if item[1] not in target_store]
+        if not pending:
+            return
+        try:
+            target_store.restore([vector_id for _, vector_id in pending])
+        except Exception as exc:
+            logger.warning(f"entity vector restore failed: {exc}")
+        pending = [item for item in pending if item[1] not in target_store]
+        batch_size = min(
+            512,
+            max(1, int(getattr(self.embedding_manager, "batch_size", 32)))
+            * max(1, int(getattr(self.embedding_manager, "max_concurrent", 1))),
+        )
+        for offset in range(0, len(pending), batch_size):
+            batch = pending[offset : offset + batch_size]
+            try:
+                embeddings = np.asarray(
+                    await self.embedding_manager.encode_batch(
+                        [text for text, _ in batch]
+                    ),
+                    dtype=np.float32,
+                )
+                if embeddings.ndim == 1:
+                    embeddings = embeddings.reshape(1, -1)
+                if embeddings.shape[0] != len(batch):
+                    raise ValueError(
+                        "entity batch vector count mismatch: "
+                        f"{embeddings.shape[0]} != {len(batch)}"
+                    )
+                items_to_add = [
+                    (vector_id, embedding)
+                    for (text, vector_id), embedding in zip(
+                        batch, embeddings, strict=True
+                    )
+                    if vector_id not in target_store
+                ]
+                if items_to_add:
+                    target_store.add(
+                        vectors=np.asarray(
+                            [embedding for _, embedding in items_to_add],
+                            dtype=np.float32,
+                        ),
+                        ids=[vector_id for vector_id, _ in items_to_add],
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "entity batch vector write failed; metadata and graph retained: "
+                    f"count={len(batch)} error={exc}"
+                )
 
     def _write_person_fact_claims(
         self,
@@ -71,21 +152,35 @@ class MemoryIngestService(KernelServiceBase):
                 scope_type="person",
                 scope_id=person_token,
                 fact_key=(
-                    str(claim_spec.get("fact_key", "") or f"statement:{paragraph_token}")
+                    str(
+                        claim_spec.get("fact_key", "") or f"statement:{paragraph_token}"
+                    )
                     if trusted
                     else f"statement:{paragraph_token}"
                 ),
                 value_text=statement,
-                polarity=str(claim_spec.get("polarity", "positive") or "positive") if trusted else "positive",
-                cardinality=str(claim_spec.get("cardinality", "set") or "set") if trusted else "set",
-                stability=str(claim_spec.get("stability", "stable") or "stable") if trusted else "uncertain",
+                polarity=str(claim_spec.get("polarity", "positive") or "positive")
+                if trusted
+                else "positive",
+                cardinality=str(claim_spec.get("cardinality", "set") or "set")
+                if trusted
+                else "set",
+                stability=str(claim_spec.get("stability", "stable") or "stable")
+                if trusted
+                else "uncertain",
                 profile_section=(
-                    str(claim_spec.get("profile_section", "stable_facts") or "stable_facts")
+                    str(
+                        claim_spec.get("profile_section", "stable_facts")
+                        or "stable_facts"
+                    )
                     if trusted
                     else "uncertain_notes"
                 ),
                 authority=(
-                    str(claim_spec.get("authority", default_authority) or default_authority)
+                    str(
+                        claim_spec.get("authority", default_authority)
+                        or default_authority
+                    )
                     if trusted
                     else "summary_derived"
                 ),
@@ -144,7 +239,9 @@ class MemoryIngestService(KernelServiceBase):
         if target_store is None:
             if not allow_metadata_only:
                 raise RuntimeError("向量写入依赖未初始化")
-            self._enqueue_paragraph_vector_backfill(token, error="vector_runtime_components_missing")
+            self._enqueue_paragraph_vector_backfill(
+                token, error="vector_runtime_components_missing"
+            )
             return {
                 "success": True,
                 "vector_written": False,
@@ -190,7 +287,9 @@ class MemoryIngestService(KernelServiceBase):
         if self.embedding_manager is None:
             if not allow_metadata_only:
                 raise RuntimeError("embedding 依赖未初始化")
-            self._enqueue_paragraph_vector_backfill(token, error="embedding_runtime_component_missing")
+            self._enqueue_paragraph_vector_backfill(
+                token, error="embedding_runtime_component_missing"
+            )
             return {
                 "success": True,
                 "vector_written": False,
@@ -228,7 +327,9 @@ class MemoryIngestService(KernelServiceBase):
         except Exception as exc:
             error_text = str(exc)
             if self._embedding_fallback_enabled():
-                self._set_embedding_degraded(active=True, reason=error_text[:500], checked_at=time.time())
+                self._set_embedding_degraded(
+                    active=True, reason=error_text[:500], checked_at=time.time()
+                )
             if not allow_metadata_only:
                 raise
             self._enqueue_paragraph_vector_backfill(token, error=error_text)
@@ -260,7 +361,9 @@ class MemoryIngestService(KernelServiceBase):
         聊天过滤在初始化前执行。已有正文最终复用 ``ingest_text()``，保证摘要与
         普通文本使用相同的幂等、向量写入和派生任务语义。
         """
-        external_token = str(external_id or "").strip() or compute_hash(f"chat_summary:{chat_id}:{text}")
+        external_token = str(external_id or "").strip() or compute_hash(
+            f"chat_summary:{chat_id}:{text}"
+        )
         if self._is_chat_filtered(
             respect_filter=respect_filter,
             stream_id=chat_id,
@@ -276,7 +379,9 @@ class MemoryIngestService(KernelServiceBase):
 
         summary_meta = coerce_metadata_dict(metadata)
         summary_meta.setdefault("kind", "chat_summary")
-        if not str(text or "").strip() or bool(summary_meta.get("generate_from_chat", False)):
+        if not str(text or "").strip() or bool(
+            summary_meta.get("generate_from_chat", False)
+        ):
             result = await self.summarize_chat_stream(
                 chat_id=chat_id,
                 context_length=optional_int(summary_meta.get("context_length")),
@@ -326,6 +431,7 @@ class MemoryIngestService(KernelServiceBase):
         respect_filter: bool = True,
         user_id: str = "",
         group_id: str = "",
+        _persist_after_write: bool = True,
     ) -> Dict[str, Any]:
         """按 ``external_id`` 幂等写入一条文本记忆及其派生数据。
 
@@ -334,7 +440,9 @@ class MemoryIngestService(KernelServiceBase):
         仅在配置允许时转入回填队列，其余异常会直接暴露给调用方。
         """
         content = normalize_text(text)
-        external_token = str(external_id or "").strip() or compute_hash(f"{source_type}:{chat_id}:{content}")
+        external_token = str(external_id or "").strip() or compute_hash(
+            f"{source_type}:{chat_id}:{content}"
+        )
         if self._is_chat_filtered(
             respect_filter=respect_filter,
             stream_id=chat_id,
@@ -353,7 +461,11 @@ class MemoryIngestService(KernelServiceBase):
         assert self.relation_write_service is not None
 
         if not content:
-            return {"stored_ids": [], "skipped_ids": [external_token], "reason": "empty_text"}
+            return {
+                "stored_ids": [],
+                "skipped_ids": [external_token],
+                "reason": "empty_text",
+            }
 
         existing_ref = self.metadata_store.get_external_memory_ref(external_token)
         if existing_ref:
@@ -365,7 +477,9 @@ class MemoryIngestService(KernelServiceBase):
 
         person_tokens = tokens(person_ids)
         person_token_set = set(person_tokens)
-        participant_tokens = [token for token in tokens(participants) if token not in person_token_set]
+        participant_tokens = [
+            token for token in tokens(participants) if token not in person_token_set
+        ]
         entity_tokens = merge_tokens(entities, participant_tokens)
         source = build_source(source_type, chat_id, person_tokens)
         paragraph_meta = coerce_metadata_dict(metadata)
@@ -398,7 +512,9 @@ class MemoryIngestService(KernelServiceBase):
             warnings.append(warning)
 
         for name in entity_tokens:
-            entity_hash = self.metadata_store.add_entity(name=name, source_paragraph=paragraph_hash)
+            entity_hash = self.metadata_store.add_entity(
+                name=name, source_paragraph=paragraph_hash
+            )
             await self._ensure_entity_vector({"hash": entity_hash, "name": name})
 
         stored_relations: List[str] = []
@@ -420,7 +536,9 @@ class MemoryIngestService(KernelServiceBase):
                 else {"external_id": external_token, "source_type": source_type},
                 write_vector=self.relation_vectors_enabled,
             )
-            self.metadata_store.link_paragraph_relation(paragraph_hash, result.hash_value)
+            self.metadata_store.link_paragraph_relation(
+                paragraph_hash, result.hash_value
+            )
             stored_relations.append(result.hash_value)
 
         fact_claim_ids: List[str] = []
@@ -445,10 +563,13 @@ class MemoryIngestService(KernelServiceBase):
             source_type=source_type,
             metadata={"chat_id": chat_id, "person_ids": person_tokens},
         )
-        self._persist()
+        if _persist_after_write:
+            self._persist()
         for person_id in person_tokens:
             self._mark_person_active(person_id)
-            self._enqueue_person_profile_refresh(person_id, reason=str(source_type or "ingest_text"))
+            self._enqueue_person_profile_refresh(
+                person_id, reason=str(source_type or "ingest_text")
+            )
         payload = {
             "stored_ids": [paragraph_hash, *stored_relations],
             "skipped_ids": [],
@@ -458,6 +579,213 @@ class MemoryIngestService(KernelServiceBase):
             payload["warnings"] = warnings
             payload["detail"] = "vector_degraded_write"
         return payload
+
+    async def extract_relations_for_memory(
+        self,
+        *,
+        memory_id: str,
+        text: str,
+        extraction_config: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Extract and attach relations after the source paragraph is durable."""
+
+        await self.initialize()
+        assert self.metadata_store is not None
+        assert self.relation_write_service is not None
+        paragraph_hash = str(memory_id or "").strip()
+        paragraph = self.metadata_store.get_paragraph(paragraph_hash)
+        if paragraph is None:
+            raise ValueError(
+                f"memory not found for relation extraction: {paragraph_hash}"
+            )
+        source_text = str(paragraph.get("content", "") or "").strip()
+        if not source_text:
+            raise ValueError(
+                f"memory has no text for relation extraction: {paragraph_hash}"
+            )
+        if self.llm_provider is None:
+            raise RuntimeError(
+                "relation extraction is enabled but no LLM provider is available"
+            )
+
+        profile = str(extraction_config.get("profile", "general-v1") or "general-v1")
+        policy_payload = {
+            "profile": profile,
+            "entity_types": list(extraction_config.get("entity_types", ()) or ()),
+            "predicates": list(extraction_config.get("predicates", ()) or ()),
+            "max_entities": int(extraction_config.get("max_entities", 64) or 64),
+            "max_relations": int(extraction_config.get("max_relations", 64) or 64),
+            "max_chunk_chars": int(
+                extraction_config.get("max_chunk_chars", 8_000) or 8_000
+            ),
+            "chunk_overlap_chars": int(
+                extraction_config.get("chunk_overlap_chars", 500) or 500
+            ),
+            "prompt_version": RELATION_EXTRACTION_PROMPT_VERSION,
+            "models": relation_extraction_model_identity(self.llm_provider),
+        }
+        policy_hash = compute_hash(
+            json.dumps(
+                policy_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+        paragraph_metadata = paragraph.get("metadata")
+        existing_marker = (
+            paragraph_metadata.get("relation_extraction")
+            if isinstance(paragraph_metadata, dict)
+            else None
+        )
+        if (
+            isinstance(existing_marker, dict)
+            and existing_marker.get("status") == "succeeded"
+            and existing_marker.get("policy_hash") == policy_hash
+        ):
+            return {
+                "memory_id": paragraph_hash,
+                "cached": True,
+                "entity_count": int(existing_marker.get("entity_count", 0) or 0),
+                "relation_count": int(existing_marker.get("relation_count", 0) or 0),
+                "profile": profile,
+                "prompt_version": RELATION_EXTRACTION_PROMPT_VERSION,
+            }
+
+        self.metadata_store.update_paragraph_metadata(
+            paragraph_hash,
+            {
+                "relation_extraction": {
+                    "status": "running",
+                    "policy_hash": policy_hash,
+                    "profile": profile,
+                    "prompt_version": RELATION_EXTRACTION_PROMPT_VERSION,
+                }
+            },
+            merge=True,
+        )
+        extractor = RelationExtractionService(
+            self.llm_provider,
+            profile=profile,
+            entity_types=policy_payload["entity_types"],
+            predicates=policy_payload["predicates"],
+            max_entities=policy_payload["max_entities"],
+            max_relations=policy_payload["max_relations"],
+            max_chunk_chars=policy_payload["max_chunk_chars"],
+            chunk_overlap_chars=policy_payload["chunk_overlap_chars"],
+        )
+        try:
+            extracted = await extractor.extract(source_text)
+            entity_hashes: list[str] = []
+            entity_vector_items: list[tuple[str, str]] = []
+            if extracted.entities:
+                if self.graph_store is not None:
+                    with self.graph_store.batch_update():
+                        self.graph_store.add_nodes(
+                            [entity.name for entity in extracted.entities]
+                        )
+                for entity in extracted.entities:
+                    entity_hash = self.metadata_store.add_entity(
+                        name=entity.name,
+                        source_paragraph=paragraph_hash,
+                        metadata={
+                            "entity_type": entity.entity_type,
+                            "relation_extraction_profile": profile,
+                        },
+                    )
+                    entity_hashes.append(entity_hash)
+                    entity_vector_items.append((entity_hash, entity.name))
+                await self._ensure_entity_vectors_batch(entity_vector_items)
+
+            relation_results = (
+                await self.relation_write_service.upsert_relation_inputs_with_vectors(
+                    [
+                        RelationWriteInput(
+                            subject=relation.subject,
+                            predicate=relation.predicate,
+                            obj=relation.object_value,
+                            confidence=relation.confidence,
+                            metadata={
+                                "source": "relation_extraction",
+                                "profile": profile,
+                                "prompt_version": extracted.prompt_version,
+                            },
+                        )
+                        for relation in extracted.relations
+                    ],
+                    source_paragraph=paragraph_hash,
+                    write_vector=self.relation_vectors_enabled,
+                )
+                if extracted.relations
+                else []
+            )
+            relation_hashes = [result.hash_value for result in relation_results]
+
+            marker = {
+                "status": "succeeded",
+                "policy_hash": policy_hash,
+                "profile": profile,
+                "prompt_version": extracted.prompt_version,
+                "entity_count": len(entity_hashes),
+                "relation_count": len(relation_hashes),
+            }
+            self.metadata_store.update_paragraph_metadata(
+                paragraph_hash,
+                {"relation_extraction": marker},
+                merge=True,
+            )
+            if not bool(
+                self._cfg("runtime.defer_relation_extraction_persist", False)
+            ):
+                self._persist()
+            return {
+                "memory_id": paragraph_hash,
+                "cached": False,
+                "entity_count": len(entity_hashes),
+                "relation_count": len(relation_hashes),
+                "entity_ids": entity_hashes,
+                "relation_ids": relation_hashes,
+                "profile": profile,
+                "prompt_version": extracted.prompt_version,
+            }
+        except Exception as exc:
+            self.metadata_store.update_paragraph_metadata(
+                paragraph_hash,
+                {
+                    "relation_extraction": {
+                        "status": "failed",
+                        "policy_hash": policy_hash,
+                        "profile": profile,
+                        "prompt_version": RELATION_EXTRACTION_PROMPT_VERSION,
+                        "error": str(exc)[:500],
+                    }
+                },
+                merge=True,
+            )
+            raise
+
+    async def ingest_text_batch(
+        self,
+        *,
+        items: Sequence[Dict[str, Any]],
+    ) -> List[Dict[str, Any] | Exception]:
+        """批量写入期间延迟向量和图持久化，批次结束时统一提交。"""
+        results: List[Dict[str, Any] | Exception] = []
+        try:
+            for item in items:
+                try:
+                    results.append(
+                        await self.ingest_text(
+                            **item,
+                            _persist_after_write=False,
+                        )
+                    )
+                except Exception as exc:
+                    results.append(exc)
+        finally:
+            if items:
+                self._persist()
+        return results
 
     async def _maintain_episode_source_lease(
         self,
@@ -507,7 +835,13 @@ class MemoryIngestService(KernelServiceBase):
 
         generation = self.episode_service.generation_signature()
         generation_hash = self.episode_service.generation_hash(generation)
-        source_scope = list(dict.fromkeys(str(item or "").strip() for item in (sources or []) if str(item or "").strip()))
+        source_scope = list(
+            dict.fromkeys(
+                str(item or "").strip()
+                for item in (sources or [])
+                if str(item or "").strip()
+            )
+        )
         if sources is not None and not source_scope:
             return {
                 "processed": 0,
@@ -559,7 +893,9 @@ class MemoryIngestService(KernelServiceBase):
                 )
                 try:
                     source_type = source.split(":", 1)[0]
-                    if profile_policy.should_auto_enqueue_episode(self._cfg, source_type=source_type):
+                    if profile_policy.should_auto_enqueue_episode(
+                        self._cfg, source_type=source_type
+                    ):
                         plan = await self.episode_service.plan_source_rebuild(
                             source,
                             segmentation_generation=generation,
@@ -582,7 +918,9 @@ class MemoryIngestService(KernelServiceBase):
                     try:
                         await heartbeat_task
                     except Exception as heartbeat_exc:
-                        logger.warning(f"Episode 来源租约心跳异常: source={source}, error={heartbeat_exc}")
+                        logger.warning(
+                            f"Episode 来源租约心跳异常: source={source}, error={heartbeat_exc}"
+                        )
                 publish_result = self.metadata_store.publish_episode_source_rebuild(
                     source,
                     lease_token=lease_token,
@@ -596,7 +934,9 @@ class MemoryIngestService(KernelServiceBase):
                     unfinished_items.append(
                         {
                             "source": source,
-                            "reason": "superseded" if is_superseded else "lease_lost_or_claim_mismatch",
+                            "reason": "superseded"
+                            if is_superseded
+                            else "lease_lost_or_claim_mismatch",
                         }
                     )
                     continue
@@ -617,13 +957,14 @@ class MemoryIngestService(KernelServiceBase):
                         retry_backoff_seconds=min(300.0, 5.0 * (2**retry_count)),
                     )
                 except Exception as mark_exc:
-                    logger.warning(f"Episode 来源失败状态回写异常: source={source}, error={mark_exc}")
+                    logger.warning(
+                        f"Episode 来源失败状态回写异常: source={source}, error={mark_exc}"
+                    )
                 failures.append({"source": source, "error": error})
 
         if sources is not None:
             unfinished_items.extend(
-                {"source": source, "reason": "not_claimed"}
-                for source in source_scope
+                {"source": source, "reason": "not_claimed"} for source in source_scope
             )
 
         if rebuilt_items:
@@ -748,7 +1089,9 @@ class MemoryIngestService(KernelServiceBase):
     ) -> bool:
         if self._dual_vector_pools_enabled():
             return await self._ensure_vector_for_text(
-                item_hash=self._graph_vector_id("entity", str(entity.get("hash", "") or "")),
+                item_hash=self._graph_vector_id(
+                    "entity", str(entity.get("hash", "") or "")
+                ),
                 text=str(entity.get("name", "") or ""),
                 vector_store=self._graph_vector_store(),
                 before_vector_write=before_vector_write,

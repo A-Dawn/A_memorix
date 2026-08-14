@@ -13,6 +13,7 @@ from .errors import ErrorEnvelope
 
 class JobType(StrEnum):
     DELETE_BY_SOURCE = "delete_by_source"
+    RELATION_EXTRACTION = "relation_extraction"
 
 
 class JobStatus(StrEnum):

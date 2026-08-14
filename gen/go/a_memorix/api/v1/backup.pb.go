@@ -1205,8 +1205,8 @@ const file_a_memorix_api_v1_backup_proto_rawDesc = "" +
 	"\x1aUploadNamespaceBackupChunk\x123.a_memorix.api.v1.UploadNamespaceBackupChunkRequest\x1a4.a_memorix.api.v1.UploadNamespaceBackupChunkResponse\")\x82\xd3\xe4\x93\x02#:\x01*\x1a\x1e/v1/backup-uploads/{upload_id}\x12\xc4\x01\n" +
 	"\x1dCompleteNamespaceBackupUpload\x126.a_memorix.api.v1.CompleteNamespaceBackupUploadRequest\x1a7.a_memorix.api.v1.CompleteNamespaceBackupUploadResponse\"2\x82\xd3\xe4\x93\x02,:\x01*\"'/v1/backup-uploads/{upload_id}:complete\x12\xaf\x01\n" +
 	"\x1aAbortNamespaceBackupUpload\x123.a_memorix.api.v1.AbortNamespaceBackupUploadRequest\x1a4.a_memorix.api.v1.AbortNamespaceBackupUploadResponse\"&\x82\xd3\xe4\x93\x02 *\x1e/v1/backup-uploads/{upload_id}\x12\xb3\x01\n" +
-	"\x1aRestoreNamespaceFromBackup\x123.a_memorix.api.v1.RestoreNamespaceFromBackupRequest\x1a4.a_memorix.api.v1.RestoreNamespaceFromBackupResponse\"*\x82\xd3\xe4\x93\x02$:\x01*\"\x1f/v1/backups/{backup_id}:restoreB\xc1\x01\n" +
-	"\x14com.a_memorix.api.v1B\vBackupProtoP\x01Z>github.com/MaiM-with-u/A_memorix/gen/go/a_memorix/api/v1;apiv1\xa2\x02\x03AAX\xaa\x02\x0fAMemorix.Api.V1\xca\x02\x0fAMemorix\\Api\\V1\xe2\x02\x1bAMemorix\\Api\\V1\\GPBMetadata\xea\x02\x11AMemorix::Api::V1b\x06proto3"
+	"\x1aRestoreNamespaceFromBackup\x123.a_memorix.api.v1.RestoreNamespaceFromBackupRequest\x1a4.a_memorix.api.v1.RestoreNamespaceFromBackupResponse\"*\x82\xd3\xe4\x93\x02$:\x01*\"\x1f/v1/backups/{backup_id}:restoreB\xbc\x01\n" +
+	"\x14com.a_memorix.api.v1B\vBackupProtoP\x01Z9github.com/A-Dawn/A_memorix/gen/go/a_memorix/api/v1;apiv1\xa2\x02\x03AAX\xaa\x02\x0fAMemorix.Api.V1\xca\x02\x0fAMemorix\\Api\\V1\xe2\x02\x1bAMemorix\\Api\\V1\\GPBMetadata\xea\x02\x11AMemorix::Api::V1b\x06proto3"
 
 var (
 	file_a_memorix_api_v1_backup_proto_rawDescOnce sync.Once

@@ -20,6 +20,12 @@ class SearchMode(StrEnum):
     AGGREGATE = "aggregate"
 
 
+class RelationExtractionMode(StrEnum):
+    INHERIT = "inherit"
+    ENABLED = "enabled"
+    DISABLED = "disabled"
+
+
 class RelationInput(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
@@ -47,6 +53,7 @@ class IngestTextInput(BaseModel):
     metadata: Mapping[str, object] = Field(default_factory=dict)
     entities: tuple[str, ...] = ()
     relations: tuple[RelationInput, ...] = ()
+    relation_extraction: RelationExtractionMode = RelationExtractionMode.INHERIT
     respect_filter: bool = True
 
 
@@ -62,6 +69,7 @@ class IngestTextResponse(BaseModel):
     fact_claim_ids: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
     detail: str = ""
+    relation_extraction_job_id: str = ""
 
 
 class BatchIngestTextRequest(BaseModel):

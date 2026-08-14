@@ -23,6 +23,7 @@ from a_memorix import (
     CreateNamespaceRequest,
     ErrorCode,
     InvalidArgumentError,
+    RelationExtractionMode,
     RemoteAMemorixError,
     create_fixed_namespace_mcp,
 )
@@ -35,9 +36,37 @@ from a_memorix.api.v1 import (
     namespace_pb2,
 )
 from a_memorix.server import AMemorixGrpcServer
+from a_memorix.server.mapping import ingest_input_from_proto, ingest_request_from_proto
 
 
 ADMIN_TOKEN = "admin-token-for-tests-with-at-least-32-characters"
+
+
+def test_unknown_relation_extraction_enum_inherits_default() -> None:
+    context = common_pb2.RequestContext(
+        namespace_id="tenant-a",
+        agent_id="test-agent",
+    )
+    request = memory_pb2.IngestTextRequest(
+        context=context,
+        source_type="document",
+        text="unknown enum",
+        relation_extraction=99,
+    )
+    item = memory_pb2.IngestTextInput(
+        source_type="document",
+        text="unknown enum",
+        relation_extraction=99,
+    )
+
+    assert (
+        ingest_request_from_proto(request).relation_extraction
+        is RelationExtractionMode.INHERIT
+    )
+    assert (
+        ingest_input_from_proto(item).relation_extraction
+        is RelationExtractionMode.INHERIT
+    )
 
 
 class MemoryRuntime:
@@ -273,11 +302,26 @@ async def test_grpc_auth_errors_and_memory_semantics(
                             relation_vectors=False,
                             allow_metadata_only_write=True,
                         ),
+                        relation_extraction=namespace_pb2.RelationExtractionConfig(
+                            enabled=True,
+                            default_enabled=False,
+                            profile="agent-memory-v1",
+                            max_entities=48,
+                            max_relations=40,
+                            max_chunk_chars=6000,
+                            chunk_overlap_chars=400,
+                        ),
                     ),
                 )
             )
             assert configured.namespace.config_version == 2
             assert configured.namespace.config.llm.secret_ref == "secret://tenant-a/llm"
+            assert configured.namespace.config.relation_extraction.enabled is True
+            assert (
+                configured.namespace.config.relation_extraction.profile
+                == "agent-memory-v1"
+            )
+            assert configured.namespace.config.relation_extraction.max_chunk_chars == 6000
             await admin.enable_namespace(
                 namespace_pb2.EnableNamespaceRequest(namespace_id="tenant-a")
             )

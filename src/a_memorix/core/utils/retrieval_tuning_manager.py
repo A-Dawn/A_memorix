@@ -383,7 +383,7 @@ class RetrievalTuningManager:
                     "bm25_weight": _nested_get(cfg, "retrieval.fusion.bm25_weight", 0.3),
                 },
                 "vector_pools": {
-                    "mode": _nested_get(cfg, "retrieval.vector_pools.mode", "single"),
+                    "mode": _nested_get(cfg, "retrieval.vector_pools.mode", "dual"),
                     "paragraph_top_k": _nested_get(cfg, "retrieval.vector_pools.paragraph_top_k", 20),
                     "graph_top_k": _nested_get(cfg, "retrieval.vector_pools.graph_top_k", 40),
                     "graph_expand_paragraph_k": _nested_get(cfg, "retrieval.vector_pools.graph_expand_paragraph_k", 80),
@@ -436,9 +436,9 @@ class RetrievalTuningManager:
         if sparse_mode not in {"auto", "hybrid", "fallback_only"}:
             sparse_mode = "auto"
 
-        vector_pool_mode = str(pick("retrieval.vector_pools.mode", "single") or "single").strip().lower()
+        vector_pool_mode = str(pick("retrieval.vector_pools.mode", "dual") or "dual").strip().lower()
         if vector_pool_mode not in {"single", "dual"}:
-            vector_pool_mode = "single"
+            vector_pool_mode = "dual"
 
         vec_w = _clamp_float(pick("retrieval.fusion.vector_weight", 0.7), 0.7, 0.0, 1.0)
         bm_w = _clamp_float(pick("retrieval.fusion.bm25_weight", 0.3), 0.3, 0.0, 1.0)

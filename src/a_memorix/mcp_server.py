@@ -19,6 +19,7 @@ from a_memorix.contracts import (
     IngestTextInput,
     IngestTextRequest,
     NamespaceNotFoundError,
+    RelationExtractionMode,
     RelationInput,
     RequestContext,
     SearchMemoryRequest,
@@ -32,7 +33,9 @@ class MCPRelationInput(BaseModel):
 
     subject: str = Field(min_length=1)
     predicate: str = Field(min_length=1)
-    object_value: str = Field(alias="object", serialization_alias="object", min_length=1)
+    object_value: str = Field(
+        alias="object", serialization_alias="object", min_length=1
+    )
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     metadata: dict[str, object] = Field(default_factory=dict)
 
@@ -48,6 +51,7 @@ class MCPIngestTextInput(BaseModel):
     tags: list[str] = Field(default_factory=list)
     entities: list[str] = Field(default_factory=list)
     relations: list[MCPRelationInput] = Field(default_factory=list)
+    relation_extraction: RelationExtractionMode = RelationExtractionMode.INHERIT
     metadata: dict[str, object] = Field(default_factory=dict)
     observed_at: datetime | None = None
     valid_from: datetime | None = None
@@ -97,6 +101,7 @@ def create_fixed_namespace_mcp(
         tags: list[str] | None = None,
         entities: list[str] | None = None,
         relations: list[MCPRelationInput] | None = None,
+        relation_extraction: RelationExtractionMode = RelationExtractionMode.INHERIT,
         metadata: dict[str, object] | None = None,
         observed_at: datetime | None = None,
         valid_from: datetime | None = None,
@@ -127,6 +132,7 @@ def create_fixed_namespace_mcp(
                     RelationInput.model_validate(item.model_dump(by_alias=True))
                     for item in (relations or ())
                 ),
+                relation_extraction=relation_extraction,
                 metadata=metadata or {},
                 observed_at=observed_at,
                 valid_from=valid_from,
@@ -316,6 +322,7 @@ def _mcp_ingest_input(value: MCPIngestTextInput) -> IngestTextInput:
             RelationInput.model_validate(item.model_dump(by_alias=True))
             for item in value.relations
         ),
+        relation_extraction=value.relation_extraction,
         metadata=value.metadata,
         observed_at=value.observed_at,
         valid_from=value.valid_from,

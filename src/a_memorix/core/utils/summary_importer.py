@@ -837,7 +837,7 @@ class SummaryImporter:
         rv_cfg = self.runtime_config.get("retrieval", {}).get("relation_vectorization", {})
         if not isinstance(rv_cfg, dict):
             rv_cfg = {}
-        write_vector = bool(rv_cfg.get("enabled", False)) and bool(rv_cfg.get("write_on_import", True))
+        write_vector = bool(rv_cfg.get("enabled", True)) and bool(rv_cfg.get("write_on_import", True))
         normalized_relations = _normalize_relation_items(relations)
         relation_tuples = [
             (rel["subject"], rel["predicate"], rel["object"])

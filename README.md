@@ -86,6 +86,41 @@ async with engine:
 
 `SDKMemoryKernel(data_dir=...)` 继续作为单 Namespace 的底层入口保留。现有调用方可以逐步迁移，但新建的多 Agent 程序应从 `AMemorixEngine` 开始。
 
+### Relation extraction
+
+普通 `ingest_text` 默认会在 LLM 可用时于段落落库后异步分析正文，并把抽取出的实体、关系写入 graph。没有 LLM 时，继承默认策略的请求会保留基础记忆写入，只有显式要求关系抽取才返回能力错误。关系向量、自动关系抽取、双向量池和 metadata-only 降级写入均默认开启；调用方仍可在 Namespace 或单次请求中明确关闭相应能力：
+
+```python
+from a_memorix import (
+    NamespaceConfig,
+    ProviderReference,
+    RelationExtractionConfig,
+    RelationExtractionMode,
+)
+
+config = NamespaceConfig(
+    llm=ProviderReference(provider_id="host-llm", model_id="memory-model"),
+    relation_extraction=RelationExtractionConfig(
+        enabled=True,
+        default_enabled=True,
+        profile="agent-memory-v1",
+        max_chunk_chars=8_000,
+        chunk_overlap_chars=500,
+    ),
+)
+
+request = IngestTextRequest(
+    context=context,
+    source_type="conversation",
+    text="Alice works at Lumina.",
+    relation_extraction=RelationExtractionMode.INHERIT,
+)
+response = await engine.ingest_text(request)
+job = await engine.get_job(context.namespace_id, response.relation_extraction_job_id)
+```
+
+段落会先完成持久化，relation extraction 随后作为可查询的后台 Job 执行。`general-v1` 不限定 predicate，适合未知文本；`agent-memory-v1` 使用稳定的跨 session 记忆 predicate，并归一常见近义关系。Namespace 也可以提供自己的实体类型和 predicate 列表。长文本按配置分块，结果归并去重后再写入 graph。重复提交已存在的 `external_id` 也能发起补抽取，成功结果由 paragraph 上的 profile、prompt 和模型指纹保证幂等。
+
 删除 Namespace 时，对应 Runtime 会先停止，数据目录会移入隔离区并默认保留7天。保留期内可以恢复，原 ID 不能重新创建；到期清理或管理员主动清理后才会释放 ID。
 
 ## gRPC 与 HTTP/JSON
@@ -224,6 +259,10 @@ a-memorix --pretty adapter schema
 - 1.x MaiBot 插件历史保留在 `legacy-v1.0.1` 标签和 `legacy/plugin-v1` 分支。
 
 完整路线见 [通用架构与分发计划](docs/GENERIC_ARCHITECTURE_AND_DISTRIBUTION_PLAN.md)。
+
+## 公共量化评测
+
+LongMemEval-S Cleaned 用于衡量跨 session 与长上下文记忆，SWE-bench Lite 用于衡量 issue-to-source-file 的代码库检索。数据、模型凭据、cache 和结果均只保存在本地。评测 summary 会固定 case、数据、模型、运行参数和环境，`a-memorix-eval compare` 用于检查 candidate 相对 baseline 的质量与性能变化。当前完整基线包含470个 LongMemEval case 和300个 SWE-bench Lite case，均无失败，具体结果和复跑命令见[公共量化评测](docs/EVALUATION.md)。
 
 ## 开发验证
 

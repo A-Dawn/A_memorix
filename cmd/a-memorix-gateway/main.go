@@ -16,7 +16,7 @@ import (
 	"syscall"
 	"time"
 
-	api "github.com/MaiM-with-u/A_memorix/gen/go/a_memorix/api/v1"
+	api "github.com/A-Dawn/A_memorix/gen/go/a_memorix/api/v1"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"

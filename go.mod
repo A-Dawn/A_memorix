@@ -1,4 +1,4 @@
-module github.com/MaiM-with-u/A_memorix
+module github.com/A-Dawn/A_memorix
 
 go 1.25.0
 

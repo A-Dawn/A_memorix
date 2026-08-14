@@ -13,6 +13,7 @@ import contextlib
 import json
 import shutil
 import sqlite3
+import time
 import uuid
 
 import numpy as np
@@ -54,6 +55,24 @@ except ImportError:
     HAS_SCIPY = False
 
 logger = get_logger("A_Memorix.GraphStore")
+
+
+def _promote_snapshot_directory(temporary_dir: Path, snapshot_dir: Path) -> None:
+    """Promote a complete snapshot despite transient Windows file locks."""
+
+    last_error: PermissionError | None = None
+    for attempt in range(6):
+        try:
+            temporary_dir.replace(snapshot_dir)
+            return
+        except PermissionError as exc:
+            last_error = exc
+            if snapshot_dir.exists() and not temporary_dir.exists():
+                return
+            if attempt < 5:
+                time.sleep(0.05 * (attempt + 1))
+    assert last_error is not None
+    raise last_error
 
 
 def _read_json_object(path: Path) -> Dict[str, Any]:
@@ -228,7 +247,7 @@ class GraphStore:
             with (temporary_dir / "graph_adjacency.npz").open("wb") as handle:
                 save_npz(handle, self._adjacency)
         _write_json_object(temporary_dir / "graph_metadata.json", snapshot_metadata)
-        temporary_dir.replace(snapshot_dir)
+        _promote_snapshot_directory(temporary_dir, snapshot_dir)
         return generation
 
     @staticmethod

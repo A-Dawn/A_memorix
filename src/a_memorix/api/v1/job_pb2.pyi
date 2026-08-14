@@ -17,6 +17,7 @@ class JobType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     JOB_TYPE_UNSPECIFIED: _ClassVar[JobType]
     JOB_TYPE_DELETE_BY_SOURCE: _ClassVar[JobType]
+    JOB_TYPE_RELATION_EXTRACTION: _ClassVar[JobType]
 
 class JobStatus(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -28,6 +29,7 @@ class JobStatus(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     JOB_STATUS_CANCELLED: _ClassVar[JobStatus]
 JOB_TYPE_UNSPECIFIED: JobType
 JOB_TYPE_DELETE_BY_SOURCE: JobType
+JOB_TYPE_RELATION_EXTRACTION: JobType
 JOB_STATUS_UNSPECIFIED: JobStatus
 JOB_STATUS_PENDING: JobStatus
 JOB_STATUS_RUNNING: JobStatus

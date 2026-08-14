@@ -239,8 +239,8 @@ const file_a_memorix_api_v1_common_proto_rawDesc = "" +
 	"\btrace_id\x18\x03 \x01(\tR\atraceId\x12\x1c\n" +
 	"\tretryable\x18\x04 \x01(\bR\tretryable\x121\n" +
 	"\adetails\x18\x05 \x01(\v2\x17.google.protobuf.StructR\adetails\x12\x18\n" +
-	"\amessage\x18\x06 \x01(\tR\amessageB\xc1\x01\n" +
-	"\x14com.a_memorix.api.v1B\vCommonProtoP\x01Z>github.com/MaiM-with-u/A_memorix/gen/go/a_memorix/api/v1;apiv1\xa2\x02\x03AAX\xaa\x02\x0fAMemorix.Api.V1\xca\x02\x0fAMemorix\\Api\\V1\xe2\x02\x1bAMemorix\\Api\\V1\\GPBMetadata\xea\x02\x11AMemorix::Api::V1b\x06proto3"
+	"\amessage\x18\x06 \x01(\tR\amessageB\xbc\x01\n" +
+	"\x14com.a_memorix.api.v1B\vCommonProtoP\x01Z9github.com/A-Dawn/A_memorix/gen/go/a_memorix/api/v1;apiv1\xa2\x02\x03AAX\xaa\x02\x0fAMemorix.Api.V1\xca\x02\x0fAMemorix\\Api\\V1\xe2\x02\x1bAMemorix\\Api\\V1\\GPBMetadata\xea\x02\x11AMemorix::Api::V1b\x06proto3"
 
 var (
 	file_a_memorix_api_v1_common_proto_rawDescOnce sync.Once

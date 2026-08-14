@@ -82,6 +82,55 @@ func (SearchMode) EnumDescriptor() ([]byte, []int) {
 	return file_a_memorix_api_v1_memory_proto_rawDescGZIP(), []int{0}
 }
 
+type RelationExtractionMode int32
+
+const (
+	RelationExtractionMode_RELATION_EXTRACTION_MODE_UNSPECIFIED RelationExtractionMode = 0
+	RelationExtractionMode_RELATION_EXTRACTION_MODE_ENABLED     RelationExtractionMode = 1
+	RelationExtractionMode_RELATION_EXTRACTION_MODE_DISABLED    RelationExtractionMode = 2
+)
+
+// Enum value maps for RelationExtractionMode.
+var (
+	RelationExtractionMode_name = map[int32]string{
+		0: "RELATION_EXTRACTION_MODE_UNSPECIFIED",
+		1: "RELATION_EXTRACTION_MODE_ENABLED",
+		2: "RELATION_EXTRACTION_MODE_DISABLED",
+	}
+	RelationExtractionMode_value = map[string]int32{
+		"RELATION_EXTRACTION_MODE_UNSPECIFIED": 0,
+		"RELATION_EXTRACTION_MODE_ENABLED":     1,
+		"RELATION_EXTRACTION_MODE_DISABLED":    2,
+	}
+)
+
+func (x RelationExtractionMode) Enum() *RelationExtractionMode {
+	p := new(RelationExtractionMode)
+	*p = x
+	return p
+}
+
+func (x RelationExtractionMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (RelationExtractionMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_a_memorix_api_v1_memory_proto_enumTypes[1].Descriptor()
+}
+
+func (RelationExtractionMode) Type() protoreflect.EnumType {
+	return &file_a_memorix_api_v1_memory_proto_enumTypes[1]
+}
+
+func (x RelationExtractionMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use RelationExtractionMode.Descriptor instead.
+func (RelationExtractionMode) EnumDescriptor() ([]byte, []int) {
+	return file_a_memorix_api_v1_memory_proto_rawDescGZIP(), []int{1}
+}
+
 type RelationInput struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Subject       string                 `protobuf:"bytes,1,opt,name=subject,proto3" json:"subject,omitempty"`
@@ -159,23 +208,24 @@ func (x *RelationInput) GetMetadata() *structpb.Struct {
 }
 
 type IngestTextRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Context       *RequestContext        `protobuf:"bytes,1,opt,name=context,proto3" json:"context,omitempty"`
-	ExternalId    string                 `protobuf:"bytes,2,opt,name=external_id,json=externalId,proto3" json:"external_id,omitempty"`
-	SourceType    string                 `protobuf:"bytes,3,opt,name=source_type,json=sourceType,proto3" json:"source_type,omitempty"`
-	Text          string                 `protobuf:"bytes,4,opt,name=text,proto3" json:"text,omitempty"`
-	PersonIds     []string               `protobuf:"bytes,5,rep,name=person_ids,json=personIds,proto3" json:"person_ids,omitempty"`
-	Participants  []string               `protobuf:"bytes,6,rep,name=participants,proto3" json:"participants,omitempty"`
-	ObservedAt    *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=observed_at,json=observedAt,proto3" json:"observed_at,omitempty"`
-	ValidFrom     *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=valid_from,json=validFrom,proto3" json:"valid_from,omitempty"`
-	ValidTo       *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=valid_to,json=validTo,proto3" json:"valid_to,omitempty"`
-	Tags          []string               `protobuf:"bytes,10,rep,name=tags,proto3" json:"tags,omitempty"`
-	Metadata      *structpb.Struct       `protobuf:"bytes,11,opt,name=metadata,proto3" json:"metadata,omitempty"`
-	Entities      []string               `protobuf:"bytes,12,rep,name=entities,proto3" json:"entities,omitempty"`
-	Relations     []*RelationInput       `protobuf:"bytes,13,rep,name=relations,proto3" json:"relations,omitempty"`
-	RespectFilter *bool                  `protobuf:"varint,14,opt,name=respect_filter,json=respectFilter,proto3,oneof" json:"respect_filter,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	Context            *RequestContext        `protobuf:"bytes,1,opt,name=context,proto3" json:"context,omitempty"`
+	ExternalId         string                 `protobuf:"bytes,2,opt,name=external_id,json=externalId,proto3" json:"external_id,omitempty"`
+	SourceType         string                 `protobuf:"bytes,3,opt,name=source_type,json=sourceType,proto3" json:"source_type,omitempty"`
+	Text               string                 `protobuf:"bytes,4,opt,name=text,proto3" json:"text,omitempty"`
+	PersonIds          []string               `protobuf:"bytes,5,rep,name=person_ids,json=personIds,proto3" json:"person_ids,omitempty"`
+	Participants       []string               `protobuf:"bytes,6,rep,name=participants,proto3" json:"participants,omitempty"`
+	ObservedAt         *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=observed_at,json=observedAt,proto3" json:"observed_at,omitempty"`
+	ValidFrom          *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=valid_from,json=validFrom,proto3" json:"valid_from,omitempty"`
+	ValidTo            *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=valid_to,json=validTo,proto3" json:"valid_to,omitempty"`
+	Tags               []string               `protobuf:"bytes,10,rep,name=tags,proto3" json:"tags,omitempty"`
+	Metadata           *structpb.Struct       `protobuf:"bytes,11,opt,name=metadata,proto3" json:"metadata,omitempty"`
+	Entities           []string               `protobuf:"bytes,12,rep,name=entities,proto3" json:"entities,omitempty"`
+	Relations          []*RelationInput       `protobuf:"bytes,13,rep,name=relations,proto3" json:"relations,omitempty"`
+	RespectFilter      *bool                  `protobuf:"varint,14,opt,name=respect_filter,json=respectFilter,proto3,oneof" json:"respect_filter,omitempty"`
+	RelationExtraction RelationExtractionMode `protobuf:"varint,15,opt,name=relation_extraction,json=relationExtraction,proto3,enum=a_memorix.api.v1.RelationExtractionMode" json:"relation_extraction,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *IngestTextRequest) Reset() {
@@ -306,15 +356,23 @@ func (x *IngestTextRequest) GetRespectFilter() bool {
 	return false
 }
 
+func (x *IngestTextRequest) GetRelationExtraction() RelationExtractionMode {
+	if x != nil {
+		return x.RelationExtraction
+	}
+	return RelationExtractionMode_RELATION_EXTRACTION_MODE_UNSPECIFIED
+}
+
 type IngestTextResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	StoredIds     []string               `protobuf:"bytes,1,rep,name=stored_ids,json=storedIds,proto3" json:"stored_ids,omitempty"`
-	SkippedIds    []string               `protobuf:"bytes,2,rep,name=skipped_ids,json=skippedIds,proto3" json:"skipped_ids,omitempty"`
-	FactClaimIds  []string               `protobuf:"bytes,3,rep,name=fact_claim_ids,json=factClaimIds,proto3" json:"fact_claim_ids,omitempty"`
-	Warnings      []string               `protobuf:"bytes,4,rep,name=warnings,proto3" json:"warnings,omitempty"`
-	Detail        string                 `protobuf:"bytes,5,opt,name=detail,proto3" json:"detail,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state                   protoimpl.MessageState `protogen:"open.v1"`
+	StoredIds               []string               `protobuf:"bytes,1,rep,name=stored_ids,json=storedIds,proto3" json:"stored_ids,omitempty"`
+	SkippedIds              []string               `protobuf:"bytes,2,rep,name=skipped_ids,json=skippedIds,proto3" json:"skipped_ids,omitempty"`
+	FactClaimIds            []string               `protobuf:"bytes,3,rep,name=fact_claim_ids,json=factClaimIds,proto3" json:"fact_claim_ids,omitempty"`
+	Warnings                []string               `protobuf:"bytes,4,rep,name=warnings,proto3" json:"warnings,omitempty"`
+	Detail                  string                 `protobuf:"bytes,5,opt,name=detail,proto3" json:"detail,omitempty"`
+	RelationExtractionJobId string                 `protobuf:"bytes,6,opt,name=relation_extraction_job_id,json=relationExtractionJobId,proto3" json:"relation_extraction_job_id,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
 }
 
 func (x *IngestTextResponse) Reset() {
@@ -382,23 +440,31 @@ func (x *IngestTextResponse) GetDetail() string {
 	return ""
 }
 
+func (x *IngestTextResponse) GetRelationExtractionJobId() string {
+	if x != nil {
+		return x.RelationExtractionJobId
+	}
+	return ""
+}
+
 type IngestTextInput struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ExternalId    string                 `protobuf:"bytes,1,opt,name=external_id,json=externalId,proto3" json:"external_id,omitempty"`
-	SourceType    string                 `protobuf:"bytes,2,opt,name=source_type,json=sourceType,proto3" json:"source_type,omitempty"`
-	Text          string                 `protobuf:"bytes,3,opt,name=text,proto3" json:"text,omitempty"`
-	PersonIds     []string               `protobuf:"bytes,4,rep,name=person_ids,json=personIds,proto3" json:"person_ids,omitempty"`
-	Participants  []string               `protobuf:"bytes,5,rep,name=participants,proto3" json:"participants,omitempty"`
-	ObservedAt    *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=observed_at,json=observedAt,proto3" json:"observed_at,omitempty"`
-	ValidFrom     *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=valid_from,json=validFrom,proto3" json:"valid_from,omitempty"`
-	ValidTo       *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=valid_to,json=validTo,proto3" json:"valid_to,omitempty"`
-	Tags          []string               `protobuf:"bytes,9,rep,name=tags,proto3" json:"tags,omitempty"`
-	Metadata      *structpb.Struct       `protobuf:"bytes,10,opt,name=metadata,proto3" json:"metadata,omitempty"`
-	Entities      []string               `protobuf:"bytes,11,rep,name=entities,proto3" json:"entities,omitempty"`
-	Relations     []*RelationInput       `protobuf:"bytes,12,rep,name=relations,proto3" json:"relations,omitempty"`
-	RespectFilter *bool                  `protobuf:"varint,13,opt,name=respect_filter,json=respectFilter,proto3,oneof" json:"respect_filter,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	ExternalId         string                 `protobuf:"bytes,1,opt,name=external_id,json=externalId,proto3" json:"external_id,omitempty"`
+	SourceType         string                 `protobuf:"bytes,2,opt,name=source_type,json=sourceType,proto3" json:"source_type,omitempty"`
+	Text               string                 `protobuf:"bytes,3,opt,name=text,proto3" json:"text,omitempty"`
+	PersonIds          []string               `protobuf:"bytes,4,rep,name=person_ids,json=personIds,proto3" json:"person_ids,omitempty"`
+	Participants       []string               `protobuf:"bytes,5,rep,name=participants,proto3" json:"participants,omitempty"`
+	ObservedAt         *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=observed_at,json=observedAt,proto3" json:"observed_at,omitempty"`
+	ValidFrom          *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=valid_from,json=validFrom,proto3" json:"valid_from,omitempty"`
+	ValidTo            *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=valid_to,json=validTo,proto3" json:"valid_to,omitempty"`
+	Tags               []string               `protobuf:"bytes,9,rep,name=tags,proto3" json:"tags,omitempty"`
+	Metadata           *structpb.Struct       `protobuf:"bytes,10,opt,name=metadata,proto3" json:"metadata,omitempty"`
+	Entities           []string               `protobuf:"bytes,11,rep,name=entities,proto3" json:"entities,omitempty"`
+	Relations          []*RelationInput       `protobuf:"bytes,12,rep,name=relations,proto3" json:"relations,omitempty"`
+	RespectFilter      *bool                  `protobuf:"varint,13,opt,name=respect_filter,json=respectFilter,proto3,oneof" json:"respect_filter,omitempty"`
+	RelationExtraction RelationExtractionMode `protobuf:"varint,14,opt,name=relation_extraction,json=relationExtraction,proto3,enum=a_memorix.api.v1.RelationExtractionMode" json:"relation_extraction,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *IngestTextInput) Reset() {
@@ -520,6 +586,13 @@ func (x *IngestTextInput) GetRespectFilter() bool {
 		return *x.RespectFilter
 	}
 	return false
+}
+
+func (x *IngestTextInput) GetRelationExtraction() RelationExtractionMode {
+	if x != nil {
+		return x.RelationExtraction
+	}
+	return RelationExtractionMode_RELATION_EXTRACTION_MODE_UNSPECIFIED
 }
 
 type BatchIngestTextRequest struct {
@@ -1453,7 +1526,7 @@ const file_a_memorix_api_v1_memory_proto_rawDesc = "" +
 	"confidence\x18\x04 \x01(\x01H\x00R\n" +
 	"confidence\x88\x01\x01\x123\n" +
 	"\bmetadata\x18\x05 \x01(\v2\x17.google.protobuf.StructR\bmetadataB\r\n" +
-	"\v_confidence\"\xfa\x04\n" +
+	"\v_confidence\"\xd5\x05\n" +
 	"\x11IngestTextRequest\x12:\n" +
 	"\acontext\x18\x01 \x01(\v2 .a_memorix.api.v1.RequestContextR\acontext\x12\x1f\n" +
 	"\vexternal_id\x18\x02 \x01(\tR\n" +
@@ -1474,8 +1547,9 @@ const file_a_memorix_api_v1_memory_proto_rawDesc = "" +
 	"\bmetadata\x18\v \x01(\v2\x17.google.protobuf.StructR\bmetadata\x12\x1a\n" +
 	"\bentities\x18\f \x03(\tR\bentities\x12=\n" +
 	"\trelations\x18\r \x03(\v2\x1f.a_memorix.api.v1.RelationInputR\trelations\x12*\n" +
-	"\x0erespect_filter\x18\x0e \x01(\bH\x00R\rrespectFilter\x88\x01\x01B\x11\n" +
-	"\x0f_respect_filter\"\xae\x01\n" +
+	"\x0erespect_filter\x18\x0e \x01(\bH\x00R\rrespectFilter\x88\x01\x01\x12Y\n" +
+	"\x13relation_extraction\x18\x0f \x01(\x0e2(.a_memorix.api.v1.RelationExtractionModeR\x12relationExtractionB\x11\n" +
+	"\x0f_respect_filter\"\xeb\x01\n" +
 	"\x12IngestTextResponse\x12\x1d\n" +
 	"\n" +
 	"stored_ids\x18\x01 \x03(\tR\tstoredIds\x12\x1f\n" +
@@ -1483,7 +1557,8 @@ const file_a_memorix_api_v1_memory_proto_rawDesc = "" +
 	"skippedIds\x12$\n" +
 	"\x0efact_claim_ids\x18\x03 \x03(\tR\ffactClaimIds\x12\x1a\n" +
 	"\bwarnings\x18\x04 \x03(\tR\bwarnings\x12\x16\n" +
-	"\x06detail\x18\x05 \x01(\tR\x06detail\"\xbc\x04\n" +
+	"\x06detail\x18\x05 \x01(\tR\x06detail\x12;\n" +
+	"\x1arelation_extraction_job_id\x18\x06 \x01(\tR\x17relationExtractionJobId\"\x97\x05\n" +
 	"\x0fIngestTextInput\x12\x1f\n" +
 	"\vexternal_id\x18\x01 \x01(\tR\n" +
 	"externalId\x12\x1f\n" +
@@ -1503,7 +1578,8 @@ const file_a_memorix_api_v1_memory_proto_rawDesc = "" +
 	" \x01(\v2\x17.google.protobuf.StructR\bmetadata\x12\x1a\n" +
 	"\bentities\x18\v \x03(\tR\bentities\x12=\n" +
 	"\trelations\x18\f \x03(\v2\x1f.a_memorix.api.v1.RelationInputR\trelations\x12*\n" +
-	"\x0erespect_filter\x18\r \x01(\bH\x00R\rrespectFilter\x88\x01\x01B\x11\n" +
+	"\x0erespect_filter\x18\r \x01(\bH\x00R\rrespectFilter\x88\x01\x01\x12Y\n" +
+	"\x13relation_extraction\x18\x0e \x01(\x0e2(.a_memorix.api.v1.RelationExtractionModeR\x12relationExtractionB\x11\n" +
 	"\x0f_respect_filter\"\x8d\x01\n" +
 	"\x16BatchIngestTextRequest\x12:\n" +
 	"\acontext\x18\x01 \x01(\v2 .a_memorix.api.v1.RequestContextR\acontext\x127\n" +
@@ -1594,15 +1670,19 @@ const file_a_memorix_api_v1_memory_proto_rawDesc = "" +
 	"\x10SEARCH_MODE_TIME\x10\x02\x12\x16\n" +
 	"\x12SEARCH_MODE_HYBRID\x10\x03\x12\x17\n" +
 	"\x13SEARCH_MODE_EPISODE\x10\x04\x12\x19\n" +
-	"\x15SEARCH_MODE_AGGREGATE\x10\x052\xb5\x06\n" +
+	"\x15SEARCH_MODE_AGGREGATE\x10\x05*\x8f\x01\n" +
+	"\x16RelationExtractionMode\x12(\n" +
+	"$RELATION_EXTRACTION_MODE_UNSPECIFIED\x10\x00\x12$\n" +
+	" RELATION_EXTRACTION_MODE_ENABLED\x10\x01\x12%\n" +
+	"!RELATION_EXTRACTION_MODE_DISABLED\x10\x022\xb5\x06\n" +
 	"\rMemoryService\x12\x99\x01\n" +
 	"\n" +
 	"IngestText\x12#.a_memorix.api.v1.IngestTextRequest\x1a$.a_memorix.api.v1.IngestTextResponse\"@\x82\xd3\xe4\x93\x02::\x01*\"5/v1/namespaces/{context.namespace_id}/memories:ingest\x12\xad\x01\n" +
 	"\x0fBatchIngestText\x12(.a_memorix.api.v1.BatchIngestTextRequest\x1a).a_memorix.api.v1.BatchIngestTextResponse\"E\x82\xd3\xe4\x93\x02?:\x01*\":/v1/namespaces/{context.namespace_id}/memories:batchIngest\x12\x93\x01\n" +
 	"\tGetMemory\x12\".a_memorix.api.v1.GetMemoryRequest\x1a#.a_memorix.api.v1.GetMemoryResponse\"=\x82\xd3\xe4\x93\x027:\x01*\"2/v1/namespaces/{context.namespace_id}/memories:get\x12\x9f\x01\n" +
 	"\fDeleteMemory\x12%.a_memorix.api.v1.DeleteMemoryRequest\x1a&.a_memorix.api.v1.DeleteMemoryResponse\"@\x82\xd3\xe4\x93\x02::\x01*\"5/v1/namespaces/{context.namespace_id}/memories:delete\x12\x9f\x01\n" +
-	"\fSearchMemory\x12%.a_memorix.api.v1.SearchMemoryRequest\x1a&.a_memorix.api.v1.SearchMemoryResponse\"@\x82\xd3\xe4\x93\x02::\x01*\"5/v1/namespaces/{context.namespace_id}/memories:searchB\xc1\x01\n" +
-	"\x14com.a_memorix.api.v1B\vMemoryProtoP\x01Z>github.com/MaiM-with-u/A_memorix/gen/go/a_memorix/api/v1;apiv1\xa2\x02\x03AAX\xaa\x02\x0fAMemorix.Api.V1\xca\x02\x0fAMemorix\\Api\\V1\xe2\x02\x1bAMemorix\\Api\\V1\\GPBMetadata\xea\x02\x11AMemorix::Api::V1b\x06proto3"
+	"\fSearchMemory\x12%.a_memorix.api.v1.SearchMemoryRequest\x1a&.a_memorix.api.v1.SearchMemoryResponse\"@\x82\xd3\xe4\x93\x02::\x01*\"5/v1/namespaces/{context.namespace_id}/memories:searchB\xbc\x01\n" +
+	"\x14com.a_memorix.api.v1B\vMemoryProtoP\x01Z9github.com/A-Dawn/A_memorix/gen/go/a_memorix/api/v1;apiv1\xa2\x02\x03AAX\xaa\x02\x0fAMemorix.Api.V1\xca\x02\x0fAMemorix\\Api\\V1\xe2\x02\x1bAMemorix\\Api\\V1\\GPBMetadata\xea\x02\x11AMemorix::Api::V1b\x06proto3"
 
 var (
 	file_a_memorix_api_v1_memory_proto_rawDescOnce sync.Once
@@ -1616,78 +1696,81 @@ func file_a_memorix_api_v1_memory_proto_rawDescGZIP() []byte {
 	return file_a_memorix_api_v1_memory_proto_rawDescData
 }
 
-var file_a_memorix_api_v1_memory_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_a_memorix_api_v1_memory_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
 var file_a_memorix_api_v1_memory_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_a_memorix_api_v1_memory_proto_goTypes = []any{
 	(SearchMode)(0),                 // 0: a_memorix.api.v1.SearchMode
-	(*RelationInput)(nil),           // 1: a_memorix.api.v1.RelationInput
-	(*IngestTextRequest)(nil),       // 2: a_memorix.api.v1.IngestTextRequest
-	(*IngestTextResponse)(nil),      // 3: a_memorix.api.v1.IngestTextResponse
-	(*IngestTextInput)(nil),         // 4: a_memorix.api.v1.IngestTextInput
-	(*BatchIngestTextRequest)(nil),  // 5: a_memorix.api.v1.BatchIngestTextRequest
-	(*BatchIngestItemResult)(nil),   // 6: a_memorix.api.v1.BatchIngestItemResult
-	(*BatchIngestTextResponse)(nil), // 7: a_memorix.api.v1.BatchIngestTextResponse
-	(*GetMemoryRequest)(nil),        // 8: a_memorix.api.v1.GetMemoryRequest
-	(*MemoryRecord)(nil),            // 9: a_memorix.api.v1.MemoryRecord
-	(*GetMemoryResponse)(nil),       // 10: a_memorix.api.v1.GetMemoryResponse
-	(*DeleteMemoryRequest)(nil),     // 11: a_memorix.api.v1.DeleteMemoryRequest
-	(*DeleteMemoryResponse)(nil),    // 12: a_memorix.api.v1.DeleteMemoryResponse
-	(*SearchMemoryRequest)(nil),     // 13: a_memorix.api.v1.SearchMemoryRequest
-	(*MemoryHit)(nil),               // 14: a_memorix.api.v1.MemoryHit
-	(*SearchMemoryResponse)(nil),    // 15: a_memorix.api.v1.SearchMemoryResponse
-	(*structpb.Struct)(nil),         // 16: google.protobuf.Struct
-	(*RequestContext)(nil),          // 17: a_memorix.api.v1.RequestContext
-	(*timestamppb.Timestamp)(nil),   // 18: google.protobuf.Timestamp
-	(*ErrorDetail)(nil),             // 19: a_memorix.api.v1.ErrorDetail
+	(RelationExtractionMode)(0),     // 1: a_memorix.api.v1.RelationExtractionMode
+	(*RelationInput)(nil),           // 2: a_memorix.api.v1.RelationInput
+	(*IngestTextRequest)(nil),       // 3: a_memorix.api.v1.IngestTextRequest
+	(*IngestTextResponse)(nil),      // 4: a_memorix.api.v1.IngestTextResponse
+	(*IngestTextInput)(nil),         // 5: a_memorix.api.v1.IngestTextInput
+	(*BatchIngestTextRequest)(nil),  // 6: a_memorix.api.v1.BatchIngestTextRequest
+	(*BatchIngestItemResult)(nil),   // 7: a_memorix.api.v1.BatchIngestItemResult
+	(*BatchIngestTextResponse)(nil), // 8: a_memorix.api.v1.BatchIngestTextResponse
+	(*GetMemoryRequest)(nil),        // 9: a_memorix.api.v1.GetMemoryRequest
+	(*MemoryRecord)(nil),            // 10: a_memorix.api.v1.MemoryRecord
+	(*GetMemoryResponse)(nil),       // 11: a_memorix.api.v1.GetMemoryResponse
+	(*DeleteMemoryRequest)(nil),     // 12: a_memorix.api.v1.DeleteMemoryRequest
+	(*DeleteMemoryResponse)(nil),    // 13: a_memorix.api.v1.DeleteMemoryResponse
+	(*SearchMemoryRequest)(nil),     // 14: a_memorix.api.v1.SearchMemoryRequest
+	(*MemoryHit)(nil),               // 15: a_memorix.api.v1.MemoryHit
+	(*SearchMemoryResponse)(nil),    // 16: a_memorix.api.v1.SearchMemoryResponse
+	(*structpb.Struct)(nil),         // 17: google.protobuf.Struct
+	(*RequestContext)(nil),          // 18: a_memorix.api.v1.RequestContext
+	(*timestamppb.Timestamp)(nil),   // 19: google.protobuf.Timestamp
+	(*ErrorDetail)(nil),             // 20: a_memorix.api.v1.ErrorDetail
 }
 var file_a_memorix_api_v1_memory_proto_depIdxs = []int32{
-	16, // 0: a_memorix.api.v1.RelationInput.metadata:type_name -> google.protobuf.Struct
-	17, // 1: a_memorix.api.v1.IngestTextRequest.context:type_name -> a_memorix.api.v1.RequestContext
-	18, // 2: a_memorix.api.v1.IngestTextRequest.observed_at:type_name -> google.protobuf.Timestamp
-	18, // 3: a_memorix.api.v1.IngestTextRequest.valid_from:type_name -> google.protobuf.Timestamp
-	18, // 4: a_memorix.api.v1.IngestTextRequest.valid_to:type_name -> google.protobuf.Timestamp
-	16, // 5: a_memorix.api.v1.IngestTextRequest.metadata:type_name -> google.protobuf.Struct
-	1,  // 6: a_memorix.api.v1.IngestTextRequest.relations:type_name -> a_memorix.api.v1.RelationInput
-	18, // 7: a_memorix.api.v1.IngestTextInput.observed_at:type_name -> google.protobuf.Timestamp
-	18, // 8: a_memorix.api.v1.IngestTextInput.valid_from:type_name -> google.protobuf.Timestamp
-	18, // 9: a_memorix.api.v1.IngestTextInput.valid_to:type_name -> google.protobuf.Timestamp
-	16, // 10: a_memorix.api.v1.IngestTextInput.metadata:type_name -> google.protobuf.Struct
-	1,  // 11: a_memorix.api.v1.IngestTextInput.relations:type_name -> a_memorix.api.v1.RelationInput
-	17, // 12: a_memorix.api.v1.BatchIngestTextRequest.context:type_name -> a_memorix.api.v1.RequestContext
-	4,  // 13: a_memorix.api.v1.BatchIngestTextRequest.items:type_name -> a_memorix.api.v1.IngestTextInput
-	3,  // 14: a_memorix.api.v1.BatchIngestItemResult.response:type_name -> a_memorix.api.v1.IngestTextResponse
-	19, // 15: a_memorix.api.v1.BatchIngestItemResult.error:type_name -> a_memorix.api.v1.ErrorDetail
-	6,  // 16: a_memorix.api.v1.BatchIngestTextResponse.results:type_name -> a_memorix.api.v1.BatchIngestItemResult
-	17, // 17: a_memorix.api.v1.GetMemoryRequest.context:type_name -> a_memorix.api.v1.RequestContext
-	16, // 18: a_memorix.api.v1.MemoryRecord.metadata:type_name -> google.protobuf.Struct
-	18, // 19: a_memorix.api.v1.MemoryRecord.created_at:type_name -> google.protobuf.Timestamp
-	18, // 20: a_memorix.api.v1.MemoryRecord.updated_at:type_name -> google.protobuf.Timestamp
-	18, // 21: a_memorix.api.v1.MemoryRecord.observed_at:type_name -> google.protobuf.Timestamp
-	18, // 22: a_memorix.api.v1.MemoryRecord.valid_from:type_name -> google.protobuf.Timestamp
-	18, // 23: a_memorix.api.v1.MemoryRecord.valid_to:type_name -> google.protobuf.Timestamp
-	9,  // 24: a_memorix.api.v1.GetMemoryResponse.memory:type_name -> a_memorix.api.v1.MemoryRecord
-	17, // 25: a_memorix.api.v1.DeleteMemoryRequest.context:type_name -> a_memorix.api.v1.RequestContext
-	17, // 26: a_memorix.api.v1.SearchMemoryRequest.context:type_name -> a_memorix.api.v1.RequestContext
-	0,  // 27: a_memorix.api.v1.SearchMemoryRequest.mode:type_name -> a_memorix.api.v1.SearchMode
-	18, // 28: a_memorix.api.v1.SearchMemoryRequest.time_start:type_name -> google.protobuf.Timestamp
-	18, // 29: a_memorix.api.v1.SearchMemoryRequest.time_end:type_name -> google.protobuf.Timestamp
-	16, // 30: a_memorix.api.v1.MemoryHit.metadata:type_name -> google.protobuf.Struct
-	14, // 31: a_memorix.api.v1.SearchMemoryResponse.hits:type_name -> a_memorix.api.v1.MemoryHit
-	2,  // 32: a_memorix.api.v1.MemoryService.IngestText:input_type -> a_memorix.api.v1.IngestTextRequest
-	5,  // 33: a_memorix.api.v1.MemoryService.BatchIngestText:input_type -> a_memorix.api.v1.BatchIngestTextRequest
-	8,  // 34: a_memorix.api.v1.MemoryService.GetMemory:input_type -> a_memorix.api.v1.GetMemoryRequest
-	11, // 35: a_memorix.api.v1.MemoryService.DeleteMemory:input_type -> a_memorix.api.v1.DeleteMemoryRequest
-	13, // 36: a_memorix.api.v1.MemoryService.SearchMemory:input_type -> a_memorix.api.v1.SearchMemoryRequest
-	3,  // 37: a_memorix.api.v1.MemoryService.IngestText:output_type -> a_memorix.api.v1.IngestTextResponse
-	7,  // 38: a_memorix.api.v1.MemoryService.BatchIngestText:output_type -> a_memorix.api.v1.BatchIngestTextResponse
-	10, // 39: a_memorix.api.v1.MemoryService.GetMemory:output_type -> a_memorix.api.v1.GetMemoryResponse
-	12, // 40: a_memorix.api.v1.MemoryService.DeleteMemory:output_type -> a_memorix.api.v1.DeleteMemoryResponse
-	15, // 41: a_memorix.api.v1.MemoryService.SearchMemory:output_type -> a_memorix.api.v1.SearchMemoryResponse
-	37, // [37:42] is the sub-list for method output_type
-	32, // [32:37] is the sub-list for method input_type
-	32, // [32:32] is the sub-list for extension type_name
-	32, // [32:32] is the sub-list for extension extendee
-	0,  // [0:32] is the sub-list for field type_name
+	17, // 0: a_memorix.api.v1.RelationInput.metadata:type_name -> google.protobuf.Struct
+	18, // 1: a_memorix.api.v1.IngestTextRequest.context:type_name -> a_memorix.api.v1.RequestContext
+	19, // 2: a_memorix.api.v1.IngestTextRequest.observed_at:type_name -> google.protobuf.Timestamp
+	19, // 3: a_memorix.api.v1.IngestTextRequest.valid_from:type_name -> google.protobuf.Timestamp
+	19, // 4: a_memorix.api.v1.IngestTextRequest.valid_to:type_name -> google.protobuf.Timestamp
+	17, // 5: a_memorix.api.v1.IngestTextRequest.metadata:type_name -> google.protobuf.Struct
+	2,  // 6: a_memorix.api.v1.IngestTextRequest.relations:type_name -> a_memorix.api.v1.RelationInput
+	1,  // 7: a_memorix.api.v1.IngestTextRequest.relation_extraction:type_name -> a_memorix.api.v1.RelationExtractionMode
+	19, // 8: a_memorix.api.v1.IngestTextInput.observed_at:type_name -> google.protobuf.Timestamp
+	19, // 9: a_memorix.api.v1.IngestTextInput.valid_from:type_name -> google.protobuf.Timestamp
+	19, // 10: a_memorix.api.v1.IngestTextInput.valid_to:type_name -> google.protobuf.Timestamp
+	17, // 11: a_memorix.api.v1.IngestTextInput.metadata:type_name -> google.protobuf.Struct
+	2,  // 12: a_memorix.api.v1.IngestTextInput.relations:type_name -> a_memorix.api.v1.RelationInput
+	1,  // 13: a_memorix.api.v1.IngestTextInput.relation_extraction:type_name -> a_memorix.api.v1.RelationExtractionMode
+	18, // 14: a_memorix.api.v1.BatchIngestTextRequest.context:type_name -> a_memorix.api.v1.RequestContext
+	5,  // 15: a_memorix.api.v1.BatchIngestTextRequest.items:type_name -> a_memorix.api.v1.IngestTextInput
+	4,  // 16: a_memorix.api.v1.BatchIngestItemResult.response:type_name -> a_memorix.api.v1.IngestTextResponse
+	20, // 17: a_memorix.api.v1.BatchIngestItemResult.error:type_name -> a_memorix.api.v1.ErrorDetail
+	7,  // 18: a_memorix.api.v1.BatchIngestTextResponse.results:type_name -> a_memorix.api.v1.BatchIngestItemResult
+	18, // 19: a_memorix.api.v1.GetMemoryRequest.context:type_name -> a_memorix.api.v1.RequestContext
+	17, // 20: a_memorix.api.v1.MemoryRecord.metadata:type_name -> google.protobuf.Struct
+	19, // 21: a_memorix.api.v1.MemoryRecord.created_at:type_name -> google.protobuf.Timestamp
+	19, // 22: a_memorix.api.v1.MemoryRecord.updated_at:type_name -> google.protobuf.Timestamp
+	19, // 23: a_memorix.api.v1.MemoryRecord.observed_at:type_name -> google.protobuf.Timestamp
+	19, // 24: a_memorix.api.v1.MemoryRecord.valid_from:type_name -> google.protobuf.Timestamp
+	19, // 25: a_memorix.api.v1.MemoryRecord.valid_to:type_name -> google.protobuf.Timestamp
+	10, // 26: a_memorix.api.v1.GetMemoryResponse.memory:type_name -> a_memorix.api.v1.MemoryRecord
+	18, // 27: a_memorix.api.v1.DeleteMemoryRequest.context:type_name -> a_memorix.api.v1.RequestContext
+	18, // 28: a_memorix.api.v1.SearchMemoryRequest.context:type_name -> a_memorix.api.v1.RequestContext
+	0,  // 29: a_memorix.api.v1.SearchMemoryRequest.mode:type_name -> a_memorix.api.v1.SearchMode
+	19, // 30: a_memorix.api.v1.SearchMemoryRequest.time_start:type_name -> google.protobuf.Timestamp
+	19, // 31: a_memorix.api.v1.SearchMemoryRequest.time_end:type_name -> google.protobuf.Timestamp
+	17, // 32: a_memorix.api.v1.MemoryHit.metadata:type_name -> google.protobuf.Struct
+	15, // 33: a_memorix.api.v1.SearchMemoryResponse.hits:type_name -> a_memorix.api.v1.MemoryHit
+	3,  // 34: a_memorix.api.v1.MemoryService.IngestText:input_type -> a_memorix.api.v1.IngestTextRequest
+	6,  // 35: a_memorix.api.v1.MemoryService.BatchIngestText:input_type -> a_memorix.api.v1.BatchIngestTextRequest
+	9,  // 36: a_memorix.api.v1.MemoryService.GetMemory:input_type -> a_memorix.api.v1.GetMemoryRequest
+	12, // 37: a_memorix.api.v1.MemoryService.DeleteMemory:input_type -> a_memorix.api.v1.DeleteMemoryRequest
+	14, // 38: a_memorix.api.v1.MemoryService.SearchMemory:input_type -> a_memorix.api.v1.SearchMemoryRequest
+	4,  // 39: a_memorix.api.v1.MemoryService.IngestText:output_type -> a_memorix.api.v1.IngestTextResponse
+	8,  // 40: a_memorix.api.v1.MemoryService.BatchIngestText:output_type -> a_memorix.api.v1.BatchIngestTextResponse
+	11, // 41: a_memorix.api.v1.MemoryService.GetMemory:output_type -> a_memorix.api.v1.GetMemoryResponse
+	13, // 42: a_memorix.api.v1.MemoryService.DeleteMemory:output_type -> a_memorix.api.v1.DeleteMemoryResponse
+	16, // 43: a_memorix.api.v1.MemoryService.SearchMemory:output_type -> a_memorix.api.v1.SearchMemoryResponse
+	39, // [39:44] is the sub-list for method output_type
+	34, // [34:39] is the sub-list for method input_type
+	34, // [34:34] is the sub-list for extension type_name
+	34, // [34:34] is the sub-list for extension extendee
+	0,  // [0:34] is the sub-list for field type_name
 }
 
 func init() { file_a_memorix_api_v1_memory_proto_init() }
@@ -1717,7 +1800,7 @@ func file_a_memorix_api_v1_memory_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_a_memorix_api_v1_memory_proto_rawDesc), len(file_a_memorix_api_v1_memory_proto_rawDesc)),
-			NumEnums:      1,
+			NumEnums:      2,
 			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   1,

@@ -10,6 +10,7 @@ import "google/protobuf/timestamp.proto";
 enum JobType {
   JOB_TYPE_UNSPECIFIED = 0;
   JOB_TYPE_DELETE_BY_SOURCE = 1;
+  JOB_TYPE_RELATION_EXTRACTION = 2;
 }
 
 enum JobStatus {

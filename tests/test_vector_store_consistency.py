@@ -456,6 +456,17 @@ def test_untrained_search_flushes_each_vector_to_fallback_once(tmp_path: Path) -
     assert store._bin_count == 4
 
 
+def test_restore_of_new_id_does_not_flush_pending_vectors(tmp_path: Path) -> None:
+    store = VectorStore(dimension=2, data_dir=tmp_path / "vectors", buffer_size=100)
+    assert store.add(_vector(), ["pending-vector"]) == 1
+    assert store._bin_count == 0
+
+    assert store.restore(["new-vector"]) == 0
+
+    assert store._bin_count == 0
+    assert store._write_buffer_ids == [store._generate_id("pending-vector")]
+
+
 def test_untrained_save_and_repeated_search_do_not_grow_fallback(tmp_path: Path) -> None:
     store = VectorStore(dimension=4, data_dir=tmp_path / "vectors")
     ids = ["vector-1", "vector-2", "vector-3", "vector-4"]

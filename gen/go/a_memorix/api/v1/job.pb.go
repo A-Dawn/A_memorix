@@ -27,8 +27,9 @@ const (
 type JobType int32
 
 const (
-	JobType_JOB_TYPE_UNSPECIFIED      JobType = 0
-	JobType_JOB_TYPE_DELETE_BY_SOURCE JobType = 1
+	JobType_JOB_TYPE_UNSPECIFIED         JobType = 0
+	JobType_JOB_TYPE_DELETE_BY_SOURCE    JobType = 1
+	JobType_JOB_TYPE_RELATION_EXTRACTION JobType = 2
 )
 
 // Enum value maps for JobType.
@@ -36,10 +37,12 @@ var (
 	JobType_name = map[int32]string{
 		0: "JOB_TYPE_UNSPECIFIED",
 		1: "JOB_TYPE_DELETE_BY_SOURCE",
+		2: "JOB_TYPE_RELATION_EXTRACTION",
 	}
 	JobType_value = map[string]int32{
-		"JOB_TYPE_UNSPECIFIED":      0,
-		"JOB_TYPE_DELETE_BY_SOURCE": 1,
+		"JOB_TYPE_UNSPECIFIED":         0,
+		"JOB_TYPE_DELETE_BY_SOURCE":    1,
+		"JOB_TYPE_RELATION_EXTRACTION": 2,
 	}
 )
 
@@ -706,10 +709,11 @@ const file_a_memorix_api_v1_job_proto_rawDesc = "" +
 	"\fnamespace_id\x18\x01 \x01(\tR\vnamespaceId\x12\x15\n" +
 	"\x06job_id\x18\x02 \x01(\tR\x05jobId\"@\n" +
 	"\x11CancelJobResponse\x12+\n" +
-	"\x03job\x18\x01 \x01(\v2\x19.a_memorix.api.v1.JobInfoR\x03job*B\n" +
+	"\x03job\x18\x01 \x01(\v2\x19.a_memorix.api.v1.JobInfoR\x03job*d\n" +
 	"\aJobType\x12\x18\n" +
 	"\x14JOB_TYPE_UNSPECIFIED\x10\x00\x12\x1d\n" +
-	"\x19JOB_TYPE_DELETE_BY_SOURCE\x10\x01*\xa2\x01\n" +
+	"\x19JOB_TYPE_DELETE_BY_SOURCE\x10\x01\x12 \n" +
+	"\x1cJOB_TYPE_RELATION_EXTRACTION\x10\x02*\xa2\x01\n" +
 	"\tJobStatus\x12\x1a\n" +
 	"\x16JOB_STATUS_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12JOB_STATUS_PENDING\x10\x01\x12\x16\n" +
@@ -722,8 +726,8 @@ const file_a_memorix_api_v1_job_proto_rawDesc = "" +
 	"\x14SubmitDeleteBySource\x12-.a_memorix.api.v1.SubmitDeleteBySourceRequest\x1a..a_memorix.api.v1.SubmitDeleteBySourceResponse\"H\x82\xd3\xe4\x93\x02B:\x01*\"=/v1/namespaces/{context.namespace_id}/memories:deleteBySource\x12\x80\x01\n" +
 	"\x06GetJob\x12\x1f.a_memorix.api.v1.GetJobRequest\x1a .a_memorix.api.v1.GetJobResponse\"3\x82\xd3\xe4\x93\x02-\x12+/v1/namespaces/{namespace_id}/jobs/{job_id}\x12}\n" +
 	"\bListJobs\x12!.a_memorix.api.v1.ListJobsRequest\x1a\".a_memorix.api.v1.ListJobsResponse\"*\x82\xd3\xe4\x93\x02$\x12\"/v1/namespaces/{namespace_id}/jobs\x12\x90\x01\n" +
-	"\tCancelJob\x12\".a_memorix.api.v1.CancelJobRequest\x1a#.a_memorix.api.v1.CancelJobResponse\":\x82\xd3\xe4\x93\x024\"2/v1/namespaces/{namespace_id}/jobs/{job_id}:cancelB\xbe\x01\n" +
-	"\x14com.a_memorix.api.v1B\bJobProtoP\x01Z>github.com/MaiM-with-u/A_memorix/gen/go/a_memorix/api/v1;apiv1\xa2\x02\x03AAX\xaa\x02\x0fAMemorix.Api.V1\xca\x02\x0fAMemorix\\Api\\V1\xe2\x02\x1bAMemorix\\Api\\V1\\GPBMetadata\xea\x02\x11AMemorix::Api::V1b\x06proto3"
+	"\tCancelJob\x12\".a_memorix.api.v1.CancelJobRequest\x1a#.a_memorix.api.v1.CancelJobResponse\":\x82\xd3\xe4\x93\x024\"2/v1/namespaces/{namespace_id}/jobs/{job_id}:cancelB\xb9\x01\n" +
+	"\x14com.a_memorix.api.v1B\bJobProtoP\x01Z9github.com/A-Dawn/A_memorix/gen/go/a_memorix/api/v1;apiv1\xa2\x02\x03AAX\xaa\x02\x0fAMemorix.Api.V1\xca\x02\x0fAMemorix\\Api\\V1\xe2\x02\x1bAMemorix\\Api\\V1\\GPBMetadata\xea\x02\x11AMemorix::Api::V1b\x06proto3"
 
 var (
 	file_a_memorix_api_v1_job_proto_rawDescOnce sync.Once

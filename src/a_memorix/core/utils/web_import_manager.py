@@ -3404,7 +3404,7 @@ class ImportTaskManager:
         rv_cfg = self.runtime.get_config("retrieval.relation_vectorization", {}) or {}
         if not isinstance(rv_cfg, dict):
             rv_cfg = {}
-        write_vector = bool(rv_cfg.get("enabled", False)) and bool(rv_cfg.get("write_on_import", True))
+        write_vector = bool(rv_cfg.get("enabled", True)) and bool(rv_cfg.get("write_on_import", True))
         results = await relation_write_service.upsert_relations_with_vectors(
             normalized_relations,
             confidence=1.0,
@@ -3425,7 +3425,7 @@ class ImportTaskManager:
         rv_cfg = self.runtime.get_config("retrieval.relation_vectorization", {}) or {}
         if not isinstance(rv_cfg, dict):
             rv_cfg = {}
-        write_vector = bool(rv_cfg.get("enabled", False)) and bool(rv_cfg.get("write_on_import", True))
+        write_vector = bool(rv_cfg.get("enabled", True)) and bool(rv_cfg.get("write_on_import", True))
 
         async with self._storage_lock:
             rel_hash = self.runtime.metadata_store.add_relation(
