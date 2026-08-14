@@ -197,7 +197,7 @@ __all__ = [
     "load_adapter_manifest",
     "__version__",
 ]
-__version__ = "2.0.0a3"
+__version__ = "2.0.0a4"
 
 
 def __getattr__(name: str) -> Any:
