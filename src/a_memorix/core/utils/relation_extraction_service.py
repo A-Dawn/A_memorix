@@ -337,6 +337,7 @@ Input text as a JSON string:
 
         entities: list[ExtractedEntity] = []
         entity_names: set[str] = set()
+        allowed_entity_types = {item.casefold() for item in self.entity_types}
         for item in payload.get("entities", []):
             if isinstance(item, str):
                 name, entity_type = item, ""
@@ -350,9 +351,7 @@ Input text as a JSON string:
             key = normalized_name.casefold()
             if not normalized_name or key in entity_names:
                 continue
-            if self.entity_types and normalized_type.casefold() not in {
-                item.casefold() for item in self.entity_types
-            }:
+            if allowed_entity_types and normalized_type.casefold() not in allowed_entity_types:
                 normalized_type = ""
             entity_names.add(key)
             entities.append(ExtractedEntity(normalized_name, normalized_type))

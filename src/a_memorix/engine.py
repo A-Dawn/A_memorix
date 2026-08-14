@@ -735,9 +735,33 @@ class AMemorixEngine:
                         "namespace runtime does not support relation extraction",
                         details={"namespace_id": namespace_id},
                     )
+                get_record = getattr(runtime, "get_memory_record", None)
+                if not callable(get_record):
+                    raise CapabilityUnavailableError(
+                        "relation extraction requires authoritative memory reads",
+                        details={"namespace_id": namespace_id},
+                    )
+                record = await get_record(memory_id=memory_id)
+                if not isinstance(record, dict):
+                    raise NotFoundError(
+                        "memory not found for relation extraction",
+                        details={
+                            "namespace_id": namespace_id,
+                            "memory_id": memory_id,
+                        },
+                    )
+                source_text = str(record.get("content", "") or "").strip()
+                if not source_text:
+                    raise InvalidArgumentError(
+                        "stored memory text is empty",
+                        details={
+                            "namespace_id": namespace_id,
+                            "memory_id": memory_id,
+                        },
+                    )
                 result = await extract(
                     memory_id=memory_id,
-                    text=request.text,
+                    text=source_text,
                     extraction_config=extraction_config,
                 )
             store.complete_job(

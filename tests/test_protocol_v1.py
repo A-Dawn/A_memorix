@@ -23,6 +23,7 @@ from a_memorix import (
     CreateNamespaceRequest,
     ErrorCode,
     InvalidArgumentError,
+    RelationExtractionMode,
     RemoteAMemorixError,
     create_fixed_namespace_mcp,
 )
@@ -35,9 +36,37 @@ from a_memorix.api.v1 import (
     namespace_pb2,
 )
 from a_memorix.server import AMemorixGrpcServer
+from a_memorix.server.mapping import ingest_input_from_proto, ingest_request_from_proto
 
 
 ADMIN_TOKEN = "admin-token-for-tests-with-at-least-32-characters"
+
+
+def test_unknown_relation_extraction_enum_inherits_default() -> None:
+    context = common_pb2.RequestContext(
+        namespace_id="tenant-a",
+        agent_id="test-agent",
+    )
+    request = memory_pb2.IngestTextRequest(
+        context=context,
+        source_type="document",
+        text="unknown enum",
+        relation_extraction=99,
+    )
+    item = memory_pb2.IngestTextInput(
+        source_type="document",
+        text="unknown enum",
+        relation_extraction=99,
+    )
+
+    assert (
+        ingest_request_from_proto(request).relation_extraction
+        is RelationExtractionMode.INHERIT
+    )
+    assert (
+        ingest_input_from_proto(item).relation_extraction
+        is RelationExtractionMode.INHERIT
+    )
 
 
 class MemoryRuntime:

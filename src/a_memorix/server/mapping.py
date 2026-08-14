@@ -268,9 +268,10 @@ def ingest_request_from_proto(value: memory_pb2.IngestTextRequest) -> IngestText
             )
             for item in value.relations
         ),
-        relation_extraction=_RELATION_EXTRACTION_MODE_FROM_PROTO[
-            value.relation_extraction
-        ],
+        relation_extraction=_RELATION_EXTRACTION_MODE_FROM_PROTO.get(
+            value.relation_extraction,
+            RelationExtractionMode.INHERIT,
+        ),
         respect_filter=(
             value.respect_filter if value.HasField("respect_filter") else True
         ),
@@ -300,9 +301,10 @@ def ingest_input_from_proto(value: memory_pb2.IngestTextInput) -> IngestTextInpu
             )
             for item in value.relations
         ),
-        relation_extraction=_RELATION_EXTRACTION_MODE_FROM_PROTO[
-            value.relation_extraction
-        ],
+        relation_extraction=_RELATION_EXTRACTION_MODE_FROM_PROTO.get(
+            value.relation_extraction,
+            RelationExtractionMode.INHERIT,
+        ),
         respect_filter=(
             value.respect_filter if value.HasField("respect_filter") else True
         ),

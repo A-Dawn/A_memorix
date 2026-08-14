@@ -62,6 +62,7 @@ test = [
   "ruff==0.16.2",
 ]
 evaluation = [
+  "faiss-cpu>=1.8.0",
   "pyarrow>=16.0.0",
 ]
 build = [

@@ -143,6 +143,7 @@ class ApplicationRuntime:
             "entity_count": 2,
             "relation_count": 1,
             "profile": str(kwargs["extraction_config"]["profile"]),
+            "text": str(kwargs["text"]),
         }
 
 
@@ -412,7 +413,7 @@ async def test_relation_extraction_uses_namespace_gate_and_request_override(
                 context=_context("tenant-a"),
                 external_id="without-extraction",
                 source_type="document",
-                text="Alice works at Lumina.",
+                text="Mallory works at Umbra.",
                 relation_extraction=RelationExtractionMode.ENABLED,
             )
         )
@@ -428,6 +429,7 @@ async def test_relation_extraction_uses_namespace_gate_and_request_override(
         assert job.status is JobStatus.SUCCEEDED
         assert job.job_type is JobType.RELATION_EXTRACTION
         assert job.result["relation_count"] == 1
+        assert job.result["text"] == "Alice works at Lumina."
         assert factory.calls["extract:tenant-a"] == 1
 
         await engine.create_namespace(

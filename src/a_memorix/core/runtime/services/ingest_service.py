@@ -598,6 +598,11 @@ class MemoryIngestService(KernelServiceBase):
             raise ValueError(
                 f"memory not found for relation extraction: {paragraph_hash}"
             )
+        source_text = str(paragraph.get("content", "") or "").strip()
+        if not source_text:
+            raise ValueError(
+                f"memory has no text for relation extraction: {paragraph_hash}"
+            )
         if self.llm_provider is None:
             raise RuntimeError(
                 "relation extraction is enabled but no LLM provider is available"
@@ -670,7 +675,7 @@ class MemoryIngestService(KernelServiceBase):
             chunk_overlap_chars=policy_payload["chunk_overlap_chars"],
         )
         try:
-            extracted = await extractor.extract(text)
+            extracted = await extractor.extract(source_text)
             entity_hashes: list[str] = []
             entity_vector_items: list[tuple[str, str]] = []
             if extracted.entities:
