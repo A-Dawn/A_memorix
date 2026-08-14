@@ -8,7 +8,7 @@ managed:
     - module: buf.build/googleapis/googleapis
   override:
     - file_option: go_package_prefix
-      value: github.com/MaiM-with-u/A_memorix/gen/go
+      value: github.com/A-Dawn/A_memorix/gen/go
 
 plugins:
   - remote: buf.build/protocolbuffers/python:v33.5

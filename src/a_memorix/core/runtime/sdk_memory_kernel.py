@@ -123,7 +123,7 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
         self.message_source = message_source
         self.embedding_dimension = max(1, int(self._cfg("embedding.dimension", 1024)))
         self.relation_vectors_enabled = bool(
-            self._cfg("retrieval.relation_vectorization.enabled", False)
+            self._cfg("retrieval.relation_vectorization.enabled", True)
         )
 
         self.embedding_manager = None
@@ -1085,6 +1085,21 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
         return (
             self.metadata_store.get_external_memory_ref(str(external_id or "").strip())
             is not None
+        )
+
+    async def extract_relations_for_memory(
+        self,
+        *,
+        memory_id: str,
+        text: str,
+        extraction_config: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        service = self._ingest_service
+        return await type(service).extract_relations_for_memory(
+            service,
+            memory_id=memory_id,
+            text=text,
+            extraction_config=extraction_config,
         )
 
     async def get_memory_record(

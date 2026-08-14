@@ -21,12 +21,21 @@ class SearchMode(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     SEARCH_MODE_HYBRID: _ClassVar[SearchMode]
     SEARCH_MODE_EPISODE: _ClassVar[SearchMode]
     SEARCH_MODE_AGGREGATE: _ClassVar[SearchMode]
+
+class RelationExtractionMode(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    RELATION_EXTRACTION_MODE_UNSPECIFIED: _ClassVar[RelationExtractionMode]
+    RELATION_EXTRACTION_MODE_ENABLED: _ClassVar[RelationExtractionMode]
+    RELATION_EXTRACTION_MODE_DISABLED: _ClassVar[RelationExtractionMode]
 SEARCH_MODE_UNSPECIFIED: SearchMode
 SEARCH_MODE_SEARCH: SearchMode
 SEARCH_MODE_TIME: SearchMode
 SEARCH_MODE_HYBRID: SearchMode
 SEARCH_MODE_EPISODE: SearchMode
 SEARCH_MODE_AGGREGATE: SearchMode
+RELATION_EXTRACTION_MODE_UNSPECIFIED: RelationExtractionMode
+RELATION_EXTRACTION_MODE_ENABLED: RelationExtractionMode
+RELATION_EXTRACTION_MODE_DISABLED: RelationExtractionMode
 
 class RelationInput(_message.Message):
     __slots__ = ("subject", "predicate", "object", "confidence", "metadata")
@@ -43,7 +52,7 @@ class RelationInput(_message.Message):
     def __init__(self, subject: _Optional[str] = ..., predicate: _Optional[str] = ..., object: _Optional[str] = ..., confidence: _Optional[float] = ..., metadata: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ...) -> None: ...
 
 class IngestTextRequest(_message.Message):
-    __slots__ = ("context", "external_id", "source_type", "text", "person_ids", "participants", "observed_at", "valid_from", "valid_to", "tags", "metadata", "entities", "relations", "respect_filter")
+    __slots__ = ("context", "external_id", "source_type", "text", "person_ids", "participants", "observed_at", "valid_from", "valid_to", "tags", "metadata", "entities", "relations", "respect_filter", "relation_extraction")
     CONTEXT_FIELD_NUMBER: _ClassVar[int]
     EXTERNAL_ID_FIELD_NUMBER: _ClassVar[int]
     SOURCE_TYPE_FIELD_NUMBER: _ClassVar[int]
@@ -58,6 +67,7 @@ class IngestTextRequest(_message.Message):
     ENTITIES_FIELD_NUMBER: _ClassVar[int]
     RELATIONS_FIELD_NUMBER: _ClassVar[int]
     RESPECT_FILTER_FIELD_NUMBER: _ClassVar[int]
+    RELATION_EXTRACTION_FIELD_NUMBER: _ClassVar[int]
     context: _common_pb2.RequestContext
     external_id: str
     source_type: str
@@ -72,24 +82,27 @@ class IngestTextRequest(_message.Message):
     entities: _containers.RepeatedScalarFieldContainer[str]
     relations: _containers.RepeatedCompositeFieldContainer[RelationInput]
     respect_filter: bool
-    def __init__(self, context: _Optional[_Union[_common_pb2.RequestContext, _Mapping]] = ..., external_id: _Optional[str] = ..., source_type: _Optional[str] = ..., text: _Optional[str] = ..., person_ids: _Optional[_Iterable[str]] = ..., participants: _Optional[_Iterable[str]] = ..., observed_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., valid_from: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., valid_to: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., tags: _Optional[_Iterable[str]] = ..., metadata: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., entities: _Optional[_Iterable[str]] = ..., relations: _Optional[_Iterable[_Union[RelationInput, _Mapping]]] = ..., respect_filter: _Optional[bool] = ...) -> None: ...
+    relation_extraction: RelationExtractionMode
+    def __init__(self, context: _Optional[_Union[_common_pb2.RequestContext, _Mapping]] = ..., external_id: _Optional[str] = ..., source_type: _Optional[str] = ..., text: _Optional[str] = ..., person_ids: _Optional[_Iterable[str]] = ..., participants: _Optional[_Iterable[str]] = ..., observed_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., valid_from: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., valid_to: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., tags: _Optional[_Iterable[str]] = ..., metadata: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., entities: _Optional[_Iterable[str]] = ..., relations: _Optional[_Iterable[_Union[RelationInput, _Mapping]]] = ..., respect_filter: _Optional[bool] = ..., relation_extraction: _Optional[_Union[RelationExtractionMode, str]] = ...) -> None: ...
 
 class IngestTextResponse(_message.Message):
-    __slots__ = ("stored_ids", "skipped_ids", "fact_claim_ids", "warnings", "detail")
+    __slots__ = ("stored_ids", "skipped_ids", "fact_claim_ids", "warnings", "detail", "relation_extraction_job_id")
     STORED_IDS_FIELD_NUMBER: _ClassVar[int]
     SKIPPED_IDS_FIELD_NUMBER: _ClassVar[int]
     FACT_CLAIM_IDS_FIELD_NUMBER: _ClassVar[int]
     WARNINGS_FIELD_NUMBER: _ClassVar[int]
     DETAIL_FIELD_NUMBER: _ClassVar[int]
+    RELATION_EXTRACTION_JOB_ID_FIELD_NUMBER: _ClassVar[int]
     stored_ids: _containers.RepeatedScalarFieldContainer[str]
     skipped_ids: _containers.RepeatedScalarFieldContainer[str]
     fact_claim_ids: _containers.RepeatedScalarFieldContainer[str]
     warnings: _containers.RepeatedScalarFieldContainer[str]
     detail: str
-    def __init__(self, stored_ids: _Optional[_Iterable[str]] = ..., skipped_ids: _Optional[_Iterable[str]] = ..., fact_claim_ids: _Optional[_Iterable[str]] = ..., warnings: _Optional[_Iterable[str]] = ..., detail: _Optional[str] = ...) -> None: ...
+    relation_extraction_job_id: str
+    def __init__(self, stored_ids: _Optional[_Iterable[str]] = ..., skipped_ids: _Optional[_Iterable[str]] = ..., fact_claim_ids: _Optional[_Iterable[str]] = ..., warnings: _Optional[_Iterable[str]] = ..., detail: _Optional[str] = ..., relation_extraction_job_id: _Optional[str] = ...) -> None: ...
 
 class IngestTextInput(_message.Message):
-    __slots__ = ("external_id", "source_type", "text", "person_ids", "participants", "observed_at", "valid_from", "valid_to", "tags", "metadata", "entities", "relations", "respect_filter")
+    __slots__ = ("external_id", "source_type", "text", "person_ids", "participants", "observed_at", "valid_from", "valid_to", "tags", "metadata", "entities", "relations", "respect_filter", "relation_extraction")
     EXTERNAL_ID_FIELD_NUMBER: _ClassVar[int]
     SOURCE_TYPE_FIELD_NUMBER: _ClassVar[int]
     TEXT_FIELD_NUMBER: _ClassVar[int]
@@ -103,6 +116,7 @@ class IngestTextInput(_message.Message):
     ENTITIES_FIELD_NUMBER: _ClassVar[int]
     RELATIONS_FIELD_NUMBER: _ClassVar[int]
     RESPECT_FILTER_FIELD_NUMBER: _ClassVar[int]
+    RELATION_EXTRACTION_FIELD_NUMBER: _ClassVar[int]
     external_id: str
     source_type: str
     text: str
@@ -116,7 +130,8 @@ class IngestTextInput(_message.Message):
     entities: _containers.RepeatedScalarFieldContainer[str]
     relations: _containers.RepeatedCompositeFieldContainer[RelationInput]
     respect_filter: bool
-    def __init__(self, external_id: _Optional[str] = ..., source_type: _Optional[str] = ..., text: _Optional[str] = ..., person_ids: _Optional[_Iterable[str]] = ..., participants: _Optional[_Iterable[str]] = ..., observed_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., valid_from: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., valid_to: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., tags: _Optional[_Iterable[str]] = ..., metadata: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., entities: _Optional[_Iterable[str]] = ..., relations: _Optional[_Iterable[_Union[RelationInput, _Mapping]]] = ..., respect_filter: _Optional[bool] = ...) -> None: ...
+    relation_extraction: RelationExtractionMode
+    def __init__(self, external_id: _Optional[str] = ..., source_type: _Optional[str] = ..., text: _Optional[str] = ..., person_ids: _Optional[_Iterable[str]] = ..., participants: _Optional[_Iterable[str]] = ..., observed_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., valid_from: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., valid_to: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., tags: _Optional[_Iterable[str]] = ..., metadata: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., entities: _Optional[_Iterable[str]] = ..., relations: _Optional[_Iterable[_Union[RelationInput, _Mapping]]] = ..., respect_filter: _Optional[bool] = ..., relation_extraction: _Optional[_Union[RelationExtractionMode, str]] = ...) -> None: ...
 
 class BatchIngestTextRequest(_message.Message):
     __slots__ = ("context", "items")

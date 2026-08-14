@@ -10,7 +10,10 @@ import pytest
 from a_memorix.core.runtime import sdk_memory_kernel as kernel_module
 from a_memorix.core.runtime.sdk_memory_kernel import SDKMemoryKernel
 from a_memorix.core.utils.person_profile_service import PersonProfileService
-from a_memorix.core.utils.relation_write_service import RelationWriteService
+from a_memorix.core.utils.relation_write_service import (
+    RelationWriteInput,
+    RelationWriteService,
+)
 from a_memorix.core.utils.runtime_self_check import run_embedding_runtime_self_check
 from a_memorix.core.utils.summary_importer import SummaryImporter
 
@@ -239,6 +242,81 @@ async def test_relation_write_service_batches_metadata_graph_and_vectors() -> No
         [
             "Alice 持有 地图\nAlice和地图的关系是持有",
             "Bob 居住于 广州\nBob和广州的关系是居住于",
+        ]
+    ]
+    assert [result.vector_state for result in results] == ["ready", "ready"]
+
+
+@pytest.mark.asyncio
+async def test_relation_write_service_batches_per_relation_attributes() -> None:
+    class _AttributeMetadataStore(_DummyMetadataStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.attributes: list[tuple[float, dict[str, Any], str]] = []
+
+        def add_relation(
+            self,
+            *,
+            subject: str,
+            predicate: str,
+            obj: str,
+            confidence: float = 1.0,
+            source_paragraph: str = "",
+            metadata: dict[str, Any] | None = None,
+            **kwargs: Any,
+        ) -> str:
+            self.attributes.append(
+                (confidence, dict(metadata or {}), source_paragraph)
+            )
+            return super().add_relation(
+                subject=subject,
+                predicate=predicate,
+                obj=obj,
+                **kwargs,
+            )
+
+    metadata_store = _AttributeMetadataStore()
+    graph_store = _DummyGraphStore()
+    graph_vector_store = _DummyVectorStore()
+    embedding_manager = _DummyEmbeddingManager()
+    service = RelationWriteService(
+        metadata_store=metadata_store,
+        graph_store=graph_store,
+        vector_store=_DummyVectorStore(),
+        embedding_manager=embedding_manager,
+        graph_vector_store=graph_vector_store,
+        use_typed_relation_ids=True,
+    )
+
+    results = await service.upsert_relation_inputs_with_vectors(
+        [
+            RelationWriteInput(
+                "Alice",
+                "works_at",
+                "Lumina",
+                confidence=0.97,
+                metadata={"profile": "agent-memory-v1", "ordinal": 1},
+            ),
+            RelationWriteInput(
+                "Alice",
+                "works_on",
+                "memory project",
+                confidence=0.83,
+                metadata={"profile": "agent-memory-v1", "ordinal": 2},
+            ),
+        ],
+        source_paragraph="paragraph-1",
+    )
+
+    assert metadata_store.attributes == [
+        (0.97, {"profile": "agent-memory-v1", "ordinal": 1}, "paragraph-1"),
+        (0.83, {"profile": "agent-memory-v1", "ordinal": 2}, "paragraph-1"),
+    ]
+    assert graph_store.edges == [[("Alice", "Lumina"), ("Alice", "memory project")]]
+    assert embedding_manager.calls == [
+        [
+            "Alice works_at Lumina\nAlice和Lumina的关系是works_at",
+            "Alice works_on memory project\nAlice和memory project的关系是works_on",
         ]
     ]
     assert [result.vector_state for result in results] == ["ready", "ready"]

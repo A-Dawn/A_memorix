@@ -470,8 +470,8 @@ const file_a_memorix_api_v1_auth_proto_rawDesc = "" +
 	"\vAuthService\x12\x90\x01\n" +
 	"\fCreateApiKey\x12%.a_memorix.api.v1.CreateApiKeyRequest\x1a&.a_memorix.api.v1.CreateApiKeyResponse\"1\x82\xd3\xe4\x93\x02+:\x01*\"&/v1/namespaces/{namespace_id}/api-keys\x12\x8a\x01\n" +
 	"\vListApiKeys\x12$.a_memorix.api.v1.ListApiKeysRequest\x1a%.a_memorix.api.v1.ListApiKeysResponse\".\x82\xd3\xe4\x93\x02(\x12&/v1/namespaces/{namespace_id}/api-keys\x12\x96\x01\n" +
-	"\fRevokeApiKey\x12%.a_memorix.api.v1.RevokeApiKeyRequest\x1a&.a_memorix.api.v1.RevokeApiKeyResponse\"7\x82\xd3\xe4\x93\x021*//v1/namespaces/{namespace_id}/api-keys/{key_id}B\xbf\x01\n" +
-	"\x14com.a_memorix.api.v1B\tAuthProtoP\x01Z>github.com/MaiM-with-u/A_memorix/gen/go/a_memorix/api/v1;apiv1\xa2\x02\x03AAX\xaa\x02\x0fAMemorix.Api.V1\xca\x02\x0fAMemorix\\Api\\V1\xe2\x02\x1bAMemorix\\Api\\V1\\GPBMetadata\xea\x02\x11AMemorix::Api::V1b\x06proto3"
+	"\fRevokeApiKey\x12%.a_memorix.api.v1.RevokeApiKeyRequest\x1a&.a_memorix.api.v1.RevokeApiKeyResponse\"7\x82\xd3\xe4\x93\x021*//v1/namespaces/{namespace_id}/api-keys/{key_id}B\xba\x01\n" +
+	"\x14com.a_memorix.api.v1B\tAuthProtoP\x01Z9github.com/A-Dawn/A_memorix/gen/go/a_memorix/api/v1;apiv1\xa2\x02\x03AAX\xaa\x02\x0fAMemorix.Api.V1\xca\x02\x0fAMemorix\\Api\\V1\xe2\x02\x1bAMemorix\\Api\\V1\\GPBMetadata\xea\x02\x11AMemorix::Api::V1b\x06proto3"
 
 var (
 	file_a_memorix_api_v1_auth_proto_rawDescOnce sync.Once

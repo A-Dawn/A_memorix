@@ -901,12 +901,12 @@ async def test_terminal_job_atomically_settles_operation_and_global_reconcile_re
 
 
 @pytest.mark.asyncio
-async def test_relation_restore_skips_vector_job_when_default_vectorization_is_disabled(
+async def test_relation_restore_skips_vector_job_when_vectorization_is_explicitly_disabled(
     metadata_store: MetadataStore,
     tmp_path: Path,
 ) -> None:
     default_kernel = SDKMemoryKernel(data_dir=tmp_path, config={})
-    assert default_kernel.relation_vectors_enabled is False
+    assert default_kernel.relation_vectors_enabled is True
 
     relation_hash = metadata_store.add_relation("无向量实体", "关联", "无向量目标")
     kernel = _DeleteKernel(metadata_store)

@@ -12,6 +12,7 @@ import pytest
 from a_memorix import (
     AMemorixEngine,
     BatchIngestTextRequest,
+    CapabilityUnavailableError,
     CreateNamespaceRequest,
     DeleteBySourceRequest,
     DeleteMemoryRequest,
@@ -19,11 +20,14 @@ from a_memorix import (
     IngestTextInput,
     IngestTextRequest,
     JobStatus,
+    JobType,
     NamespaceConfig,
     NamespaceConflictError,
     NamespaceFeatureConfig,
     NamespaceStateError,
     ProviderReference,
+    RelationExtractionConfig,
+    RelationExtractionMode,
     RequestContext,
     UpdateNamespaceConfigRequest,
 )
@@ -52,7 +56,11 @@ class ApplicationRuntime:
 
     def runtime_capability_status(self) -> dict[str, object]:
         return {
-            "capabilities": {"metadata": True, "sparse": True, "llm": False},
+            "capabilities": {
+                "metadata": True,
+                "sparse": True,
+                "llm": self.namespace.config.relation_extraction.enabled,
+            },
             "degraded": False,
         }
 
@@ -67,9 +75,7 @@ class ApplicationRuntime:
         self._calls[namespace_id] = self._calls.get(namespace_id, 0) + 1
         external_id = str(kwargs.get("external_id", "") or "")
         text = str(kwargs["text"])
-        memory_id = hashlib.sha256(
-            (external_id or text).encode("utf-8")
-        ).hexdigest()
+        memory_id = hashlib.sha256((external_id or text).encode("utf-8")).hexdigest()
         if memory_id in self._records:
             return {"stored_ids": [], "skipped_ids": [memory_id], "reason": "exists"}
         source_type = str(kwargs["source_type"])
@@ -125,6 +131,18 @@ class ApplicationRuntime:
             "operation_id": "source-delete-1" if deleted_ids else "",
             "deleted_count": len(deleted_ids),
             "deleted_paragraph_count": len(deleted_ids),
+        }
+
+    async def extract_relations_for_memory(self, **kwargs: Any) -> dict[str, object]:
+        memory_id = str(kwargs["memory_id"])
+        self._calls[f"extract:{self.namespace.namespace_id}"] = (
+            self._calls.get(f"extract:{self.namespace.namespace_id}", 0) + 1
+        )
+        return {
+            "memory_id": memory_id,
+            "entity_count": 2,
+            "relation_count": 1,
+            "profile": str(kwargs["extraction_config"]["profile"]),
         }
 
 
@@ -252,7 +270,9 @@ async def test_ingest_idempotency_survives_engine_restart(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
-async def test_namespace_config_requires_inactive_versioned_update(tmp_path: Path) -> None:
+async def test_namespace_config_requires_inactive_versioned_update(
+    tmp_path: Path,
+) -> None:
     factory = ApplicationRuntimeFactory()
     engine = AMemorixEngine(
         data_dir=tmp_path,
@@ -312,11 +332,13 @@ async def test_batch_get_delete_and_source_job(tmp_path: Path) -> None:
                         external_id="one",
                         source_type="document",
                         text="first",
+                        relation_extraction=RelationExtractionMode.DISABLED,
                     ),
                     IngestTextInput(
                         external_id="two",
                         source_type="document",
                         text="second",
+                        relation_extraction=RelationExtractionMode.DISABLED,
                     ),
                 ),
             )
@@ -347,5 +369,86 @@ async def test_batch_get_delete_and_source_job(tmp_path: Path) -> None:
         assert job.status is JobStatus.SUCCEEDED
         assert job.result["deleted_memory_count"] == 1
         assert (await engine.list_jobs("tenant-a")) == [job]
+    finally:
+        await engine.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_relation_extraction_uses_namespace_gate_and_request_override(
+    tmp_path: Path,
+) -> None:
+    factory = ApplicationRuntimeFactory()
+    engine = AMemorixEngine(
+        data_dir=tmp_path,
+        runtime_factory=factory,
+        idle_timeout_seconds=0,
+    )
+    await engine.initialize()
+    try:
+        await engine.create_namespace(
+            CreateNamespaceRequest(
+                namespace_id="tenant-a",
+                config=NamespaceConfig(
+                    relation_extraction=RelationExtractionConfig(
+                        enabled=True,
+                        default_enabled=False,
+                        profile="general-v1",
+                    )
+                ),
+            )
+        )
+        inherited = await engine.ingest_text(
+            IngestTextRequest(
+                context=_context("tenant-a"),
+                external_id="without-extraction",
+                source_type="document",
+                text="Alice works at Lumina.",
+            )
+        )
+        assert inherited.relation_extraction_job_id == ""
+
+        enabled = await engine.ingest_text(
+            IngestTextRequest(
+                context=_context("tenant-a"),
+                external_id="without-extraction",
+                source_type="document",
+                text="Alice works at Lumina.",
+                relation_extraction=RelationExtractionMode.ENABLED,
+            )
+        )
+        assert enabled.stored_ids == ()
+        assert enabled.skipped_ids
+        assert enabled.relation_extraction_job_id
+        job = await engine.get_job("tenant-a", enabled.relation_extraction_job_id)
+        for _ in range(100):
+            if job.status not in {JobStatus.PENDING, JobStatus.RUNNING}:
+                break
+            await asyncio.sleep(0.01)
+            job = await engine.get_job("tenant-a", job.job_id)
+        assert job.status is JobStatus.SUCCEEDED
+        assert job.job_type is JobType.RELATION_EXTRACTION
+        assert job.result["relation_count"] == 1
+        assert factory.calls["extract:tenant-a"] == 1
+
+        await engine.create_namespace(
+            CreateNamespaceRequest(
+                namespace_id="tenant-b",
+                config=NamespaceConfig(
+                    relation_extraction=RelationExtractionConfig(enabled=False)
+                ),
+            )
+        )
+        with pytest.raises(
+            CapabilityUnavailableError,
+            match="relation extraction is disabled",
+        ):
+            await engine.ingest_text(
+                IngestTextRequest(
+                    context=_context("tenant-b"),
+                    source_type="document",
+                    text="Alice works at Lumina.",
+                    relation_extraction=RelationExtractionMode.ENABLED,
+                )
+            )
     finally:
         await engine.shutdown()

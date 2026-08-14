@@ -273,11 +273,26 @@ async def test_grpc_auth_errors_and_memory_semantics(
                             relation_vectors=False,
                             allow_metadata_only_write=True,
                         ),
+                        relation_extraction=namespace_pb2.RelationExtractionConfig(
+                            enabled=True,
+                            default_enabled=False,
+                            profile="agent-memory-v1",
+                            max_entities=48,
+                            max_relations=40,
+                            max_chunk_chars=6000,
+                            chunk_overlap_chars=400,
+                        ),
                     ),
                 )
             )
             assert configured.namespace.config_version == 2
             assert configured.namespace.config.llm.secret_ref == "secret://tenant-a/llm"
+            assert configured.namespace.config.relation_extraction.enabled is True
+            assert (
+                configured.namespace.config.relation_extraction.profile
+                == "agent-memory-v1"
+            )
+            assert configured.namespace.config.relation_extraction.max_chunk_chars == 6000
             await admin.enable_namespace(
                 namespace_pb2.EnableNamespaceRequest(namespace_id="tenant-a")
             )

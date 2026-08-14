@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Mapping
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .context import NamespaceId
 
@@ -44,8 +44,45 @@ class NamespaceFeatureConfig(BaseModel):
     episodes: bool = True
     person_profiles: bool = True
     sparse_retrieval: bool = True
-    relation_vectors: bool = False
+    relation_vectors: bool = True
     allow_metadata_only_write: bool = True
+
+
+class RelationExtractionConfig(BaseModel):
+    """Namespace policy for optional LLM-backed relation extraction."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    enabled: bool = True
+    default_enabled: bool = True
+    profile: str = Field(default="general-v1", min_length=1, max_length=128)
+    entity_types: tuple[str, ...] = Field(default=(), max_length=64)
+    predicates: tuple[str, ...] = Field(default=(), max_length=128)
+    max_entities: int = Field(default=64, ge=1, le=256)
+    max_relations: int = Field(default=64, ge=1, le=256)
+    max_chunk_chars: int = Field(default=8_000, ge=1_000, le=100_000)
+    chunk_overlap_chars: int = Field(default=500, ge=0, le=10_000)
+
+    @model_validator(mode="before")
+    @classmethod
+    def disable_default_with_capability(cls, value: object) -> object:
+        if (
+            isinstance(value, Mapping)
+            and value.get("enabled") is False
+            and "default_enabled" not in value
+        ):
+            return {**value, "default_enabled": False}
+        return value
+
+    @model_validator(mode="after")
+    def validate_default(self) -> "RelationExtractionConfig":
+        if self.default_enabled and not self.enabled:
+            raise ValueError(
+                "default_enabled requires relation extraction to be enabled"
+            )
+        if self.chunk_overlap_chars >= self.max_chunk_chars:
+            raise ValueError("chunk overlap must be smaller than the chunk size")
+        return self
 
 
 class NamespaceConfig(BaseModel):
@@ -58,6 +95,9 @@ class NamespaceConfig(BaseModel):
     identity_resolver: ProviderReference | None = None
     message_source: ProviderReference | None = None
     features: NamespaceFeatureConfig = Field(default_factory=NamespaceFeatureConfig)
+    relation_extraction: RelationExtractionConfig = Field(
+        default_factory=RelationExtractionConfig
+    )
 
 
 class CreateNamespaceRequest(BaseModel):

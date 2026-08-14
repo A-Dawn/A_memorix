@@ -84,6 +84,7 @@ async def _resolve(value: Any) -> Any:
 
 def _namespace_feature_config(namespace: NamespaceInfo) -> dict[str, object]:
     features = namespace.config.features
+    extraction = namespace.config.relation_extraction
     return {
         "episode": {
             "enabled": features.episodes,
@@ -98,6 +99,17 @@ def _namespace_feature_config(namespace: NamespaceInfo) -> dict[str, object]:
             "fallback": {
                 "allow_metadata_only_write": features.allow_metadata_only_write,
             }
+        },
+        "relation_extraction": {
+            "enabled": extraction.enabled,
+            "default_enabled": extraction.default_enabled,
+            "profile": extraction.profile,
+            "entity_types": list(extraction.entity_types),
+            "predicates": list(extraction.predicates),
+            "max_entities": extraction.max_entities,
+            "max_relations": extraction.max_relations,
+            "max_chunk_chars": extraction.max_chunk_chars,
+            "chunk_overlap_chars": extraction.chunk_overlap_chars,
         },
     }
 

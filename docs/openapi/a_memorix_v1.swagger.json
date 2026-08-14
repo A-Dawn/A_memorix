@@ -1469,6 +1469,9 @@
         },
         "respectFilter": {
           "type": "boolean"
+        },
+        "relationExtraction": {
+          "$ref": "#/definitions/v1RelationExtractionMode"
         }
       }
     },
@@ -1922,6 +1925,9 @@
         },
         "respectFilter": {
           "type": "boolean"
+        },
+        "relationExtraction": {
+          "$ref": "#/definitions/v1RelationExtractionMode"
         }
       }
     },
@@ -1953,6 +1959,9 @@
           }
         },
         "detail": {
+          "type": "string"
+        },
+        "relationExtractionJobId": {
           "type": "string"
         }
       }
@@ -2016,7 +2025,8 @@
       "type": "string",
       "enum": [
         "JOB_TYPE_UNSPECIFIED",
-        "JOB_TYPE_DELETE_BY_SOURCE"
+        "JOB_TYPE_DELETE_BY_SOURCE",
+        "JOB_TYPE_RELATION_EXTRACTION"
       ],
       "default": "JOB_TYPE_UNSPECIFIED"
     },
@@ -2247,6 +2257,9 @@
         },
         "features": {
           "$ref": "#/definitions/v1NamespaceFeatureConfig"
+        },
+        "relationExtraction": {
+          "$ref": "#/definitions/v1RelationExtractionConfig"
         }
       }
     },
@@ -2397,6 +2410,57 @@
     },
     "v1PurgeNamespaceResponse": {
       "type": "object"
+    },
+    "v1RelationExtractionConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "defaultEnabled": {
+          "type": "boolean"
+        },
+        "profile": {
+          "type": "string"
+        },
+        "entityTypes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "predicates": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "maxEntities": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "maxRelations": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "maxChunkChars": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "chunkOverlapChars": {
+          "type": "integer",
+          "format": "int64"
+        }
+      }
+    },
+    "v1RelationExtractionMode": {
+      "type": "string",
+      "enum": [
+        "RELATION_EXTRACTION_MODE_UNSPECIFIED",
+        "RELATION_EXTRACTION_MODE_ENABLED",
+        "RELATION_EXTRACTION_MODE_DISABLED"
+      ],
+      "default": "RELATION_EXTRACTION_MODE_UNSPECIFIED"
     },
     "v1RelationInput": {
       "type": "object",
