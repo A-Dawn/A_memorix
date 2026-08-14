@@ -171,6 +171,14 @@ jobs:
         shell: bash
         run: sha256sum dist/* artifacts/* > SHA256SUMS
       - name: Create GitHub release
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" dist/* artifacts/* SHA256SUMS --generate-notes --verify-tag --repo "${{ github.repository }}"
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          release_args=(--generate-notes --verify-tag --repo "$RELEASE_REPOSITORY")
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            release_args+=(--prerelease)
+          fi
+          gh release create "$RELEASE_TAG" dist/* artifacts/* SHA256SUMS "${release_args[@]}"
