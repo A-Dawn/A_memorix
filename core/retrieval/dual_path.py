@@ -6,6 +6,7 @@
 
 import asyncio
 import re
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Tuple, Union
 from enum import Enum
@@ -14,6 +15,7 @@ import numpy as np
 
 from src.common.logger import get_logger
 from ..storage import VectorStore, GraphStore, MetadataStore
+from ..runtime.models import MemoryAccessScope
 from ..embedding import EmbeddingAPIAdapter
 from ..utils.matcher import AhoCorasick
 from ..utils.time_parser import format_timestamp
@@ -265,6 +267,7 @@ class DualPathRetriever:
             re.IGNORECASE,
         )
         self._runtime_sparse_only = False
+        self._scope_context: ContextVar[Optional[MemoryAccessScope]] = ContextVar("a_memorix_scope", default=None)
 
     def set_runtime_sparse_only(self, enabled: bool) -> None:
         """由运行时控制强制 sparse-only（不改用户配置文件）。"""
@@ -280,6 +283,7 @@ class DualPathRetriever:
         top_k: Optional[int] = None,
         strategy: Optional[RetrievalStrategy] = None,
         temporal: Optional[TemporalQueryOptions] = None,
+        scope: Optional[MemoryAccessScope] = None,
     ) -> List[RetrievalResult]:
         """
         执行检索（异步方法）
@@ -295,6 +299,7 @@ class DualPathRetriever:
         """
         top_k = top_k or self.config.top_k_final
         strategy = strategy or self.config.retrieval_strategy
+        scope_token = self._scope_context.set(scope)
         relation_intent_ctx = self._build_relation_intent_context(query=query, top_k=top_k)
 
         logger.info(
@@ -305,7 +310,9 @@ class DualPathRetriever:
         )
 
         if temporal and not (query or "").strip():
-            return self._retrieve_temporal_only(temporal, top_k)
+            results = self._filter_scope_results(self._retrieve_temporal_only(temporal, top_k))
+            self._scope_context.reset(scope_token)
+            return results
 
         # 根据策略执行检索
         if strategy == RetrievalStrategy.PARA_ONLY:
@@ -320,6 +327,8 @@ class DualPathRetriever:
                 relation_intent=relation_intent_ctx,
             )
 
+        results = self._filter_scope_results(results)
+        self._scope_context.reset(scope_token)
         logger.info(f"检索完成: 返回 {len(results)} 条结果")
 
         # 调试模式：打印结果原文
@@ -329,6 +338,24 @@ class DualPathRetriever:
                 logger.info(f"  {i+1}. [{res.result_type}] (Score: {res.score:.4f}) {res.content}")
 
         return results
+
+    def _filter_scope_results(self, results: List[RetrievalResult]) -> List[RetrievalResult]:
+        scope = self._scope_context.get()
+        if scope is None:
+            return results
+        paragraph_ids = self.metadata_store.resolve_allowed_object_ids(scope, "paragraph")
+        relation_ids = self.metadata_store.resolve_allowed_object_ids(scope, "relation")
+        if paragraph_ids is None and relation_ids is None:
+            return results
+        allowed = (paragraph_ids or set()) | (relation_ids or set())
+        return [item for item in results if item.hash_value in allowed]
+
+    def _scope_allows(self, object_type: str, object_id: str) -> bool:
+        scope = self._scope_context.get()
+        if scope is None:
+            return True
+        allowed = self.metadata_store.resolve_allowed_object_ids(scope, object_type)
+        return allowed is None or object_id in allowed
 
     def _is_relation_intent_query(self, query: str) -> bool:
         q = str(query or "").strip()
@@ -596,6 +623,8 @@ class DualPathRetriever:
         results: List[RetrievalResult] = []
         for row in sparse_rows:
             hash_value = row["hash"]
+            if not self._scope_allows("paragraph", str(hash_value)):
+                continue
             paragraph = self.metadata_store.get_paragraph(hash_value)
             if paragraph is None:
                 continue
@@ -684,6 +713,8 @@ class DualPathRetriever:
         results: List[RetrievalResult] = []
         for row in rows:
             hash_value = row["hash"]
+            if not self._scope_allows("relation", str(hash_value)):
+                continue
             relation = self.metadata_store.get_relation(hash_value, include_inactive=False)
             if relation is None:
                 continue
@@ -845,6 +876,8 @@ class DualPathRetriever:
             )
 
             for hash_value, score in zip(para_ids, para_scores):
+                if not self._scope_allows("paragraph", str(hash_value)):
+                    continue
                 paragraph = self.metadata_store.get_paragraph(hash_value)
                 if paragraph is None:
                     continue
@@ -934,6 +967,8 @@ class DualPathRetriever:
 
             seen_relations = set()
             for hash_value, score in zip(ids, scores):
+                if not self._scope_allows("entity", str(hash_value)):
+                    continue
                 entity = self.metadata_store.get_entity(hash_value)
                 if not entity:
                     continue
@@ -1167,6 +1202,12 @@ class DualPathRetriever:
         elif sparse_rel_results and (not rel_results or not embedding_ok):
             rel_results = sparse_rel_results
 
+        para_results = self._filter_scope_results(para_results)
+        rel_results = self._filter_scope_results(rel_results)
+        sparse_para_results = self._filter_scope_results(sparse_para_results)
+        sparse_rel_results = self._filter_scope_results(sparse_rel_results)
+        graph_rel_results = self._filter_scope_results(graph_rel_results)
+
         # 融合结果
         fused_results = self._fuse_results(
             para_results,
@@ -1298,6 +1339,8 @@ class DualPathRetriever:
         seen_rel = set()
 
         for hash_value, score in zip(ids, scores):
+            if not self._scope_allows("paragraph", str(hash_value)) and not self._scope_allows("relation", str(hash_value)):
+                continue
             paragraph = self.metadata_store.get_paragraph(hash_value)
             if paragraph is not None and hash_value not in seen_para:
                 seen_para.add(hash_value)
@@ -1388,6 +1431,8 @@ class DualPathRetriever:
 
         results = []
         for hash_value, score in zip(para_ids, para_scores):
+            if not self._scope_allows("paragraph", str(hash_value)):
+                continue
             paragraph = self.metadata_store.get_paragraph(hash_value)
             if paragraph is None:
                 continue
@@ -1432,6 +1477,8 @@ class DualPathRetriever:
 
         results = []
         for hash_value, score in zip(rel_ids, rel_scores):
+            if not self._scope_allows("relation", str(hash_value)):
+                continue
             relation = self.metadata_store.get_relation(hash_value, include_inactive=False)
             if relation is None:
                 continue

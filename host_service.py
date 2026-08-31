@@ -196,6 +196,11 @@ class AMemorixHostService:
                     respect_filter=bool(payload.get("respect_filter", True)),
                     user_id=str(payload.get("user_id", "") or "").strip(),
                     group_id=str(payload.get("group_id", "") or "").strip(),
+                    allowed_memory_space_ids=tuple(str(x) for x in (payload.get("allowed_memory_space_ids") or [])),
+                    allowed_partition_ids=tuple(str(x) for x in (payload.get("allowed_partition_ids") or [])),
+                    security_domain=str(payload.get("security_domain", "normal") or "normal"),
+                    access_trace_id=str(payload.get("access_trace_id", "") or ""),
+                    # force_all_memory_access is host-trusted only and never read from payload.
                 )
             )
 
@@ -244,6 +249,11 @@ class AMemorixHostService:
                 respect_filter=bool(payload.get("respect_filter", True)),
                 user_id=str(payload.get("user_id", "") or "").strip(),
                 group_id=str(payload.get("group_id", "") or "").strip(),
+                memory_space_id=str(payload.get("memory_space_id", "memory-space-public") or "memory-space-public"),
+                partition_id=str(payload.get("partition_id", "shared") or "shared"),
+                security_domain=str(payload.get("security_domain", "normal") or "normal"),
+                source_session_id=str(payload.get("source_session_id", "") or ""),
+                bot_profile_id=str(payload.get("bot_profile_id", "") or ""),
             )
 
         if component_name == "get_person_profile":

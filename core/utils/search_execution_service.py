@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from src.common.logger import get_logger
 
 from ..retrieval import TemporalQueryOptions
+from ..runtime.models import MemoryAccessScope
 from .search_postprocess import (
     apply_safe_content_dedup,
     maybe_apply_smart_path_fallback,
@@ -57,6 +58,7 @@ class SearchExecutionRequest:
     source: Optional[str] = None
     use_threshold: bool = True
     enable_ppr: bool = True
+    memory_scope: Optional[MemoryAccessScope] = None
 
 
 @dataclass
@@ -198,6 +200,7 @@ class SearchExecutionService:
             "top_k": int(top_k),
             "use_threshold": bool(request.use_threshold),
             "enable_ppr": bool(request.enable_ppr),
+            "memory_scope": repr(request.memory_scope),
         }
         payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         return hashlib.sha1(payload_json.encode("utf-8")).hexdigest()
@@ -294,6 +297,7 @@ class SearchExecutionService:
                     query=query,
                     top_k=top_k,
                     temporal=temporal,
+                    scope=request.memory_scope,
                 )
 
                 should_apply_threshold = bool(request.use_threshold) and threshold_filter is not None

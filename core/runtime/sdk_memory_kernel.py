@@ -34,6 +34,7 @@ from ..utils.summary_importer import SummaryImporter
 from ..utils.time_parser import format_timestamp, parse_query_datetime_to_timestamp
 from ..utils.web_import_manager import ImportTaskManager
 from .search_runtime_initializer import SearchRuntimeBundle, build_search_runtime
+from .models import MemoryAccessScope
 
 logger = get_logger("A_Memorix.SDKMemoryKernel")
 
@@ -50,6 +51,11 @@ class KernelSearchRequest:
     respect_filter: bool = True
     user_id: str = ""
     group_id: str = ""
+    allowed_memory_space_ids: tuple[str, ...] = ()
+    allowed_partition_ids: tuple[str, ...] = ()
+    security_domain: str = "normal"
+    force_all_memory_access: bool = False
+    access_trace_id: str = ""
 
 
 @dataclass
@@ -923,6 +929,11 @@ class SDKMemoryKernel:
         respect_filter: bool = True,
         user_id: str = "",
         group_id: str = "",
+        memory_space_id: str = "memory-space-public",
+        partition_id: str = "shared",
+        security_domain: str = "normal",
+        source_session_id: str = "",
+        bot_profile_id: str = "",
     ) -> Dict[str, Any]:
         content = normalize_text(text)
         external_token = str(external_id or "").strip() or compute_hash(f"{source_type}:{chat_id}:{content}")
@@ -981,6 +992,11 @@ class SDKMemoryKernel:
             knowledge_type=self._resolve_knowledge_type(source_type),
             time_meta=self._time_meta(timestamp, time_start, time_end),
         )
+        self.metadata_store.register_scope_member(
+            object_type="paragraph", object_id=paragraph_hash,
+            memory_space_id=memory_space_id, partition_id=partition_id,
+            security_domain=security_domain, source_session_id=source_session_id or None,
+        )
         vector_result = await self._write_paragraph_vector_or_enqueue(
             paragraph_hash=paragraph_hash,
             content=content,
@@ -991,7 +1007,12 @@ class SDKMemoryKernel:
             warnings.append(warning)
 
         for name in entity_tokens:
-            self.metadata_store.add_entity(name=name, source_paragraph=paragraph_hash)
+            entity_hash = self.metadata_store.add_entity(name=name, source_paragraph=paragraph_hash)
+            self.metadata_store.register_scope_member(
+                object_type="entity", object_id=entity_hash,
+                memory_space_id=memory_space_id, partition_id=partition_id,
+                security_domain=security_domain, source_session_id=source_session_id or None,
+            )
 
         stored_relations: List[str] = []
         for row in [dict(item) for item in (relations or []) if isinstance(item, dict)]:
@@ -1010,6 +1031,11 @@ class SDKMemoryKernel:
                 write_vector=self.relation_vectors_enabled,
             )
             self.metadata_store.link_paragraph_relation(paragraph_hash, result.hash_value)
+            self.metadata_store.register_scope_member(
+                object_type="relation", object_id=result.hash_value,
+                memory_space_id=memory_space_id, partition_id=partition_id,
+                security_domain=security_domain, source_session_id=source_session_id or None,
+            )
             stored_relations.append(result.hash_value)
 
         self.metadata_store.upsert_external_memory_ref(
@@ -1128,6 +1154,11 @@ class SDKMemoryKernel:
         except ValueError as exc:
             return {"summary": "", "hits": [], "error": str(exc)}
 
+        scope = MemoryAccessScope(
+            allowed_memory_space_ids=request.allowed_memory_space_ids,
+            allowed_partition_ids=request.allowed_partition_ids, security_domain=request.security_domain,
+            force_all_memory_access=request.force_all_memory_access, access_trace_id=request.access_trace_id,
+        )
         if mode == "episode":
             rows = await self.episode_retriever.query(
                 query=query,
@@ -1179,6 +1210,7 @@ class SDKMemoryKernel:
                 source=self._chat_source(request.chat_id),
                 use_threshold=True,
                 enable_ppr=bool(self._cfg("retrieval.enable_ppr", True)),
+                memory_scope=scope,
             ),
             enforce_chat_filter=bool(request.respect_filter),
             reinforce_access=True,

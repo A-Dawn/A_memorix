@@ -34,7 +34,7 @@ except Exception:
 logger = get_logger("A_Memorix.MetadataStore")
 
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 RUNTIME_AUTO_MIGRATION_MIN_SCHEMA_VERSION = 9
 
 
@@ -321,6 +321,23 @@ class MetadataStore:
             )
         """)
 
+        cursor.execute("""CREATE TABLE IF NOT EXISTS memory_scope_members (
+                object_type TEXT NOT NULL, object_id TEXT NOT NULL,
+                memory_space_id TEXT NOT NULL, partition_id TEXT NOT NULL,
+                security_domain TEXT NOT NULL DEFAULT 'normal',
+                source_session_id TEXT, created_at REAL NOT NULL,
+                PRIMARY KEY (object_type, object_id, partition_id)
+            )""")
+        cursor.execute("""CREATE INDEX IF NOT EXISTS idx_memory_scope_members_scope
+            ON memory_scope_members(security_domain, memory_space_id, partition_id, object_type)""")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS relation_scope_states (
+                partition_id TEXT NOT NULL, relation_hash TEXT NOT NULL,
+                confidence REAL DEFAULT 1.0, is_inactive INTEGER DEFAULT 0,
+                retention_strength REAL DEFAULT 1.0, access_count INTEGER DEFAULT 0,
+                last_reinforced_at REAL, PRIMARY KEY (partition_id, relation_hash)
+            )""")
+        cursor.execute("""CREATE INDEX IF NOT EXISTS idx_relation_scope_states_hash
+            ON relation_scope_states(relation_hash, partition_id)""")
         # 三元组与段落的关联表
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS paragraph_relations (
@@ -756,6 +773,31 @@ class MetadataStore:
             )
         """)
 
+        cursor.execute("""CREATE TABLE IF NOT EXISTS memory_scope_members (
+                object_type TEXT NOT NULL, object_id TEXT NOT NULL,
+                memory_space_id TEXT NOT NULL, partition_id TEXT NOT NULL,
+                security_domain TEXT NOT NULL DEFAULT 'normal', source_session_id TEXT,
+                created_at REAL NOT NULL, PRIMARY KEY (object_type, object_id, partition_id)
+            )""")
+        cursor.execute("""CREATE INDEX IF NOT EXISTS idx_memory_scope_members_scope
+            ON memory_scope_members(security_domain, memory_space_id, partition_id, object_type)""")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS relation_scope_states (
+                partition_id TEXT NOT NULL, relation_hash TEXT NOT NULL,
+                confidence REAL DEFAULT 1.0, is_inactive INTEGER DEFAULT 0,
+                retention_strength REAL DEFAULT 1.0, access_count INTEGER DEFAULT 0,
+                last_reinforced_at REAL, PRIMARY KEY (partition_id, relation_hash)
+            )""")
+        cursor.execute("""CREATE INDEX IF NOT EXISTS idx_relation_scope_states_hash
+            ON relation_scope_states(relation_hash, partition_id)""")
+        cursor.execute("""INSERT OR IGNORE INTO memory_scope_members
+            (object_type, object_id, memory_space_id, partition_id, security_domain, created_at)
+            SELECT 'paragraph', hash, 'memory-space-public',
+            CASE WHEN source IS NULL OR source = '' THEN 'shared' ELSE 'conversation' END,
+            'normal', COALESCE(created_at, ?) FROM paragraphs""", (datetime.now().timestamp(),))
+        cursor.execute("""INSERT OR IGNORE INTO memory_scope_members
+            (object_type, object_id, memory_space_id, partition_id, security_domain, created_at)
+            SELECT 'relation', hash, 'memory-space-public', 'shared', 'normal',
+            COALESCE(created_at, ?) FROM relations""", (datetime.now().timestamp(),))
         # Episode MVP 表结构补齐
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS episodes (
@@ -1326,6 +1368,67 @@ class MetadataStore:
         if resolved is None:
             raise RuntimeError("MetadataStore 未连接数据库")
         return resolved
+
+    def register_scope_member(self, *, object_type: str, object_id: str,
+                              memory_space_id: str = "memory-space-public",
+                              partition_id: str = "shared", security_domain: str = "normal",
+                              source_session_id: Optional[str] = None) -> None:
+        """幂等登记对象的逻辑记忆作用域。"""
+        object_type = str(object_type or "").strip().lower()
+        object_id = str(object_id or "").strip()
+        memory_space_id = str(memory_space_id or "memory-space-public").strip()
+        partition_id = str(partition_id or "shared").strip()
+        security_domain = str(security_domain or "normal").strip().lower()
+        if not object_type or not object_id or security_domain not in {"normal", "kami"}:
+            raise ValueError("invalid memory scope member")
+        now = datetime.now().timestamp()
+        self._conn.execute("""INSERT OR IGNORE INTO memory_scope_members
+            (object_type, object_id, memory_space_id, partition_id, security_domain,
+             source_session_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (object_type, object_id, memory_space_id, partition_id, security_domain,
+             source_session_id, now))
+        if object_type == "relation":
+            self._conn.execute("""INSERT OR IGNORE INTO relation_scope_states
+                (partition_id, relation_hash, confidence, last_reinforced_at)
+                VALUES (?, ?, 1.0, ?)""", (partition_id, object_id, now))
+        self._conn.commit()
+
+    def resolve_allowed_object_ids(self, scope: Any, object_type: str) -> Optional[set[str]]:
+        """返回允许对象 ID；可信 Kami 全量访问返回 None。"""
+        if scope is None:
+            return None
+        if bool(getattr(scope, "force_all_memory_access", False)) and getattr(scope, "security_domain", "normal") == "kami":
+            return None
+        domain = str(getattr(scope, "security_domain", "normal") or "normal")
+        clauses = ["object_type = ?", "security_domain = ?"]
+        params: list[Any] = [object_type, domain]
+        spaces = tuple(getattr(scope, "allowed_memory_space_ids", ()) or ())
+        partitions = tuple(getattr(scope, "allowed_partition_ids", ()) or ())
+        if spaces:
+            clauses.append("memory_space_id IN (" + ",".join("?" for _ in spaces) + ")")
+            params.extend(spaces)
+        if partitions:
+            clauses.append("partition_id IN (" + ",".join("?" for _ in partitions) + ")")
+            params.extend(partitions)
+        rows = self._conn.execute("SELECT object_id FROM memory_scope_members WHERE " +
+                                  " AND ".join(clauses), params).fetchall()
+        return {str(row[0]) for row in rows}
+
+    def ensure_legacy_scope_backfill(self) -> int:
+        """幂等回填旧数据到公共 normal 空间。"""
+        before = self._conn.total_changes
+        now = datetime.now().timestamp()
+        self._conn.execute("""INSERT OR IGNORE INTO memory_scope_members
+            (object_type, object_id, memory_space_id, partition_id, security_domain, created_at)
+            SELECT 'paragraph', hash, 'memory-space-public',
+            CASE WHEN source IS NULL OR source = '' THEN 'shared' ELSE 'conversation' END,
+            'normal', COALESCE(created_at, ?) FROM paragraphs""", (now,))
+        self._conn.execute("""INSERT OR IGNORE INTO memory_scope_members
+            (object_type, object_id, memory_space_id, partition_id, security_domain, created_at)
+            SELECT 'relation', hash, 'memory-space-public', 'shared', 'normal',
+            COALESCE(created_at, ?) FROM relations""", (now,))
+        self._conn.commit()
+        return self._conn.total_changes - before
 
     def get_db_path(self) -> Path:
         """获取 SQLite 数据库文件路径。"""
