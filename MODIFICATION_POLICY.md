@@ -11,7 +11,7 @@
 
 ## 事实来源
 
-- 上游仓库：`https://github.com/A-Dawn/A_memorix.git`
+- 权威仓库：`https://github.com/YANGFENG0001/A_memorix.git`
 - 上游对接分支：`MaiBot_branch`
 - MaiBot 内同步前缀：`src/A_memorix`
 
