@@ -12,13 +12,13 @@ MaiBot 记忆迁移脚本（chat_history -> A_memorix）
 from __future__ import annotations
 
 import argparse
+import ast
 import asyncio
 import hashlib
 import importlib
 import json
 import logging
 import os
-import pickle
 import sqlite3
 import sys
 import time
@@ -101,9 +101,10 @@ def _disable_unavailable_gemini_provider() -> None:
     global model_config
     try:
         from google import genai  # type: ignore  # noqa: F401
+
         return
-    except Exception:
-        pass
+    except ImportError:
+        logger.info("未安装 google-genai，迁移时禁用 Gemini provider")
 
     from src.config.config import model_config as loaded_model_config
 
@@ -245,6 +246,24 @@ class PreviewResult:
     samples: List[Dict[str, Any]]
 
 
+@dataclass(frozen=True)
+class SourceSchema:
+    """源库 chat_history 字段映射，兼容 MaiBot 旧/新 schema。"""
+
+    version_label: str
+    chat_id_expr: str
+    start_time_expr: str
+    end_time_expr: str
+    participants_expr: str
+    theme_expr: str
+    keywords_expr: str
+    summary_expr: str
+    stream_table: str = ""
+    stream_id_column: str = ""
+    stream_group_column: str = ""
+    stream_user_column: str = ""
+
+
 @dataclass
 class MappedRow:
     row_id: int
@@ -266,10 +285,38 @@ def _safe_int(value: Any, default: int) -> int:
 
 
 def _safe_float(value: Any, default: float) -> float:
+    if isinstance(value, datetime):
+        return value.timestamp()
     try:
         return float(value)
+    except (TypeError, ValueError):
+        pass
+
+    text = str(value or "").strip()
+    if not text:
+        return default
+    normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        return datetime.fromisoformat(normalized).timestamp()
     except Exception:
         return default
+
+
+def _sqlite_timestamp_expr(column_expr: str) -> str:
+    return (
+        f"CASE WHEN typeof({column_expr}) IN ('integer', 'real') THEN CAST({column_expr} AS REAL) "
+        f"ELSE CAST(strftime('%s', {column_expr}) AS REAL) END"
+    )
+
+
+def _non_negative_int_arg(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("必须为整数") from None
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("必须 >= 0")
+    return parsed
 
 
 def _normalize_name(value: Any) -> str:
@@ -447,6 +494,7 @@ class SourceDB:
     def __init__(self, db_path: Path):
         self.db_path = db_path
         self.conn: Optional[sqlite3.Connection] = None
+        self.schema: Optional[SourceSchema] = None
 
     def connect(self) -> None:
         if not self.db_path.exists():
@@ -472,6 +520,7 @@ class SourceDB:
             except sqlite3.OperationalError:
                 # 部分 PRAGMA 在 mode=ro 下会失败，不影响只读扫描能力
                 continue
+        self.schema = self._detect_schema()
 
     def close(self) -> None:
         if self.conn is not None:
@@ -483,6 +532,99 @@ class SourceDB:
             raise MigrationError("源数据库尚未连接")
         return self.conn
 
+    def _require_schema(self) -> SourceSchema:
+        if self.schema is None:
+            self.schema = self._detect_schema()
+        return self.schema
+
+    def _table_columns(self, table_name: str) -> set[str]:
+        conn = self._require_conn()
+        try:
+            rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        except sqlite3.OperationalError:
+            return set()
+        return {str(row["name"]) for row in rows}
+
+    def _detect_stream_schema(self) -> Dict[str, str]:
+        chat_streams_columns = self._table_columns("chat_streams")
+        if {"stream_id", "group_id", "user_id"}.issubset(chat_streams_columns):
+            return {
+                "stream_table": "chat_streams",
+                "stream_id_column": "stream_id",
+                "stream_group_column": "group_id",
+                "stream_user_column": "user_id",
+            }
+
+        chat_sessions_columns = self._table_columns("chat_sessions")
+        if {"session_id", "group_id", "user_id"}.issubset(chat_sessions_columns):
+            return {
+                "stream_table": "chat_sessions",
+                "stream_id_column": "session_id",
+                "stream_group_column": "group_id",
+                "stream_user_column": "user_id",
+            }
+        return {}
+
+    def _detect_schema(self) -> SourceSchema:
+        columns = self._table_columns("chat_history")
+        if not columns:
+            raise MigrationError("源库缺少 chat_history 表")
+
+        stream_schema = self._detect_stream_schema()
+        if {"chat_id", "start_time", "end_time"}.issubset(columns):
+            logger.info("检测到旧版 chat_history schema: chat_id/start_time/end_time")
+            return SourceSchema(
+                version_label="legacy",
+                chat_id_expr="chat_id",
+                start_time_expr="start_time",
+                end_time_expr="end_time",
+                participants_expr="participants" if "participants" in columns else "''",
+                theme_expr="theme" if "theme" in columns else "''",
+                keywords_expr="keywords" if "keywords" in columns else "''",
+                summary_expr="summary" if "summary" in columns else "''",
+                **stream_schema,
+            )
+
+        if {"session_id", "start_timestamp", "end_timestamp"}.issubset(columns):
+            logger.info("检测到新版 chat_history schema: session_id/start_timestamp/end_timestamp")
+            return SourceSchema(
+                version_label="current",
+                chat_id_expr="session_id",
+                start_time_expr="start_timestamp",
+                end_time_expr="end_timestamp",
+                participants_expr="participants" if "participants" in columns else "''",
+                theme_expr="theme" if "theme" in columns else "''",
+                keywords_expr="keywords" if "keywords" in columns else "''",
+                summary_expr="summary" if "summary" in columns else "''",
+                **stream_schema,
+            )
+
+        raise MigrationError(
+            "无法识别 chat_history schema，需要旧版 chat_id/start_time/end_time "
+            "或新版 session_id/start_timestamp/end_timestamp 字段"
+        )
+
+    def _select_clause(self, *, include_content_fields: bool) -> str:
+        schema = self._require_schema()
+        fields = [
+            "id",
+            f"{schema.chat_id_expr} AS chat_id",
+            f"{schema.start_time_expr} AS start_time",
+            f"{schema.end_time_expr} AS end_time",
+        ]
+        if include_content_fields:
+            fields.extend(
+                [
+                    f"{schema.participants_expr} AS participants",
+                    f"{schema.theme_expr} AS theme",
+                    f"{schema.keywords_expr} AS keywords",
+                    f"{schema.summary_expr} AS summary",
+                ]
+            )
+        else:
+            fields.extend([f"{schema.theme_expr} AS theme", f"{schema.summary_expr} AS summary"])
+        return ", ".join(fields)
+
     def resolve_stream_ids(
         self,
         stream_ids: Sequence[str],
@@ -490,38 +632,41 @@ class SourceDB:
         user_ids: Sequence[str],
     ) -> List[str]:
         conn = self._require_conn()
+        schema = self._require_schema()
         resolved: set[str] = set(_normalize_name(x) for x in stream_ids if _normalize_name(x))
         has_group_or_user = any(_normalize_name(x) for x in group_ids) or any(_normalize_name(x) for x in user_ids)
         if not has_group_or_user:
             return sorted(resolved)
 
-        table_exists = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chat_streams' LIMIT 1"
-        ).fetchone()
-        if table_exists is None:
-            raise MigrationError("源库缺少 chat_streams 表，无法根据 --group-id/--user-id 映射 stream_id")
+        if not schema.stream_table:
+            logger.warning("源库缺少 chat_streams/chat_sessions 表，无法根据 group/user 映射 stream_id，结果将为空。")
+            return sorted(resolved)
 
         def _select_by_field(field: str, values: Sequence[str]) -> None:
             values_norm = [_normalize_name(v) for v in values if _normalize_name(v)]
             if not values_norm:
                 return
             placeholders = ",".join("?" for _ in values_norm)
-            sql = f"SELECT DISTINCT stream_id FROM chat_streams WHERE {field} IN ({placeholders})"
+            sql = (
+                f"SELECT DISTINCT {schema.stream_id_column} AS stream_id "
+                f"FROM {schema.stream_table} WHERE {field} IN ({placeholders})"
+            )
             cur = conn.execute(sql, tuple(values_norm))
             for row in cur.fetchall():
                 sid = _normalize_name(row["stream_id"])
                 if sid:
                     resolved.add(sid)
 
-        _select_by_field("group_id", group_ids)
-        _select_by_field("user_id", user_ids)
+        _select_by_field(schema.stream_group_column, group_ids)
+        _select_by_field(schema.stream_user_column, user_ids)
         return sorted(resolved)
 
-    @staticmethod
     def _build_where(
+        self,
         selection: SelectionFilter,
         start_after_id: Optional[int] = None,
     ) -> Tuple[str, List[Any]]:
+        schema = self._require_schema()
         conditions: List[str] = []
         params: List[Any] = []
 
@@ -537,19 +682,21 @@ class SourceDB:
 
         if selection.stream_ids:
             placeholders = ",".join("?" for _ in selection.stream_ids)
-            conditions.append(f"chat_id IN ({placeholders})")
+            conditions.append(f"{schema.chat_id_expr} IN ({placeholders})")
             params.extend(selection.stream_ids)
         elif selection.stream_filter_requested:
             conditions.append("1=0")
 
         if selection.time_from_ts is not None and selection.time_to_ts is not None:
-            conditions.append("(end_time >= ? AND start_time <= ?)")
+            conditions.append(
+                f"({_sqlite_timestamp_expr(schema.end_time_expr)} >= ? AND {_sqlite_timestamp_expr(schema.start_time_expr)} <= ?)"
+            )
             params.extend([selection.time_from_ts, selection.time_to_ts])
         elif selection.time_from_ts is not None:
-            conditions.append("(end_time >= ?)")
+            conditions.append(f"({_sqlite_timestamp_expr(schema.end_time_expr)} >= ?)")
             params.append(selection.time_from_ts)
         elif selection.time_to_ts is not None:
-            conditions.append("(start_time <= ?)")
+            conditions.append(f"({_sqlite_timestamp_expr(schema.start_time_expr)} <= ?)")
             params.append(selection.time_to_ts)
 
         where_sql = "WHERE " + " AND ".join(conditions) if conditions else ""
@@ -569,19 +716,16 @@ class SourceDB:
         total_sql = f"SELECT COUNT(*) AS c FROM chat_history {where_sql}"
         total = int(conn.execute(total_sql, tuple(params)).fetchone()["c"])
 
+        schema = self._require_schema()
         dist_sql = (
-            f"SELECT chat_id, COUNT(*) AS c FROM chat_history {where_sql} "
-            "GROUP BY chat_id ORDER BY c DESC LIMIT 30"
+            f"SELECT {schema.chat_id_expr} AS chat_id, COUNT(*) AS c FROM chat_history {where_sql} "
+            f"GROUP BY {schema.chat_id_expr} ORDER BY c DESC LIMIT 30"
         )
         distribution = [
-            (_normalize_name(row["chat_id"]), int(row["c"]))
-            for row in conn.execute(dist_sql, tuple(params)).fetchall()
+            (_normalize_name(row["chat_id"]), int(row["c"])) for row in conn.execute(dist_sql, tuple(params)).fetchall()
         ]
 
-        sample_sql = (
-            "SELECT id, chat_id, start_time, end_time, theme, summary "
-            f"FROM chat_history {where_sql} ORDER BY id ASC LIMIT ?"
-        )
+        sample_sql = f"SELECT {self._select_clause(include_content_fields=False)} FROM chat_history {where_sql} ORDER BY id ASC LIMIT ?"
         sample_params = list(params)
         sample_params.append(max(1, int(preview_limit)))
         samples = [dict(row) for row in conn.execute(sample_sql, tuple(sample_params)).fetchall()]
@@ -598,10 +742,7 @@ class SourceDB:
         cursor = int(start_after_id)
         while True:
             where_sql, params = self._build_where(selection, start_after_id=cursor)
-            sql = (
-                "SELECT id, chat_id, start_time, end_time, participants, theme, keywords, summary "
-                f"FROM chat_history {where_sql} ORDER BY id ASC LIMIT ?"
-            )
+            sql = f"SELECT {self._select_clause(include_content_fields=True)} FROM chat_history {where_sql} ORDER BY id ASC LIMIT ?"
             bind = list(params)
             bind.append(max(1, int(batch_size)))
             rows = conn.execute(sql, tuple(bind)).fetchall()
@@ -617,10 +758,7 @@ class SourceDB:
     ) -> List[sqlite3.Row]:
         conn = self._require_conn()
         where_sql, params = self._build_where(selection, start_after_id=None)
-        sql = (
-            "SELECT id, chat_id, start_time, end_time, participants, theme, keywords, summary "
-            f"FROM chat_history {where_sql} ORDER BY RANDOM() LIMIT ?"
-        )
+        sql = f"SELECT {self._select_clause(include_content_fields=True)} FROM chat_history {where_sql} ORDER BY RANDOM() LIMIT ?"
         bind = list(params)
         bind.append(max(1, int(sample_size)))
         return conn.execute(sql, tuple(bind)).fetchall()
@@ -663,6 +801,7 @@ class MigrationRunner:
             "migrated_rows": 0,
             "skipped_existing_rows": 0,
             "bad_rows": 0,
+            "coerced_list_fields": 0,
             "paragraph_vectors_added": 0,
             "entity_vectors_added": 0,
             "relations_written": 0,
@@ -677,6 +816,7 @@ class MigrationRunner:
             "verify_vector_missing": 0,
             "verify_relation_missing": 0,
             "verify_edge_missing": 0,
+            "verify_bad_rows": 0,
             "verify_passed": False,
         }
 
@@ -759,12 +899,12 @@ class MigrationRunner:
         self.plugin_config = merged
 
     def _read_existing_vector_dimension(self, fallback_dimension: int) -> int:
-        meta_path = self.target_data_dir / "vectors" / "vectors_metadata.pkl"
+        meta_path = self.target_data_dir / "vectors" / "vectors_metadata.json"
         if not meta_path.exists():
             return fallback_dimension
         try:
-            with open(meta_path, "rb") as f:
-                payload = pickle.load(f)
+            with open(meta_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
             value = _safe_int(payload.get("dimension"), fallback_dimension)
             return max(1, value)
         except Exception:
@@ -781,6 +921,7 @@ class MigrationRunner:
         emb_batch_size = max(1, _safe_int(emb_cfg.get("batch_size"), 32))
         emb_default_dim = max(1, _safe_int(emb_cfg.get("dimension"), 1024))
         emb_model_name = str(emb_cfg.get("model_name", "auto"))
+        emb_dimension_request_mode = str(emb_cfg.get("dimension_request_mode", "explicit"))
         emb_retry = emb_cfg.get("retry", {}) if isinstance(emb_cfg.get("retry", {}), dict) else {}
 
         if require_embedding:
@@ -802,12 +943,13 @@ class MigrationRunner:
                 max_concurrent=self.embed_workers,
                 default_dimension=emb_default_dim,
                 model_name=emb_model_name,
+                dimension_request_mode=emb_dimension_request_mode,
                 retry_config=emb_retry,
             )
 
             try:
                 detected_dim = self._read_existing_vector_dimension(emb_default_dim)
-                has_existing_vectors = (self.target_data_dir / "vectors" / "vectors_metadata.pkl").exists()
+                has_existing_vectors = (self.target_data_dir / "vectors" / "vectors_metadata.json").exists()
                 if not has_existing_vectors:
                     detected_dim = await self.embedding_manager._detect_dimension()
             except Exception as e:
@@ -1054,22 +1196,84 @@ class MigrationRunner:
         answer = input("确认按以上筛选执行迁移？输入 y 继续 [y/N]: ").strip().lower()
         return answer in {"y", "yes"}
 
+    def _warn_list_field_coerced(self, row_id: int, field_name: str, detail: str) -> None:
+        self.stats["coerced_list_fields"] += 1
+        if self.stats["coerced_list_fields"] <= 20:
+            logger.warning(f"chat_history.id={row_id} 的 {field_name} 已降级解析: {detail}")
+
+    def _normalize_list_field_items(self, data: Any) -> List[str]:
+        if isinstance(data, dict):
+            candidates = []
+            for key in ("items", "values", "names", "keywords", "participants"):
+                value = data.get(key)
+                if isinstance(value, list):
+                    candidates = value
+                    break
+            if not candidates:
+                candidates = list(data.values())
+            data = candidates
+        elif isinstance(data, (set, tuple)):
+            data = list(data)
+        elif not isinstance(data, list):
+            data = [data]
+
+        items: List[str] = []
+        for item in data:
+            if isinstance(item, dict):
+                text = str(
+                    item.get("name")
+                    or item.get("label")
+                    or item.get("value")
+                    or item.get("text")
+                    or item.get("keyword")
+                    or ""
+                ).strip()
+            else:
+                text = str(item or "").strip()
+            if text:
+                items.append(text)
+        return _dedup_keep_order(items)
+
     def _parse_json_list_field(self, raw: Any, field_name: str, row_id: int) -> List[str]:
         if raw is None:
             return []
         if isinstance(raw, list):
-            data = raw
-        elif isinstance(raw, str):
+            return self._normalize_list_field_items(raw)
+        if isinstance(raw, (tuple, set, dict)):
+            self._warn_list_field_coerced(row_id, field_name, f"字段类型为 {type(raw).__name__}")
+            return self._normalize_list_field_items(raw)
+
+        if isinstance(raw, str):
+            text = raw.strip()
+            if not text:
+                return []
             try:
-                parsed = json.loads(raw)
-            except Exception as e:
-                raise ValueError(f"{field_name} JSON 解析失败: {e}") from e
-            if not isinstance(parsed, list):
-                raise ValueError(f"{field_name} JSON 必须是 list，当前为 {type(parsed).__name__}")
-            data = parsed
-        else:
-            raise ValueError(f"{field_name} 字段类型不支持: {type(raw).__name__}")
-        return _dedup_keep_order(str(x) for x in data if _normalize_name(x))
+                parsed = json.loads(text)
+                if not isinstance(parsed, list):
+                    self._warn_list_field_coerced(row_id, field_name, f"JSON 类型为 {type(parsed).__name__}")
+                return self._normalize_list_field_items(parsed)
+            except json.JSONDecodeError:
+                logger.debug(f"列表字段不是 JSON，继续兼容解析: row={row_id}, field={field_name}")
+
+            try:
+                parsed_literal = ast.literal_eval(text)
+                if isinstance(parsed_literal, (list, tuple, set, dict)):
+                    self._warn_list_field_coerced(row_id, field_name, "使用 Python literal 兼容解析")
+                    return self._normalize_list_field_items(parsed_literal)
+            except (SyntaxError, ValueError):
+                logger.debug(f"列表字段不是 Python literal，继续分隔符解析: row={row_id}, field={field_name}")
+
+            separators = [",", "，", "、", ";", "；", "\n"]
+            for sep in separators:
+                if sep in text:
+                    self._warn_list_field_coerced(row_id, field_name, f"按分隔符 {sep!r} 拆分")
+                    return _dedup_keep_order(part.strip() for part in text.replace("\r", "\n").split(sep))
+
+            self._warn_list_field_coerced(row_id, field_name, "按单个文本项处理")
+            return [text] if text else []
+
+        self._warn_list_field_coerced(row_id, field_name, f"字段类型为 {type(raw).__name__}")
+        return self._normalize_list_field_items(raw)
 
     def _map_row(self, row: sqlite3.Row) -> MappedRow:
         row_id = int(row["id"])
@@ -1084,12 +1288,7 @@ class MigrationRunner:
         participants_text = "、".join(participants) if participants else ""
         keywords_text = "、".join(keywords_top) if keywords_top else ""
 
-        content = (
-            f"话题：{theme}\n"
-            f"概括：{summary}\n"
-            f"参与者：{participants_text}\n"
-            f"关键词：{keywords_text}"
-        ).strip()
+        content = (f"话题：{theme}\n概括：{summary}\n参与者：{participants_text}\n关键词：{keywords_text}").strip()
 
         paragraph_hash = compute_hash(normalize_text(content))
         source = f"maibot.chat_history:{chat_id}"
@@ -1171,10 +1370,9 @@ class MigrationRunner:
                 except Exception as e:
                     self.stats["bad_rows"] += 1
                     self._append_bad_row(row, str(e))
-                    if self.stats["bad_rows"] > int(self.args.max_errors):
-                        raise MigrationError(
-                            f"坏行数量超过上限 max_errors={self.args.max_errors}，已中止。"
-                        )
+                    max_errors = int(self.args.max_errors or 0)
+                    if max_errors > 0 and self.stats["bad_rows"] > max_errors:
+                        raise MigrationError(f"坏行数量超过上限 max_errors={self.args.max_errors}，已中止。") from e
                     continue
 
                 self.stats["valid_rows"] += 1
@@ -1211,7 +1409,7 @@ class MigrationRunner:
             return
 
         now_ts = time.time()
-        empty_meta_blob = pickle.dumps({})
+        empty_meta_blob = json.dumps({}, ensure_ascii=False, sort_keys=True)
 
         conn = self.metadata_store.get_connection()
 
@@ -1408,6 +1606,9 @@ class MigrationRunner:
                     )
 
             if relation_records:
+                evidence_counts: Dict[str, int] = {}
+                for _, relation_hash in paragraph_relation_links:
+                    evidence_counts[relation_hash] = evidence_counts.get(relation_hash, 0) + 1
                 relation_rows = [
                     (
                         relation_hash,
@@ -1419,14 +1620,22 @@ class MigrationRunner:
                         now_ts,
                         rel[4],
                         rel[5],
+                        1.0,
+                        now_ts,
+                        now_ts,
+                        evidence_counts.get(relation_hash, 0),
+                        0,
+                        now_ts if evidence_counts.get(relation_hash, 0) > 0 else None,
                     )
                     for relation_hash, rel in relation_records.items()
                 ]
                 cursor.executemany(
                     """
                     INSERT OR IGNORE INTO relations
-                    (hash, subject, predicate, object, vector_index, confidence, created_at, source_paragraph, metadata)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (hash, subject, predicate, object, vector_index, confidence, created_at, source_paragraph, metadata,
+                     retention_strength, retention_anchor_at, next_lifecycle_at, reinforcement_count,
+                     lifecycle_revision, last_reinforced)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     relation_rows,
                 )
@@ -1520,9 +1729,7 @@ class MigrationRunner:
             if emb_arr.ndim == 1:
                 emb_arr = emb_arr.reshape(1, -1)
             if emb_arr.shape[0] != len(chunk_ids):
-                logger.warning(
-                    f"embedding 返回数量异常: expected={len(chunk_ids)}, got={emb_arr.shape[0]}，跳过该批次"
-                )
+                logger.warning(f"embedding 返回数量异常: expected={len(chunk_ids)}, got={emb_arr.shape[0]}，跳过该批次")
                 continue
 
             valid_vectors = []
@@ -1566,11 +1773,13 @@ class MigrationRunner:
         vec_missing = 0
         rel_missing = 0
         edge_missing = 0
+        verify_bad_rows = 0
 
         for row in sample_rows:
             try:
                 mapped = self._map_row(row)
             except Exception:
+                verify_bad_rows += 1
                 continue
 
             paragraph = self.metadata_store.get_paragraph(mapped.paragraph_hash)
@@ -1591,14 +1800,15 @@ class MigrationRunner:
         self.stats["verify_vector_missing"] = vec_missing
         self.stats["verify_relation_missing"] = rel_missing
         self.stats["verify_edge_missing"] = edge_missing
+        self.stats["verify_bad_rows"] = verify_bad_rows
 
-        verify_passed = all(x == 0 for x in [para_missing, vec_missing, rel_missing, edge_missing])
+        verify_passed = all(x == 0 for x in [para_missing, vec_missing, rel_missing, edge_missing, verify_bad_rows])
         if strict and not verify_passed:
             self.failed = True
             self.fail_reason = (
                 "严格校验失败: "
                 f"paragraph_missing={para_missing}, vector_missing={vec_missing}, "
-                f"relation_missing={rel_missing}, edge_missing={edge_missing}"
+                f"relation_missing={rel_missing}, edge_missing={edge_missing}, verify_bad_rows={verify_bad_rows}"
             )
 
         self.stats["verify_passed"] = verify_passed
@@ -1642,6 +1852,7 @@ class MigrationRunner:
         print(f"migrated_rows: {self.stats['migrated_rows']}")
         print(f"skipped_existing_rows: {self.stats['skipped_existing_rows']}")
         print(f"bad_rows: {self.stats['bad_rows']}")
+        print(f"coerced_list_fields: {self.stats['coerced_list_fields']}")
         print(f"paragraph_vectors_added: {self.stats['paragraph_vectors_added']}")
         print(f"entity_vectors_added: {self.stats['entity_vectors_added']}")
         print(f"relations_written: {self.stats['relations_written']}")
@@ -1661,6 +1872,7 @@ class MigrationRunner:
             f"vector_missing={self.stats['verify_vector_missing']}, "
             f"relation_missing={self.stats['verify_relation_missing']}, "
             f"edge_missing={self.stats['verify_edge_missing']}, "
+            f"bad_rows={self.stats['verify_bad_rows']}, "
             f"passed={self.stats['verify_passed']}"
         )
         print(f"report_file: {self.report_file}")
@@ -1673,7 +1885,7 @@ class MigrationRunner:
             if self.metadata_store is not None:
                 self.metadata_store.close()
         except Exception:
-            pass
+            logger.exception("关闭 A_Memorix 迁移目标存储失败")
         self.source_db.close()
 
 
@@ -1686,7 +1898,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--target-data-dir",
         default=str(DEFAULT_TARGET_DATA_DIR),
-        help="A_memorix 数据目录（默认 data/plugins/a-dawn.a-memorix）",
+        help="A_memorix 数据目录（默认 data/a-memorix）",
     )
 
     resume_group = parser.add_mutually_exclusive_group()
@@ -1708,7 +1920,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="实体 embedding 批次大小（默认 512）",
     )
     parser.add_argument("--embed-workers", type=int, default=None, help="embedding 并发数（默认读取配置）")
-    parser.add_argument("--max-errors", type=int, default=500, help="坏行上限（默认 500）")
+    parser.add_argument("--max-errors", type=_non_negative_int_arg, default=0, help="坏行上限，0 表示不中止（默认 0）")
     parser.add_argument("--log-every", type=int, default=5000, help="日志输出步长（默认 5000）")
 
     parser.add_argument("--dry-run", action="store_true", help="仅预览不写入")

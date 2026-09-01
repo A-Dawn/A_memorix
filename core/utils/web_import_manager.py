@@ -10,7 +10,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 import asyncio
 import hashlib
 import json
@@ -21,13 +21,17 @@ import time
 import traceback
 import uuid
 
+import numpy as np
+
 from src.common.logger import get_logger
 from src.services import llm_service as llm_api
 
 from ...paths import default_data_dir, repo_root, resolve_repo_path, scripts_root
 from ..storage import (
+    GraphStore,
     KnowledgeType,
     MetadataStore,
+    VectorStore,
     parse_import_strategy,
     resolve_stored_knowledge_type,
     select_import_strategy,
@@ -45,6 +49,14 @@ from ..utils.import_payloads import (
     normalize_paragraph_import_item,
     normalize_relation_import_item,
 )
+from ..utils.model_routing import (
+    ResolvedLLMModel,
+    generate_with_resolved_model,
+    get_text_generation_model_tasks,
+    pick_text_generation_task,
+    resolve_text_generation_model_selector,
+)
+from ..utils.relation_write_service import RelationWriteService
 from ..utils.runtime_self_check import ensure_runtime_self_check
 from ..utils.time_parser import normalize_time_meta
 
@@ -93,6 +105,13 @@ def _now() -> float:
 def _coerce_int(value: Any, default: int) -> int:
     try:
         return int(value)
+    except Exception:
+        return default
+
+
+def _coerce_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
     except Exception:
         return default
 
@@ -188,9 +207,24 @@ def _parse_optional_positive_int(value: Any, field_name: str) -> Optional[int]:
     try:
         parsed = int(text)
     except Exception:
-        raise ValueError(f"{field_name} 必须为整数")
+        raise ValueError(f"{field_name} 必须为整数") from None
     if parsed <= 0:
         raise ValueError(f"{field_name} 必须 > 0")
+    return parsed
+
+
+def _parse_optional_non_negative_int(value: Any, field_name: str) -> Optional[int]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if text == "":
+        return None
+    try:
+        parsed = int(text)
+    except Exception:
+        raise ValueError(f"{field_name} 必须为整数") from None
+    if parsed < 0:
+        raise ValueError(f"{field_name} 必须 >= 0")
     return parsed
 
 
@@ -263,6 +297,7 @@ class ImportFileRecord:
     source_path: Optional[str] = None
     inline_content: Optional[str] = None
     content_hash: str = ""
+    imported_sources: List[str] = field(default_factory=list)
     retry_chunk_indexes: List[int] = field(default_factory=list)
     retry_mode: str = ""
     warning_count: int = 0
@@ -287,6 +322,7 @@ class ImportFileRecord:
             "updated_at": self.updated_at,
             "source_path": self.source_path or "",
             "content_hash": self.content_hash or "",
+            "imported_sources": list(self.imported_sources or []),
             "retry_chunk_indexes": list(self.retry_chunk_indexes or []),
             "retry_mode": self.retry_mode or "",
             "warning_count": int(self.warning_count),
@@ -320,6 +356,8 @@ class ImportTaskRecord:
     rollback_info: Dict[str, Any] = field(default_factory=dict)
     retry_parent_task_id: str = ""
     retry_summary: Dict[str, Any] = field(default_factory=dict)
+    cancel_requested_at: Optional[float] = None
+    cancel_origin: str = ""
 
     def to_summary(self) -> Dict[str, Any]:
         return {
@@ -344,6 +382,8 @@ class ImportTaskRecord:
             "rollback_info": dict(self.rollback_info),
             "retry_parent_task_id": self.retry_parent_task_id or "",
             "retry_summary": dict(self.retry_summary),
+            "cancel_requested_at": self.cancel_requested_at,
+            "cancel_origin": self.cancel_origin,
         }
 
     def to_detail(self, include_chunks: bool = False) -> Dict[str, Any]:
@@ -367,6 +407,11 @@ class ImportTaskManager:
         self._worker_task: Optional[asyncio.Task] = None
         self._stopping = False
 
+        self._import_root = self._resolve_import_root()
+        self._import_root.mkdir(parents=True, exist_ok=True)
+        self._migrate_legacy_import_state()
+        for import_path in self._default_path_aliases().values():
+            Path(import_path).mkdir(parents=True, exist_ok=True)
         self._temp_root = self._resolve_temp_root()
         self._temp_root.mkdir(parents=True, exist_ok=True)
         self._reports_root = self._resolve_reports_root()
@@ -390,20 +435,36 @@ class ImportTaskManager:
             logger.warning(f"写入变更回调执行失败: {e}")
 
     def _resolve_temp_root(self) -> Path:
-        data_dir = resolve_repo_path(self.plugin.get_config("storage.data_dir", "./data"), fallback=default_data_dir())
-        return data_dir / "web_import_tmp"
+        return self._resolve_import_root() / "tasks"
 
     def _resolve_reports_root(self) -> Path:
-        return self._resolve_data_dir() / "web_import_reports"
+        return self._resolve_import_root() / "reports"
 
     def _resolve_manifest_path(self) -> Path:
-        return self._resolve_data_dir() / "import_manifest.json"
+        return self._resolve_import_root() / "manifest.json"
 
-    def _resolve_staging_root(self) -> Path:
-        return self._resolve_data_dir() / "import_staging"
+    def _resolve_import_root(self) -> Path:
+        return self._resolve_data_dir() / "imports"
 
-    def _resolve_backup_root(self) -> Path:
-        return self._resolve_data_dir() / "import_backup"
+    def _resolve_upload_staging_root(self) -> Path:
+        return self._resolve_import_root() / "staging"
+
+    def _migrate_legacy_import_state(self) -> None:
+        """迁移仍有长期价值的旧导入状态，临时任务目录不参与迁移。"""
+        data_dir = self._resolve_data_dir()
+        legacy_items = (
+            (data_dir / "import_manifest.json", self._resolve_manifest_path()),
+            (data_dir / "web_import_reports", self._resolve_reports_root()),
+        )
+        for legacy_path, target_path in legacy_items:
+            if not legacy_path.exists() or target_path.exists():
+                continue
+            try:
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(legacy_path, target_path)
+                logger.info(f"已迁移旧导入状态: {legacy_path} -> {target_path}")
+            except OSError as exc:
+                logger.warning(f"旧导入状态迁移失败，保留原文件继续启动: {legacy_path}, error={exc}")
 
     def _resolve_repo_root(self) -> Path:
         return repo_root()
@@ -415,14 +476,106 @@ class ImportTaskManager:
         return scripts_root() / "migrate_maibot_memory.py"
 
     def _default_maibot_source_db(self) -> Path:
-        # A_memorix/core/utils -> workspace root
-        return self._resolve_repo_root() / "MaiBot" / "data" / "MaiBot.db"
+        return self._resolve_repo_root() / "data" / "MaiBot.db"
+
+    def _resolve_maibot_source_db(self, raw_path: str) -> Path:
+        default_source = self._default_maibot_source_db().resolve()
+        text = str(raw_path or "").strip()
+        if not text:
+            return default_source
+
+        candidate = Path(text).expanduser()
+        if candidate.is_absolute():
+            resolved = candidate.resolve()
+        else:
+            repo_candidate = resolve_repo_path(candidate)
+            if repo_candidate == default_source:
+                return default_source
+            import_root = Path(self._default_path_aliases()["maibot"]).resolve()
+            try:
+                repo_candidate.relative_to(import_root)
+            except ValueError:
+                resolved = self.resolve_path_alias("maibot", text)
+            else:
+                resolved = repo_candidate
+
+        if resolved == default_source:
+            return default_source
+        import_root = Path(self._default_path_aliases()["maibot"]).resolve()
+        try:
+            resolved.relative_to(import_root)
+        except ValueError:
+            raise ValueError(f"自定义 MaiBot 数据库必须位于导入目录: {import_root}") from None
+        return resolved
 
     def _cfg(self, key: str, default: Any) -> Any:
         return self.plugin.get_config(key, default)
 
+    def _vector_pool_mode(self) -> str:
+        mode = str(self._cfg("retrieval.vector_pools.mode", "dual") or "dual").strip().lower()
+        return mode if mode in {"single", "dual"} else "single"
+
+    def _dual_vector_pools_enabled(self) -> bool:
+        checker = getattr(self.plugin, "_dual_vector_pools_enabled", None)
+        if callable(checker):
+            return bool(checker())
+        return self._vector_pool_mode() == "dual"
+
+    def _paragraph_vector_store(self) -> Any:
+        if self._dual_vector_pools_enabled():
+            return getattr(self.plugin, "paragraph_vector_store", None) or getattr(self.plugin, "vector_store", None)
+        return getattr(self.plugin, "vector_store", None)
+
+    def _graph_vector_store(self) -> Any:
+        if self._dual_vector_pools_enabled():
+            return getattr(self.plugin, "graph_vector_store", None) or getattr(self.plugin, "vector_store", None)
+        return getattr(self.plugin, "vector_store", None)
+
+    def _graph_vector_id(self, target_type: str, hash_value: str) -> str:
+        token = str(hash_value or "").strip()
+        if not token or not self._dual_vector_pools_enabled():
+            return token
+        return f"{target_type}:{token}"
+
+    def _embedding_write_batch_size(self) -> int:
+        batch_size = max(1, int(getattr(self.plugin.embedding_manager, "batch_size", 32)))
+        max_concurrent = max(1, int(getattr(self.plugin.embedding_manager, "max_concurrent", 1)))
+        return min(512, batch_size * max_concurrent)
+
+    def _vector_stores_for_persistence(self) -> List[Any]:
+        stores: List[Any] = []
+        if self._dual_vector_pools_enabled():
+            stores.extend(
+                [
+                    getattr(self.plugin, "paragraph_vector_store", None),
+                    getattr(self.plugin, "graph_vector_store", None),
+                ]
+            )
+        else:
+            stores.append(getattr(self.plugin, "vector_store", None))
+
+        seen: Set[int] = set()
+        unique_stores: List[Any] = []
+        for store in stores:
+            if store is None:
+                continue
+            store_id = id(store)
+            if store_id in seen:
+                continue
+            seen.add(store_id)
+            unique_stores.append(store)
+        return unique_stores
+
+    def _save_runtime_stores_locked(self) -> None:
+        for store in self._vector_stores_for_persistence():
+            store.save()
+        self.plugin.graph_store.save()
+
     def _cfg_int(self, key: str, default: int) -> int:
         return _coerce_int(self._cfg(key, default), default)
+
+    def _cfg_float(self, key: str, default: float) -> float:
+        return _coerce_float(self._cfg(key, default), default)
 
     def _allow_metadata_only_write(self) -> bool:
         return bool(self._cfg("embedding.fallback.allow_metadata_only_write", True))
@@ -451,6 +604,51 @@ class ImportTaskManager:
         except Exception as exc:
             logger.warning(f"回填入队失败（metadata_store）: {exc}")
 
+    async def _enqueue_paragraph_backfill_locked(self, paragraph_hash: str, *, error: str = "") -> None:
+        async with self._storage_lock:
+            self._enqueue_paragraph_backfill(paragraph_hash, error=error)
+
+    async def _add_paragraph_metadata(
+        self,
+        *,
+        file_record: ImportFileRecord,
+        content: str,
+        source: str,
+        knowledge_type: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        time_meta: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        async with self._storage_lock:
+            para_hash = self.plugin.metadata_store.add_paragraph(
+                content=content,
+                source=source,
+                metadata=metadata,
+                knowledge_type=knowledge_type,
+                time_meta=time_meta,
+            )
+            self._record_file_source(file_record, source)
+            return para_hash
+
+    async def _set_relation_vector_state_locked(
+        self,
+        relation_hash: str,
+        state: str,
+        *,
+        error: Optional[str] = None,
+        bump_retry: bool = False,
+    ) -> None:
+        async with self._storage_lock:
+            try:
+                self.plugin.metadata_store.set_relation_vector_state(
+                    relation_hash,
+                    state,
+                    error=error,
+                    bump_retry=bump_retry,
+                )
+            except Exception:
+                if state != "none":
+                    raise
+
     async def _write_paragraph_vector_or_enqueue(
         self,
         *,
@@ -458,14 +656,34 @@ class ImportTaskManager:
         content: str,
         context: str,
     ) -> Dict[str, Any]:
-        writer = getattr(self.plugin, "write_paragraph_vector_or_enqueue", None)
-        if callable(writer):
-            return await writer(paragraph_hash=paragraph_hash, content=content, context=context)
+        token = str(paragraph_hash or "").strip()
+        text = str(content or "").strip()
+        if not token or not text:
+            return {
+                "success": False,
+                "vector_written": False,
+                "queued": False,
+                "warning": "",
+                "detail": "invalid_paragraph_input",
+            }
+
+        target_store = self._paragraph_vector_store()
+        if target_store is None or self.plugin.embedding_manager is None:
+            if not self._allow_metadata_only_write():
+                raise RuntimeError("向量写入依赖未初始化")
+            await self._enqueue_paragraph_backfill_locked(token, error="vector_runtime_components_missing")
+            return {
+                "success": True,
+                "vector_written": False,
+                "queued": True,
+                "warning": "vector_degraded_write",
+                "detail": "vector_runtime_components_missing",
+            }
 
         if self._is_embedding_degraded():
             if not self._allow_metadata_only_write():
                 raise RuntimeError("embedding 处于降级态且 metadata-only 写入被禁用")
-            self._enqueue_paragraph_backfill(paragraph_hash, error="embedding_degraded")
+            await self._enqueue_paragraph_backfill_locked(token, error="embedding_degraded")
             return {
                 "success": True,
                 "vector_written": False,
@@ -474,9 +692,36 @@ class ImportTaskManager:
                 "detail": "embedding_degraded",
             }
 
+        if token in target_store:
+            return {
+                "success": True,
+                "vector_written": True,
+                "queued": False,
+                "warning": "",
+                "detail": "vector_already_exists",
+            }
+
         try:
-            emb = await self.plugin.embedding_manager.encode(content)
-            self.plugin.vector_store.add(emb.reshape(1, -1), [paragraph_hash])
+            emb = await self.plugin.embedding_manager.encode(text)
+            if getattr(emb, "ndim", 1) == 1:
+                emb = emb.reshape(1, -1)
+            if token in target_store:
+                return {
+                    "success": True,
+                    "vector_written": True,
+                    "queued": False,
+                    "warning": "",
+                    "detail": "vector_already_exists_after_encode",
+                }
+            added_count = target_store.add(emb, [token])
+            if added_count == 0:
+                return {
+                    "success": True,
+                    "vector_written": True,
+                    "queued": False,
+                    "warning": "",
+                    "detail": "vector_already_exists",
+                }
             return {
                 "success": True,
                 "vector_written": True,
@@ -487,13 +732,13 @@ class ImportTaskManager:
         except Exception as exc:
             if not self._allow_metadata_only_write():
                 raise
-            self._enqueue_paragraph_backfill(paragraph_hash, error=str(exc))
+            await self._enqueue_paragraph_backfill_locked(token, error=str(exc))
             return {
                 "success": True,
                 "vector_written": False,
                 "queued": True,
                 "warning": "vector_degraded_write",
-                "detail": str(exc),
+                "detail": f"{str(context or 'paragraph')} vector write failed: {exc}",
             }
 
     def _is_enabled(self) -> bool:
@@ -518,13 +763,44 @@ class ImportTaskManager:
     def _default_chunk_concurrency(self) -> int:
         return max(1, self._cfg_int("web.import.default_chunk_concurrency", 4))
 
+    def _default_narrative_window_size(self) -> int:
+        return max(200, self._cfg_int("web.import.default_narrative_window_size", 1600))
+
+    def _default_narrative_overlap(self) -> int:
+        window_size = self._default_narrative_window_size()
+        return _clamp(self._cfg_int("web.import.default_narrative_overlap", 400), 0, max(0, window_size - 1))
+
+    def _default_factual_target_size(self) -> int:
+        return max(200, self._cfg_int("web.import.default_factual_target_size", 1200))
+
+    def _max_import_chunk_chars(self) -> int:
+        return max(200, self._cfg_int("web.import.max_chunk_chars", 3200))
+
     def _max_file_concurrency(self) -> int:
         return max(1, self._cfg_int("web.import.max_file_concurrency", 6))
 
     def _max_chunk_concurrency(self) -> int:
         return max(1, self._cfg_int("web.import.max_chunk_concurrency", 12))
 
+    def _timeout_config(self) -> Dict[str, float]:
+        """读取 WebImport 可配置超时；LLM 超时允许设为 0 表示不额外限制。"""
+        llm_timeout = max(0.0, self._cfg_float("web.import.timeout.llm_call_seconds", 240.0))
+        return {
+            "llm_call_seconds": llm_timeout,
+            "process_poll_seconds": max(0.1, self._cfg_float("web.import.timeout.process_poll_seconds", 1.0)),
+            "process_terminate_seconds": max(
+                0.1,
+                self._cfg_float("web.import.timeout.process_terminate_seconds", 5.0),
+            ),
+            "process_kill_seconds": max(0.1, self._cfg_float("web.import.timeout.process_kill_seconds", 3.0)),
+            "convert_preflight_seconds": max(
+                0.1,
+                self._cfg_float("web.import.timeout.convert_preflight_seconds", 20.0),
+            ),
+        }
+
     def _llm_retry_config(self) -> Dict[str, float]:
+        timeout_cfg = self._timeout_config()
         retries = max(0, self._cfg_int("web.import.llm_retry.max_attempts", 4))
         min_wait = max(0.1, float(self._cfg("web.import.llm_retry.min_wait_seconds", 3) or 3))
         max_wait = max(min_wait, float(self._cfg("web.import.llm_retry.max_wait_seconds", 40) or 40))
@@ -534,44 +810,20 @@ class ImportTaskManager:
             "min_wait": min_wait,
             "max_wait": max_wait,
             "multiplier": mult,
+            "llm_call_seconds": timeout_cfg["llm_call_seconds"],
         }
 
     def _default_path_aliases(self) -> Dict[str, str]:
-        plugin_dir = Path(__file__).resolve().parents[2]
-        repo_root = self._resolve_repo_root()
+        import_root = self._resolve_import_root()
         return {
-            "raw": str((plugin_dir / "data" / "raw").resolve()),
-            "lpmm": str((repo_root / "data" / "lpmm_storage").resolve()),
-            "plugin_data": str((plugin_dir / "data").resolve()),
+            "raw": str((import_root / "source" / "raw").resolve()),
+            "lpmm": str((import_root / "source" / "lpmm").resolve()),
+            "maibot": str((import_root / "source" / "maibot").resolve()),
+            "converted": str((import_root / "converted").resolve()),
         }
 
     def get_path_aliases(self) -> Dict[str, str]:
-        configured = self._cfg("web.import.path_aliases", self._default_path_aliases())
-        if not isinstance(configured, dict):
-            configured = self._default_path_aliases()
-
-        repo_root = self._resolve_repo_root()
-        result: Dict[str, str] = {}
-        for alias, raw_path in configured.items():
-            key = str(alias or "").strip()
-            if not key:
-                continue
-            text = str(raw_path or "").strip()
-            if not text:
-                continue
-            if text.startswith("\\\\"):
-                continue
-            p = Path(text)
-            if not p.is_absolute():
-                p = (repo_root / p).resolve()
-            else:
-                p = p.resolve()
-            result[key] = str(p)
-
-        defaults = self._default_path_aliases()
-        for key, path in defaults.items():
-            result.setdefault(key, path)
-        return result
+        return self._default_path_aliases()
 
     def resolve_path_alias(
         self,
@@ -596,7 +848,7 @@ class ImportTaskManager:
         try:
             candidate.relative_to(root)
         except ValueError:
-            raise ValueError("路径越界：relative_path 超出白名单目录")
+            raise ValueError("路径越界：relative_path 超出白名单目录") from None
         if must_exist and not candidate.exists():
             raise ValueError(f"路径不存在: {candidate}")
         return candidate
@@ -660,6 +912,9 @@ class ImportTaskManager:
         item_kind = str(item.get("source_kind") or "").strip().lower()
         item_name = str(item.get("name") or "").strip()
         item_path_norm = self._normalize_manifest_path(item.get("source_path") or "")
+        item_sources = self._dedupe_sources(item.get("sources") if isinstance(item.get("sources"), list) else [])
+        if any(source_text.lower() == item_source.lower() for item_source in item_sources):
+            return True
 
         if source_kind in {"raw_scan", "lpmm_openie"}:
             source_path_norm = self._normalize_manifest_path(source_value)
@@ -732,9 +987,7 @@ class ImportTaskManager:
             if malformed_keys:
                 preview = ", ".join(malformed_keys[:5])
                 extra = "" if len(malformed_keys) <= 5 else f" ... (+{len(malformed_keys) - 5})"
-                result["warnings"].append(
-                    f"manifest 条目结构异常，已跳过 {len(malformed_keys)} 项: {preview}{extra}"
-                )
+                result["warnings"].append(f"manifest 条目结构异常，已跳过 {len(malformed_keys)} 项: {preview}{extra}")
 
         return result
 
@@ -744,6 +997,67 @@ class ImportTaskManager:
         if file_record.source_path:
             return f"path:{Path(file_record.source_path).as_posix().lower()}"
         return f"hash:{content_hash}"
+
+    def _dedupe_sources(self, sources: List[Any]) -> List[str]:
+        normalized: List[str] = []
+        seen = set()
+        for raw in sources or []:
+            source = str(raw or "").strip()
+            if not source:
+                continue
+            key = source.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(source)
+        return normalized
+
+    def _default_sources_for_file(self, file_record: ImportFileRecord) -> List[str]:
+        imported_sources = getattr(file_record, "imported_sources", None)
+        if imported_sources:
+            return self._dedupe_sources(imported_sources)
+        if file_record.source_path:
+            return [f"{file_record.source_kind}:{file_record.source_path}"]
+        return [f"web_import:{file_record.name}"]
+
+    def _manifest_item_sources(self, file_record: ImportFileRecord, item: Dict[str, Any]) -> List[str]:
+        imported_sources = item.get("sources")
+        if isinstance(imported_sources, list):
+            sources = self._dedupe_sources(imported_sources)
+            if sources:
+                return sources
+
+        source_kind = str(item.get("source_kind") or file_record.source_kind or "").strip()
+        source_path = str(item.get("source_path") or file_record.source_path or "").strip()
+        name = str(item.get("name") or file_record.name or "").strip()
+        sources: List[str] = []
+        if source_path:
+            sources.append(f"{source_kind}:{source_path}")
+        if source_kind in {"upload", "paste"} and name:
+            sources.append(f"web_import:{name}")
+        if source_kind == "lpmm_openie" and name:
+            sources.append(f"lpmm_openie:{name}")
+        sources.extend(self._default_sources_for_file(file_record))
+        return self._dedupe_sources(sources)
+
+    def _source_has_live_paragraphs(self, source: str) -> bool:
+        metadata_store = getattr(self.plugin, "metadata_store", None)
+        if metadata_store is None:
+            return False
+
+        try:
+            if hasattr(metadata_store, "get_live_paragraphs_by_source"):
+                return bool(metadata_store.get_live_paragraphs_by_source(source))
+            if hasattr(metadata_store, "get_paragraphs_by_source"):
+                rows = metadata_store.get_paragraphs_by_source(source)
+                return any(not bool(row.get("is_deleted", 0)) for row in rows if isinstance(row, dict))
+        except Exception as exc:
+            logger.warning(f"校验导入清单来源失败: source={source}, err={exc}")
+        return False
+
+    def _manifest_item_has_live_sources(self, file_record: ImportFileRecord, item: Dict[str, Any]) -> bool:
+        sources = self._manifest_item_sources(file_record, item)
+        return any(self._source_has_live_paragraphs(source) for source in sources)
 
     def _is_manifest_hit(
         self,
@@ -756,7 +1070,18 @@ class ImportTaskManager:
         item = manifest.get(key)
         if not isinstance(item, dict):
             return False
-        return str(item.get("hash") or "") == content_hash and bool(item.get("imported"))
+        if str(item.get("hash") or "") != content_hash or not bool(item.get("imported")):
+            return False
+        if self._manifest_item_has_live_sources(file_record, item):
+            return True
+
+        logger.info(
+            "导入清单命中但未找到对应 live 段落，清理清单并继续导入: "
+            f"key={key} sources={self._manifest_item_sources(file_record, item)}"
+        )
+        manifest.pop(key, None)
+        self._save_manifest(manifest)
+        return False
 
     def _record_manifest_import(
         self,
@@ -775,6 +1100,9 @@ class ImportTaskManager:
             "name": file_record.name,
             "source_path": file_record.source_path or "",
             "source_kind": file_record.source_kind,
+            "sources": self._dedupe_sources(
+                getattr(file_record, "imported_sources", []) or self._default_sources_for_file(file_record)
+            ),
         }
         self._save_manifest(manifest)
 
@@ -806,8 +1134,42 @@ class ImportTaskManager:
 
         chat_log = _coerce_bool(payload.get("chat_log"), False)
         chat_reference_time = str(payload.get("chat_reference_time") or "").strip() or None
+        chat_id = str(payload.get("chat_id") or "").strip()
+        raw_scope_type = str(payload.get("scope_type") or "").strip().lower()
+        scope_type = raw_scope_type or ("chat" if chat_id else "global")
+        if scope_type not in {"global", "chat"}:
+            raise ValueError("scope_type 必须为 global 或 chat")
+        if scope_type == "chat" and not chat_id:
+            raise ValueError("scope_type=chat 时必须提供 chat_id")
+        if scope_type == "global" and chat_id:
+            raise ValueError("scope_type=global 时不能同时提供 chat_id")
         force = _coerce_bool(payload.get("force"), False)
         clear_manifest = _coerce_bool(payload.get("clear_manifest"), False)
+        max_chunk_chars = self._max_import_chunk_chars()
+        narrative_window_size = _clamp(
+            _coerce_int(
+                payload.get("narrative_window_size", self._default_narrative_window_size()),
+                self._default_narrative_window_size(),
+            ),
+            200,
+            max_chunk_chars,
+        )
+        narrative_overlap = _clamp(
+            _coerce_int(
+                payload.get("narrative_overlap", self._default_narrative_overlap()),
+                self._default_narrative_overlap(),
+            ),
+            0,
+            max(0, narrative_window_size - 1),
+        )
+        factual_target_size = _clamp(
+            _coerce_int(
+                payload.get("factual_target_size", self._default_factual_target_size()),
+                self._default_factual_target_size(),
+            ),
+            200,
+            max_chunk_chars,
+        )
 
         return {
             "input_mode": input_mode,
@@ -817,9 +1179,16 @@ class ImportTaskManager:
             "strategy_override": strategy_override,
             "chat_log": chat_log,
             "chat_reference_time": chat_reference_time,
+            "chat_id": chat_id,
+            "scope_type": scope_type,
+            "memory_space_id": str(payload.get("memory_space_id") or "").strip(),
+            "workspace_id": str(payload.get("workspace_id") or "").strip(),
             "force": force,
             "clear_manifest": clear_manifest,
             "dedupe_policy": dedupe_policy,
+            "narrative_window_size": narrative_window_size,
+            "narrative_overlap": narrative_overlap,
+            "factual_target_size": factual_target_size,
         }
 
     def _normalize_params(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -830,6 +1199,8 @@ class ImportTaskManager:
     def _normalize_raw_scan_params(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         params = self._normalize_common_import_params(payload, default_dedupe="manifest")
         alias = str(payload.get("alias") or "raw").strip()
+        if alias != "raw":
+            raise ValueError("raw_scan 仅允许使用 raw 导入目录")
         relative_path = str(payload.get("relative_path") or "").strip()
         glob_pattern = str(payload.get("glob") or "*").strip() or "*"
         recursive = _coerce_bool(payload.get("recursive"), True)
@@ -849,6 +1220,8 @@ class ImportTaskManager:
     def _normalize_lpmm_openie_params(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         params = self._normalize_common_import_params(payload, default_dedupe="manifest")
         alias = str(payload.get("alias") or "lpmm").strip()
+        if alias != "lpmm":
+            raise ValueError("lpmm_openie 仅允许使用 lpmm 导入目录")
         relative_path = str(payload.get("relative_path") or "").strip()
         include_all_json = _coerce_bool(payload.get("include_all_json"), False)
         params.update(
@@ -863,15 +1236,11 @@ class ImportTaskManager:
         return params
 
     def _normalize_temporal_backfill_params(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        alias = str(payload.get("alias") or "plugin_data").strip()
-        relative_path = str(payload.get("relative_path") or "").strip()
         dry_run = _coerce_bool(payload.get("dry_run"), False)
         no_created_fallback = _coerce_bool(payload.get("no_created_fallback"), False)
         limit = _parse_optional_positive_int(payload.get("limit"), "limit") or 100000
         return {
             "task_kind": "temporal_backfill",
-            "alias": alias,
-            "relative_path": relative_path,
             "dry_run": dry_run,
             "no_created_fallback": no_created_fallback,
             "limit": limit,
@@ -879,8 +1248,14 @@ class ImportTaskManager:
 
     def _normalize_lpmm_convert_params(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         alias = str(payload.get("alias") or "lpmm").strip()
+        if alias != "lpmm":
+            raise ValueError("lpmm_convert 仅允许使用 lpmm 导入目录")
         relative_path = str(payload.get("relative_path") or "").strip()
-        target_alias = str(payload.get("target_alias") or "plugin_data").strip()
+        target_alias = str(payload.get("target_alias") or "converted").strip()
+        if target_alias == "plugin_data":
+            target_alias = "converted"
+        if target_alias != "converted":
+            raise ValueError("lpmm_convert 仅允许写入 converted 导入目录")
         target_relative_path = str(payload.get("target_relative_path") or "").strip()
         dimension = _parse_optional_positive_int(payload.get("dimension"), "dimension") or _coerce_int(
             self._cfg("embedding.dimension", 384),
@@ -917,9 +1292,7 @@ class ImportTaskManager:
         return self._normalize_params(payload)
 
     def _normalize_migration_params(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        source_db = str(payload.get("source_db") or "").strip()
-        if not source_db:
-            source_db = str(self._default_maibot_source_db())
+        source_db = str(self._resolve_maibot_source_db(str(payload.get("source_db") or "")))
 
         time_from = str(payload.get("time_from") or "").strip() or None
         time_to = str(payload.get("time_to") or "").strip() or None
@@ -934,13 +1307,17 @@ class ImportTaskManager:
             raise ValueError("start_id 不能大于 end_id")
 
         read_batch_size = _parse_optional_positive_int(payload.get("read_batch_size"), "read_batch_size") or 2000
-        commit_window_rows = _parse_optional_positive_int(payload.get("commit_window_rows"), "commit_window_rows") or 20000
+        commit_window_rows = (
+            _parse_optional_positive_int(payload.get("commit_window_rows"), "commit_window_rows") or 20000
+        )
         embed_batch_size = _parse_optional_positive_int(payload.get("embed_batch_size"), "embed_batch_size") or 256
         entity_embed_batch_size = (
             _parse_optional_positive_int(payload.get("entity_embed_batch_size"), "entity_embed_batch_size") or 512
         )
         embed_workers = _parse_optional_positive_int(payload.get("embed_workers"), "embed_workers")
-        max_errors = _parse_optional_positive_int(payload.get("max_errors"), "max_errors") or 500
+        max_errors = _parse_optional_non_negative_int(payload.get("max_errors"), "max_errors")
+        if max_errors is None:
+            max_errors = 0
         log_every = _parse_optional_positive_int(payload.get("log_every"), "log_every") or 5000
         preview_limit = _parse_optional_positive_int(payload.get("preview_limit"), "preview_limit") or 20
 
@@ -997,6 +1374,10 @@ class ImportTaskManager:
             "max_paste_chars": self._max_paste_chars(),
             "default_file_concurrency": self._default_file_concurrency(),
             "default_chunk_concurrency": self._default_chunk_concurrency(),
+            "default_narrative_window_size": self._default_narrative_window_size(),
+            "default_narrative_overlap": self._default_narrative_overlap(),
+            "default_factual_target_size": self._default_factual_target_size(),
+            "max_chunk_chars": self._max_import_chunk_chars(),
             "max_file_concurrency": self._max_file_concurrency(),
             "max_chunk_concurrency": self._max_chunk_concurrency(),
             "poll_interval_ms": max(200, self._cfg_int("web.import.poll_interval_ms", 1000)),
@@ -1004,10 +1385,7 @@ class ImportTaskManager:
             "maibot_target_data_dir": str(self._resolve_data_dir()),
             "path_aliases": self.get_path_aliases(),
             "llm_retry": llm_retry,
-            "convert_enable_staging_switch": _coerce_bool(
-                self._cfg("web.import.convert.enable_staging_switch", True), True
-            ),
-            "convert_keep_backup_count": max(0, self._cfg_int("web.import.convert.keep_backup_count", 3)),
+            "timeout": self._timeout_config(),
         }
 
     def is_write_blocked(self) -> bool:
@@ -1094,6 +1472,11 @@ class ImportTaskManager:
                 if isinstance(uploaded, dict):
                     staged_path_raw = uploaded.get("staged_path") or uploaded.get("path") or ""
                     staged_path = Path(str(staged_path_raw or "")).expanduser().resolve()
+                    staging_root = self._resolve_upload_staging_root().resolve()
+                    try:
+                        staged_path.relative_to(staging_root)
+                    except ValueError:
+                        raise ValueError(f"上传暂存文件必须位于导入目录: {staging_root}") from None
                     if not staged_path.is_file():
                         raise ValueError(f"上传暂存文件不存在: {staged_path}")
                     name = _safe_filename(uploaded.get("filename") or uploaded.get("name") or staged_path.name)
@@ -1290,13 +1673,11 @@ class ImportTaskManager:
         if not self._is_enabled():
             raise ValueError("导入功能已禁用")
         params = self._normalize_temporal_backfill_params(payload)
-        target_path = self.resolve_path_alias(
-            params["alias"],
-            params["relative_path"],
-            must_exist=True,
-        )
+        target_path = self._resolve_data_dir()
         if not target_path.is_dir():
             raise ValueError("temporal_backfill 目标路径必须为目录")
+        if not (target_path / "metadata").is_dir():
+            raise ValueError("活动 A_Memorix Store 缺少 metadata 目录")
 
         async with self._lock:
             if self._pending_task_count() >= self._queue_limit():
@@ -1343,6 +1724,10 @@ class ImportTaskManager:
         target_path.mkdir(parents=True, exist_ok=True)
         if not target_path.is_dir():
             raise ValueError("lpmm_convert 目标路径必须为目录")
+        if any(target_path.iterdir()):
+            raise ValueError("lpmm_convert 目标目录必须为空，不会覆盖已有存储")
+        if target_path == source_path or target_path.is_relative_to(source_path):
+            raise ValueError("lpmm_convert 目标目录不能位于输入目录内")
 
         async with self._lock:
             if self._pending_task_count() >= self._queue_limit():
@@ -1419,7 +1804,9 @@ class ImportTaskManager:
                 return None
             return task.to_detail(include_chunks=include_chunks)
 
-    async def get_chunks(self, task_id: str, file_id: str, offset: int = 0, limit: int = 50) -> Optional[Dict[str, Any]]:
+    async def get_chunks(
+        self, task_id: str, file_id: str, offset: int = 0, limit: int = 50
+    ) -> Optional[Dict[str, Any]]:
         async with self._lock:
             task = self._tasks.get(task_id)
             if not task:
@@ -1446,9 +1833,14 @@ class ImportTaskManager:
             if not task:
                 return None
             if task.status == "queued":
+                task.cancel_requested_at = _now()
+                task.cancel_origin = "user_request"
                 self._mark_task_cancelled_locked(task, "任务已取消")
                 self._queue = deque([x for x in self._queue if x != task_id])
+                self._try_write_task_report(task)
             elif task.status in {"preparing", "running"}:
+                task.cancel_requested_at = _now()
+                task.cancel_origin = "user_request"
                 task.status = "cancel_requested"
                 task.current_step = "cancel_requested"
                 task.updated_at = _now()
@@ -1476,9 +1868,7 @@ class ImportTaskManager:
             has_non_retryable = False
             for chunk in failed_chunks:
                 failed_at = str(chunk.failed_at or "").strip().lower()
-                retryable = bool(chunk.retryable) or (
-                    file_obj.input_mode == "text" and failed_at == "extracting"
-                )
+                retryable = bool(chunk.retryable) or (file_obj.input_mode == "text" and failed_at == "extracting")
                 if retryable:
                     try:
                         retry_indexes.append(int(chunk.index))
@@ -1715,7 +2105,10 @@ class ImportTaskManager:
             self._stopping = True
             for task in self._tasks.values():
                 if task.status in {"queued", "preparing", "running", "cancel_requested"}:
+                    task.cancel_requested_at = _now()
+                    task.cancel_origin = "runtime_shutdown"
                     self._mark_task_cancelled_locked(task, "服务关闭")
+                    self._try_write_task_report(task)
             self._queue.clear()
             worker = self._worker_task
             self._worker_task = None
@@ -1725,9 +2118,9 @@ class ImportTaskManager:
             try:
                 await worker
             except asyncio.CancelledError:
-                pass
+                logger.debug("Web 导入工作线程已取消")
             except Exception:
-                pass
+                logger.exception("Web 导入工作线程关闭异常")
 
         self._cleanup_temp_root()
 
@@ -1771,7 +2164,18 @@ class ImportTaskManager:
             try:
                 await self._run_task(task_id)
             except asyncio.CancelledError:
-                break
+                origin = "runtime_shutdown" if self._stopping else "parent_cancel"
+                reason = "服务关闭" if self._stopping else "上层任务已取消"
+                finalize_task = asyncio.create_task(
+                    self._finalize_cancelled_task(task_id, origin=origin, reason=reason)
+                )
+                try:
+                    await asyncio.wait_for(asyncio.shield(finalize_task), timeout=1.0)
+                except asyncio.TimeoutError:
+                    logger.warning(f"写入任务取消终态超时 task={task_id} origin={origin}")
+                except asyncio.CancelledError:
+                    logger.warning(f"写入任务取消终态再次被中断 task={task_id} origin={origin}")
+                raise
             except Exception as e:
                 logger.error(f"导入任务执行失败 task={task_id}: {e}\n{traceback.format_exc()}")
                 async with self._lock:
@@ -1782,6 +2186,7 @@ class ImportTaskManager:
                         task.error = str(e)
                         task.finished_at = _now()
                         task.updated_at = _now()
+                        self._try_write_task_report(task)
             finally:
                 should_cleanup = await self._should_cleanup_task_temp(task_id)
                 async with self._lock:
@@ -1813,15 +2218,42 @@ class ImportTaskManager:
 
     def _write_task_report(self, task: ImportTaskRecord) -> None:
         path = self._task_report_path(task.task_id)
+        task.artifact_paths["summary"] = str(path)
         payload = task.to_detail(include_chunks=False)
         payload["generated_at"] = _now()
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        task.artifact_paths["summary"] = str(path)
+        temp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with temp_path.open("w", encoding="utf-8", newline="\n") as stream:
+                json.dump(payload, stream, ensure_ascii=False, indent=2)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temp_path, path)
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+    def _try_write_task_report(self, task: ImportTaskRecord) -> None:
+        try:
+            self._write_task_report(task)
+        except Exception as report_err:
+            logger.warning(
+                f"写入任务终态报告失败 task={task.task_id} "
+                f"status={task.status} origin={task.cancel_origin or '-'}: {report_err}"
+            )
+
+    async def _finalize_cancelled_task(self, task_id: str, *, origin: str, reason: str) -> None:
+        async with self._lock:
+            task = self._tasks.get(task_id)
+            if not task or task.status in {"completed", "completed_with_errors", "failed"}:
+                return
+            task.cancel_requested_at = _now()
+            task.cancel_origin = origin
+            self._mark_task_cancelled_locked(task, reason)
+            self._try_write_task_report(task)
 
     async def _run_task(self, task_id: str) -> None:
         async with self._lock:
             task = self._tasks.get(task_id)
-            if not task:
+            if not task or task.status == "cancelled":
                 return
             task.status = "preparing"
             task.current_step = "preparing"
@@ -1835,10 +2267,8 @@ class ImportTaskManager:
             if not task:
                 return
             if task.status == "cancel_requested":
-                task.status = "cancelled"
-                task.current_step = "cancelled"
-                task.finished_at = _now()
-                task.updated_at = _now()
+                self._mark_task_cancelled_locked(task, "任务已取消")
+                self._try_write_task_report(task)
                 return
             task.status = "running"
             task.current_step = "running"
@@ -1861,10 +2291,14 @@ class ImportTaskManager:
             file_semaphore = asyncio.Semaphore(task.params["file_concurrency"])
             chunk_semaphore = asyncio.Semaphore(task.params["chunk_concurrency"])
             jobs = [
-                asyncio.create_task(self._process_file(task_id, f, file_semaphore, chunk_semaphore))
-                for f in task.files
+                asyncio.create_task(self._process_file(task_id, f, file_semaphore, chunk_semaphore)) for f in task.files
             ]
-            await asyncio.gather(*jobs, return_exceptions=True)
+            results = await asyncio.gather(*jobs, return_exceptions=True)
+            for file_record, result in zip(task.files, results, strict=True):
+                if isinstance(result, asyncio.CancelledError):
+                    raise result
+                if isinstance(result, Exception):
+                    await self._set_file_failed(task_id, file_record.file_id, f"文件处理失败: {result}")
 
         write_changed_payload: Optional[Dict[str, Any]] = None
         async with self._lock:
@@ -1873,10 +2307,7 @@ class ImportTaskManager:
                 return
             self._recompute_task_progress(task)
             has_failed = any(
-                (f.status == "failed")
-                or (f.failed_chunks > 0)
-                or bool(str(f.error or "").strip())
-                for f in task.files
+                (f.status == "failed") or (f.failed_chunks > 0) or bool(str(f.error or "").strip()) for f in task.files
             )
             has_cancelled = any(f.status == "cancelled" for f in task.files)
             has_completed = any(f.status == "completed" for f in task.files)
@@ -1896,10 +2327,7 @@ class ImportTaskManager:
                 task.current_step = "completed"
             task.finished_at = _now()
             task.updated_at = _now()
-            try:
-                self._write_task_report(task)
-            except Exception as report_err:
-                logger.warning(f"写入任务报告失败 task={task_id}: {report_err}")
+            self._try_write_task_report(task)
             task_kind = str(task.params.get("task_kind") or task.source).strip().lower()
             write_task_kinds = {"upload", "paste", "raw_scan", "lpmm_openie", "maibot_migration", "lpmm_convert"}
             has_written_chunks = (task.done_chunks > 0) or any(f.done_chunks > 0 for f in task.files)
@@ -2072,23 +2500,29 @@ class ImportTaskManager:
     async def _terminate_process(self, process: asyncio.subprocess.Process) -> None:
         if process.returncode is not None:
             return
+        timeout_cfg = self._timeout_config()
         try:
             process.terminate()
-            await asyncio.wait_for(process.wait(), timeout=5.0)
-        except Exception:
+            await asyncio.wait_for(process.wait(), timeout=timeout_cfg["process_terminate_seconds"])
+        except ProcessLookupError:
+            logger.debug("迁移子进程已在终止前退出")
+        except asyncio.TimeoutError:
             try:
                 process.kill()
-                await asyncio.wait_for(process.wait(), timeout=3.0)
-            except Exception:
-                pass
+                await asyncio.wait_for(process.wait(), timeout=timeout_cfg["process_kill_seconds"])
+            except ProcessLookupError:
+                logger.debug("迁移子进程已在强制终止前退出")
+            except asyncio.TimeoutError:
+                logger.error("迁移子进程强制终止超时")
 
     async def _reload_stores_after_external_migration(self) -> None:
         async with self._storage_lock:
-            try:
-                if self.plugin.vector_store and self.plugin.vector_store.has_data():
-                    self.plugin.vector_store.load()
-            except Exception as e:
-                logger.warning(f"迁移后重载 VectorStore 失败: {e}")
+            for store in self._vector_stores_for_persistence():
+                try:
+                    if store.has_data():
+                        store.load()
+                except Exception as e:
+                    logger.warning(f"迁移后重载 VectorStore 失败: {e}")
             try:
                 if self.plugin.graph_store and self.plugin.graph_store.has_data():
                     self.plugin.graph_store.load()
@@ -2158,7 +2592,10 @@ class ImportTaskManager:
 
                 await self._refresh_maibot_progress_from_state(task_id, file_record.file_id, chunk_id, state_path)
                 try:
-                    return_code = await asyncio.wait_for(process.wait(), timeout=1.0)
+                    return_code = await asyncio.wait_for(
+                        process.wait(),
+                        timeout=self._timeout_config()["process_poll_seconds"],
+                    )
                     break
                 except asyncio.TimeoutError:
                     continue
@@ -2229,39 +2666,95 @@ class ImportTaskManager:
     def _resolve_convert_script(self) -> Path:
         return Path(__file__).resolve().parents[2] / "scripts" / "convert_lpmm.py"
 
-    def _cleanup_old_backups(self) -> None:
-        keep = max(0, self._cfg_int("web.import.convert.keep_backup_count", 3))
-        backup_root = self._resolve_backup_root()
-        if not backup_root.exists() or keep <= 0:
-            return
-        dirs = [p for p in backup_root.iterdir() if p.is_dir() and p.name.startswith("lpmm_convert_")]
-        dirs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-        for old in dirs[keep:]:
-            try:
-                shutil.rmtree(old, ignore_errors=True)
-            except Exception:
-                pass
-
     def _verify_convert_output(self, output_dir: Path) -> Dict[str, Any]:
-        vectors = output_dir / "vectors"
-        graph = output_dir / "graph"
-        metadata = output_dir / "metadata"
+        vectors_root = output_dir / "vectors"
+        paragraph_vectors = vectors_root / "paragraph"
+        graph_vectors = vectors_root / "graph"
+        graph_dir = output_dir / "graph"
+        metadata_dir = output_dir / "metadata"
+        manifest_path = vectors_root / "dual_ready.json"
         checks = {
-            "vectors_exists": vectors.exists(),
-            "graph_exists": graph.exists(),
-            "metadata_exists": metadata.exists(),
-            "vectors_nonempty": vectors.exists() and any(vectors.iterdir()),
-            "graph_nonempty": graph.exists() and any(graph.iterdir()),
-            "metadata_nonempty": metadata.exists() and any(metadata.iterdir()),
+            "paragraph_vectors_exists": paragraph_vectors.is_dir(),
+            "graph_vectors_exists": graph_vectors.is_dir(),
+            "graph_exists": graph_dir.is_dir(),
+            "metadata_exists": metadata_dir.is_dir(),
+            "manifest_exists": manifest_path.is_file(),
+            "stores_opened": False,
+            "references_valid": False,
+            "counts_match": False,
+            "ok": False,
         }
-        checks["ok"] = checks["vectors_exists"] and checks["graph_exists"] and checks["metadata_exists"]
+        metadata_store: Optional[MetadataStore] = None
+        try:
+            if not all(
+                checks[key]
+                for key in (
+                    "paragraph_vectors_exists",
+                    "graph_vectors_exists",
+                    "graph_exists",
+                    "metadata_exists",
+                    "manifest_exists",
+                )
+            ):
+                return checks
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if not isinstance(manifest, dict) or manifest.get("status") != "ready":
+                raise ValueError("dual_ready.json 状态无效")
+            dimension = int(manifest.get("dimension", 0) or 0)
+            fingerprint = manifest.get("embedding_fingerprint")
+            if dimension <= 0:
+                raise ValueError("dual_ready.json 缺少有效维度")
+            if not isinstance(fingerprint, dict) or not str(fingerprint.get("hash", "") or "").strip():
+                raise ValueError("dual_ready.json 缺少 Embedding 指纹")
+
+            paragraph_store = VectorStore(dimension=dimension, data_dir=paragraph_vectors)
+            graph_vector_store = VectorStore(dimension=dimension, data_dir=graph_vectors)
+            paragraph_store.load(expected_embedding_fingerprint=fingerprint)
+            graph_vector_store.load(expected_embedding_fingerprint=fingerprint)
+            graph_store = GraphStore(data_dir=graph_dir)
+            if graph_store.has_data():
+                graph_store.load()
+            metadata_store = MetadataStore(data_dir=metadata_dir)
+            metadata_store.connect()
+            checks["stores_opened"] = True
+
+            paragraph_ids = {
+                str(row["hash"])
+                for row in metadata_store.query("SELECT hash FROM paragraphs WHERE is_deleted = 0")
+            }
+            entity_ids = {
+                f"entity:{str(row['hash'])}"
+                for row in metadata_store.query("SELECT hash FROM entities WHERE is_deleted = 0")
+            }
+            relation_ids = {
+                f"relation:{str(row['hash'])}"
+                for row in metadata_store.query(
+                    "SELECT hash FROM relations WHERE is_inactive IS NULL OR is_inactive = 0"
+                )
+            }
+            checks["references_valid"] = (
+                set(paragraph_store._known_hashes) == paragraph_ids
+                and set(graph_vector_store._known_hashes) == entity_ids | relation_ids
+            )
+            checks["counts_match"] = (
+                int(manifest.get("paragraph_vectors", -1)) == paragraph_store.num_vectors
+                and int(manifest.get("graph_vectors", -1)) == graph_vector_store.num_vectors
+            )
+            checks["paragraph_vectors"] = paragraph_store.num_vectors
+            checks["graph_vectors"] = graph_vector_store.num_vectors
+            checks["ok"] = bool(checks["references_valid"] and checks["counts_match"])
+        except Exception as exc:
+            checks["error"] = str(exc)
+        finally:
+            if metadata_store is not None:
+                metadata_store.close()
         return checks
 
     async def _preflight_convert_runtime(self) -> Tuple[bool, str]:
         """使用当前服务解释器做 convert 依赖预检，避免子进程报错信息不透明。"""
         probe_code = (
             "import importlib\n"
-            "mods=['networkx','scipy','pyarrow']\n"
+            "mods=['scipy','pyarrow']\n"
             "failed=[]\n"
             "for m in mods:\n"
             "    try:\n"
@@ -2278,7 +2771,10 @@ class ImportTaskManager:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, stderr = await asyncio.wait_for(probe.communicate(), timeout=20.0)
+            stdout, stderr = await asyncio.wait_for(
+                probe.communicate(),
+                timeout=self._timeout_config()["convert_preflight_seconds"],
+            )
         except Exception as e:
             return False, f"依赖预检执行失败: {e}"
 
@@ -2336,13 +2832,6 @@ class ImportTaskManager:
             )
             return
 
-        staging_root = self._resolve_staging_root()
-        staging_root.mkdir(parents=True, exist_ok=True)
-        staging_dir = staging_root / f"lpmm_convert_{task_id}"
-        if staging_dir.exists():
-            shutil.rmtree(staging_dir, ignore_errors=True)
-        staging_dir.mkdir(parents=True, exist_ok=True)
-
         # 简单空间预检：至少保留 512MB
         usage = shutil.disk_usage(str(target_dir))
         if usage.free < 512 * 1024 * 1024:
@@ -2355,7 +2844,9 @@ class ImportTaskManager:
             "--input",
             str(source_dir),
             "--output",
-            str(staging_dir),
+            str(target_dir),
+            "--data-dir",
+            str(self._resolve_data_dir()),
             "--dim",
             str(params.get("dimension", 384)),
             "--batch-size",
@@ -2397,7 +2888,10 @@ class ImportTaskManager:
                     await self._terminate_process(process)
                     break
                 try:
-                    return_code = await asyncio.wait_for(process.wait(), timeout=1.0)
+                    return_code = await asyncio.wait_for(
+                        process.wait(),
+                        timeout=self._timeout_config()["process_poll_seconds"],
+                    )
                     break
                 except asyncio.TimeoutError:
                     continue
@@ -2415,73 +2909,16 @@ class ImportTaskManager:
             return
 
         await self._set_chunk_state(task_id, file_record.file_id, chunk_id, "writing", "verifying", 0.65)
-        verify = self._verify_convert_output(staging_dir)
+        verify = self._verify_convert_output(target_dir)
         async with self._lock:
             t = self._tasks.get(task_id)
             if t:
-                t.artifact_paths["staging_dir"] = str(staging_dir)
+                t.artifact_paths["output_dir"] = str(target_dir)
                 t.artifact_paths["verify"] = json.dumps(verify, ensure_ascii=False)
         if not verify.get("ok"):
             await self._set_file_failed(task_id, file_record.file_id, f"校验失败: {verify}")
             await self._set_chunk_failed(task_id, file_record.file_id, chunk_id, f"校验失败: {verify}")
             return
-
-        enable_switch = _coerce_bool(self._cfg("web.import.convert.enable_staging_switch", True), True)
-        if not enable_switch:
-            await self._set_file_failed(task_id, file_record.file_id, "未启用 staging 切换")
-            await self._set_chunk_failed(task_id, file_record.file_id, chunk_id, "未启用 staging 切换")
-            return
-
-        await self._set_chunk_state(task_id, file_record.file_id, chunk_id, "writing", "switching", 0.85)
-        backup_root = self._resolve_backup_root()
-        backup_root.mkdir(parents=True, exist_ok=True)
-        backup_dir = backup_root / f"lpmm_convert_{task_id}_{int(_now())}"
-        backup_dir.mkdir(parents=True, exist_ok=True)
-
-        switched = False
-        rollback_info: Dict[str, Any] = {"attempted": True, "restored": False, "error": ""}
-        moved_items: List[Tuple[Path, Path]] = []
-        try:
-            for name in ("vectors", "graph", "metadata"):
-                src_current = target_dir / name
-                src_new = staging_dir / name
-                if not src_new.exists():
-                    raise RuntimeError(f"staging 缺少目录: {src_new}")
-                if src_current.exists():
-                    dst_backup = backup_dir / name
-                    shutil.move(str(src_current), str(dst_backup))
-                    moved_items.append((dst_backup, src_current))
-                shutil.move(str(src_new), str(src_current))
-            switched = True
-        except Exception as switch_err:
-            rollback_info["error"] = str(switch_err)
-            # 尝试回滚
-            for src_backup, dst_original in moved_items:
-                if src_backup.exists() and not dst_original.exists():
-                    try:
-                        shutil.move(str(src_backup), str(dst_original))
-                    except Exception:
-                        pass
-            rollback_info["restored"] = True
-            async with self._lock:
-                t = self._tasks.get(task_id)
-                if t:
-                    t.rollback_info = rollback_info
-            await self._set_file_failed(task_id, file_record.file_id, f"切换失败并回滚: {switch_err}")
-            await self._set_chunk_failed(task_id, file_record.file_id, chunk_id, f"switch failed: {switch_err}")
-            return
-
-        if switched:
-            async with self._lock:
-                t = self._tasks.get(task_id)
-                if t:
-                    t.rollback_info = rollback_info
-                    t.artifact_paths["backup_dir"] = str(backup_dir)
-            self._cleanup_old_backups()
-            try:
-                await self._reload_stores_after_external_migration()
-            except Exception as reload_err:
-                logger.warning(f"转换后重载存储失败: {reload_err}")
 
         await self._set_chunk_completed(task_id, file_record.file_id, chunk_id)
         async with self._lock:
@@ -2543,7 +2980,7 @@ class ImportTaskManager:
             try:
                 store.close()
             except Exception:
-                pass
+                logger.exception(f"关闭临时迁移存储失败: target_dir={target_dir}")
 
         async with self._lock:
             t = self._tasks.get(task_id)
@@ -2665,6 +3102,7 @@ class ImportTaskManager:
             content,
             task.params["strategy_override"],
             chat_log=bool(task.params.get("chat_log")),
+            import_params=task.params,
         )
         await self._set_file_strategy(task_id, file_record.file_id, strategy)
         await self._set_file_state(task_id, file_record.file_id, "splitting", "splitting")
@@ -2683,18 +3121,15 @@ class ImportTaskManager:
             if not selected_chunks:
                 raise RuntimeError("失败分块重试索引无效，未匹配到可执行分块")
             logger.info(
-                "重试任务按失败分块执行: "
-                f"file={file_record.name} "
-                f"selected={len(selected_chunks)} "
-                f"total={len(chunks)}"
+                f"重试任务按失败分块执行: file={file_record.name} selected={len(selected_chunks)} total={len(chunks)}"
             )
 
         await self._register_chunks(task_id, file_record.file_id, selected_chunks)
 
         await self._set_file_state(task_id, file_record.file_id, "extracting", "extracting")
-        model_cfg = None
+        resolved_model = None
         if task.params["llm_enabled"]:
-            model_cfg = await self._select_model()
+            resolved_model = await self._select_model()
 
         jobs = []
         for chunk in selected_chunks:
@@ -2706,14 +3141,25 @@ class ImportTaskManager:
                         chunk=chunk,
                         strategy=strategy,
                         llm_enabled=task.params["llm_enabled"],
-                        model_cfg=model_cfg,
+                        resolved_model=resolved_model,
                         chunk_semaphore=chunk_semaphore,
                         chat_log=bool(task.params.get("chat_log")),
                         chat_reference_time=str(task.params.get("chat_reference_time") or "").strip() or None,
+                        paragraph_metadata=self._chat_metadata_from_params(task.params),
                     )
                 )
             )
-        await asyncio.gather(*jobs, return_exceptions=True)
+        results = await asyncio.gather(*jobs, return_exceptions=True)
+        for chunk, result in zip(selected_chunks, results, strict=True):
+            if isinstance(result, asyncio.CancelledError):
+                raise result
+            if isinstance(result, Exception):
+                await self._set_chunk_failed(
+                    task_id,
+                    file_record.file_id,
+                    chunk.chunk.chunk_id,
+                    f"分块处理失败: {result}",
+                )
 
         if await self._is_cancel_requested(task_id):
             await self._set_file_cancelled(task_id, file_record.file_id, "任务已取消")
@@ -2721,8 +3167,7 @@ class ImportTaskManager:
 
         await self._set_file_state(task_id, file_record.file_id, "saving", "saving")
         async with self._storage_lock:
-            self.plugin.vector_store.save()
-            self.plugin.graph_store.save()
+            self._save_runtime_stores_locked()
 
         async with self._lock:
             task = self._tasks.get(task_id)
@@ -2745,6 +3190,7 @@ class ImportTaskManager:
                 f.progress = 1.0
             f.updated_at = _now()
             self._recompute_task_progress(task)
+
     async def _process_text_chunk(
         self,
         task_id: str,
@@ -2752,10 +3198,11 @@ class ImportTaskManager:
         chunk: ProcessedChunk,
         strategy: Any,
         llm_enabled: bool,
-        model_cfg: Any,
+        resolved_model: Optional[ResolvedLLMModel],
         chunk_semaphore: asyncio.Semaphore,
         chat_log: bool = False,
         chat_reference_time: Optional[str] = None,
+        paragraph_metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         async with chunk_semaphore:
             chunk_id = chunk.chunk.chunk_id
@@ -2775,9 +3222,11 @@ class ImportTaskManager:
                 current_strategy = rescue_strategy
             try:
                 if llm_enabled and chunk.flags.requires_llm:
+                    if resolved_model is None:
+                        raise RuntimeError("没有可用 LLM 模型")
                     processed = await current_strategy.extract(
                         chunk,
-                        lambda prompt: self._llm_call(prompt, model_cfg),
+                        lambda prompt: self._llm_call(prompt, resolved_model),
                     )
                 elif chunk.type == StrategyKnowledgeType.QUOTE:
                     processed = await current_strategy.extract(chunk)
@@ -2792,14 +3241,18 @@ class ImportTaskManager:
             await self._set_chunk_state(task_id, file_record.file_id, chunk_id, "writing", "writing", 0.7)
             try:
                 time_meta = None
-                if chat_log and llm_enabled and model_cfg is not None:
+                if chat_log and llm_enabled and resolved_model is not None:
                     time_meta = await self._extract_chat_time_meta_with_llm(
                         processed.chunk.text,
-                        model_cfg,
+                        resolved_model,
                         reference_time=chat_reference_time,
                     )
-                async with self._storage_lock:
-                    await self._persist_processed_chunk(file_record, processed, time_meta=time_meta)
+                await self._persist_processed_chunk(
+                    file_record,
+                    processed,
+                    metadata=paragraph_metadata,
+                    time_meta=time_meta,
+                )
                 await self._set_chunk_completed(task_id, file_record.file_id, chunk_id)
             except Exception as e:
                 await self._set_chunk_failed(task_id, file_record.file_id, chunk_id, f"写入失败: {e}")
@@ -2818,7 +3271,7 @@ class ImportTaskManager:
         try:
             data = json.loads(content)
         except Exception as e:
-            raise RuntimeError(f"JSON 解析失败: {e}")
+            raise RuntimeError(f"JSON 解析失败: {e}") from e
 
         schema = self._detect_json_schema(data)
         async with self._lock:
@@ -2826,6 +3279,13 @@ class ImportTaskManager:
             if task:
                 task.schema_detected = schema
                 task.updated_at = _now()
+        task_params: Dict[str, Any] = {}
+        async with self._lock:
+            task = self._tasks.get(task_id)
+            if task:
+                task_params = dict(task.params)
+        paragraph_metadata = self._chat_metadata_from_params(task_params)
+
         units, build_warnings = self._build_json_units(data, file_record.file_id, file_record.name, schema)
         if build_warnings:
             await self._append_file_warnings(task_id, file_record.file_id, build_warnings)
@@ -2833,10 +3293,28 @@ class ImportTaskManager:
 
         await self._set_file_state(task_id, file_record.file_id, "extracting", "extracting")
         jobs = [
-            asyncio.create_task(self._process_json_unit(task_id, file_record, unit, chunk_semaphore))
+            asyncio.create_task(
+                self._process_json_unit(
+                    task_id,
+                    file_record,
+                    unit,
+                    chunk_semaphore,
+                    paragraph_metadata=paragraph_metadata,
+                )
+            )
             for unit in units
         ]
-        await asyncio.gather(*jobs, return_exceptions=True)
+        results = await asyncio.gather(*jobs, return_exceptions=True)
+        for unit, result in zip(units, results, strict=True):
+            if isinstance(result, asyncio.CancelledError):
+                raise result
+            if isinstance(result, Exception):
+                await self._set_chunk_failed(
+                    task_id,
+                    file_record.file_id,
+                    str(unit["chunk_id"]),
+                    f"JSON 单元处理失败: {result}",
+                )
 
         if await self._is_cancel_requested(task_id):
             await self._set_file_cancelled(task_id, file_record.file_id, "任务已取消")
@@ -2844,8 +3322,7 @@ class ImportTaskManager:
 
         await self._set_file_state(task_id, file_record.file_id, "saving", "saving")
         async with self._storage_lock:
-            self.plugin.vector_store.save()
-            self.plugin.graph_store.save()
+            self._save_runtime_stores_locked()
 
         async with self._lock:
             task = self._tasks.get(task_id)
@@ -2934,9 +3411,7 @@ class ImportTaskManager:
                     default_source=f"web_import:{filename}",
                 )
             except ImportPayloadValidationError as exc:
-                warnings.append(
-                    f"跳过段落[{paragraph_index}]：{exc} (code={exc.code})"
-                )
+                warnings.append(f"跳过段落[{paragraph_index}]：{exc} (code={exc.code})")
                 continue
             units.append(
                 {
@@ -2957,9 +3432,7 @@ class ImportTaskManager:
             name = normalize_entity_import_item(e)
             if not name:
                 raw = str(e or "").strip()
-                warnings.append(
-                    f"跳过实体[{entity_index}]：无效名称或疑似哈希值 ({raw[:80]})"
-                )
+                warnings.append(f"跳过实体[{entity_index}]：无效名称或疑似哈希值 ({raw[:80]})")
                 continue
             units.append(
                 {
@@ -2982,9 +3455,7 @@ class ImportTaskManager:
                     )
                 else:
                     raw = str(r or "").strip()
-                warnings.append(
-                    f"跳过关系[{relation_index}]：无效三元组或疑似哈希值 ({raw[:120]})"
-                )
+                warnings.append(f"跳过关系[{relation_index}]：无效三元组或疑似哈希值 ({raw[:120]})")
                 continue
             units.append(
                 {
@@ -3034,6 +3505,7 @@ class ImportTaskManager:
         file_record: ImportFileRecord,
         unit: Dict[str, Any],
         chunk_semaphore: asyncio.Semaphore,
+        paragraph_metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         chunk_id = unit["chunk_id"]
         async with chunk_semaphore:
@@ -3045,87 +3517,72 @@ class ImportTaskManager:
             try:
                 chunk_warnings: List[str] = []
                 skip_write = False
-                async with self._storage_lock:
-                    kind = unit["kind"]
-                    if kind == "paragraph":
-                        content = str(unit.get("content", ""))
-                        if not content.strip():
-                            chunk_warnings.append(f"跳过分块[{chunk_id}]：段落内容为空")
-                            skip_write = True
-                        elif is_probable_hash_token(content):
-                            chunk_warnings.append(f"跳过分块[{chunk_id}]：段落内容疑似哈希值")
-                            skip_write = True
-                        if skip_write:
-                            pass
-                        k_type = resolve_stored_knowledge_type(
-                            unit.get("knowledge_type"),
+                kind = unit["kind"]
+                if kind == "paragraph":
+                    content = str(unit.get("content", ""))
+                    if not content.strip():
+                        chunk_warnings.append(f"跳过分块[{chunk_id}]：段落内容为空")
+                        skip_write = True
+                    elif is_probable_hash_token(content):
+                        chunk_warnings.append(f"跳过分块[{chunk_id}]：段落内容疑似哈希值")
+                        skip_write = True
+                    if skip_write:
+                        pass
+                    k_type = resolve_stored_knowledge_type(
+                        unit.get("knowledge_type"),
+                        content=content,
+                    ).value
+                    source = str(unit.get("source") or f"web_import:{file_record.name}")
+                    if not skip_write:
+                        para_hash = await self._add_paragraph_metadata(
+                            file_record=file_record,
                             content=content,
-                        ).value
-                        source = str(unit.get("source") or f"web_import:{file_record.name}")
-                        if not skip_write:
-                            para_hash = self.plugin.metadata_store.add_paragraph(
-                                content=content,
-                                source=source,
-                                knowledge_type=k_type,
-                                time_meta=unit.get("time_meta"),
+                            source=source,
+                            metadata=paragraph_metadata,
+                            knowledge_type=k_type,
+                            time_meta=unit.get("time_meta"),
+                        )
+                        vector_result = await self._write_paragraph_vector_or_enqueue(
+                            paragraph_hash=para_hash,
+                            content=content,
+                            context="web_import_json",
+                        )
+                        if str(vector_result.get("warning", "") or "").strip():
+                            logger.warning(
+                                f"web_import json paragraph 向量写入降级: hash={para_hash[:8]} detail={vector_result.get('detail')}"
                             )
-                            vector_result = await self._write_paragraph_vector_or_enqueue(
-                                paragraph_hash=para_hash,
-                                content=content,
-                                context="web_import_json",
-                            )
-                            if str(vector_result.get("warning", "") or "").strip():
-                                logger.warning(
-                                    f"web_import json paragraph 向量写入降级: hash={para_hash[:8]} detail={vector_result.get('detail')}"
-                                )
-                            for name in unit.get("entities", []) or []:
-                                n = str(name or "").strip()
-                                if not n:
-                                    continue
-                                if is_probable_hash_token(n):
-                                    chunk_warnings.append(
-                                        f"跳过分块[{chunk_id}]中的实体：疑似哈希值 ({n[:32]})"
-                                    )
-                                    continue
-                                await self._add_entity_with_vector(n, source_paragraph=para_hash)
-                            for rel in unit.get("relations", []) or []:
-                                if not isinstance(rel, dict):
-                                    continue
-                                s = str(rel.get("subject", "")).strip()
-                                p = str(rel.get("predicate", "")).strip()
-                                o = str(rel.get("object", "")).strip()
-                                if not (s and p and o):
-                                    continue
-                                if any(is_probable_hash_token(token) for token in (s, p, o)):
-                                    chunk_warnings.append(
-                                        f"跳过分块[{chunk_id}]中的关系：疑似哈希值 ({s[:24]}|{p[:24]}|{o[:24]})"
-                                    )
-                                    continue
-                                await self._add_relation(s, p, o, source_paragraph=para_hash)
-                    elif kind == "entity":
-                        entity_name = str(unit.get("name", "")).strip()
-                        if not entity_name:
-                            chunk_warnings.append(f"跳过分块[{chunk_id}]：实体名为空")
-                            skip_write = True
-                        elif is_probable_hash_token(entity_name):
-                            chunk_warnings.append(f"跳过分块[{chunk_id}]：实体名疑似哈希值")
-                            skip_write = True
-                        if not skip_write:
-                            await self._add_entity_with_vector(entity_name)
-                    elif kind == "relation":
-                        subject = str(unit.get("subject", "")).strip()
-                        predicate = str(unit.get("predicate", "")).strip()
-                        obj = str(unit.get("object", "")).strip()
-                        if not (subject and predicate and obj):
-                            chunk_warnings.append(f"跳过分块[{chunk_id}]：关系字段不完整")
-                            skip_write = True
-                        elif any(is_probable_hash_token(token) for token in (subject, predicate, obj)):
-                            chunk_warnings.append(f"跳过分块[{chunk_id}]：关系字段疑似哈希值")
-                            skip_write = True
-                        if not skip_write:
-                            await self._add_relation(subject, predicate, obj)
-                    else:
-                        raise RuntimeError(f"未知 JSON 导入单元类型: {kind}")
+                        for name in unit.get("entities", []) or []:
+                            n = str(name or "").strip()
+                            if not n:
+                                continue
+                            await self._add_entity_with_vector(n, source_paragraph=para_hash)
+                        for rel in unit.get("relations", []) or []:
+                            if not isinstance(rel, dict):
+                                continue
+                            s = str(rel.get("subject", "")).strip()
+                            p = str(rel.get("predicate", "")).strip()
+                            o = str(rel.get("object", "")).strip()
+                            if not (s and p and o):
+                                continue
+                            await self._add_relation(s, p, o, source_paragraph=para_hash)
+                elif kind == "entity":
+                    entity_name = str(unit.get("name", "")).strip()
+                    if not entity_name:
+                        chunk_warnings.append(f"跳过分块[{chunk_id}]：实体名为空")
+                        skip_write = True
+                    if not skip_write:
+                        await self._add_entity_with_vector(entity_name)
+                elif kind == "relation":
+                    subject = str(unit.get("subject", "")).strip()
+                    predicate = str(unit.get("predicate", "")).strip()
+                    obj = str(unit.get("object", "")).strip()
+                    if not (subject and predicate and obj):
+                        chunk_warnings.append(f"跳过分块[{chunk_id}]：关系字段不完整")
+                        skip_write = True
+                    if not skip_write:
+                        await self._add_relation(subject, predicate, obj)
+                else:
+                    raise RuntimeError(f"未知 JSON 导入单元类型: {kind}")
                 if chunk_warnings:
                     await self._append_file_warnings(task_id, file_record.file_id, chunk_warnings)
                 await self._set_chunk_completed(task_id, file_record.file_id, chunk_id)
@@ -3136,6 +3593,37 @@ class ImportTaskManager:
         if file_record.source_path:
             return f"{file_record.source_kind}:{file_record.source_path}"
         return f"web_import:{file_record.name}"
+
+    def _record_file_source(self, file_record: ImportFileRecord, source: str) -> None:
+        source_text = str(source or "").strip()
+        if not source_text:
+            return
+        imported_sources = getattr(file_record, "imported_sources", None)
+        if imported_sources is None:
+            imported_sources = []
+            file_record.imported_sources = imported_sources
+        if source_text not in imported_sources:
+            imported_sources.append(source_text)
+
+    @staticmethod
+    def _chat_metadata_from_params(params: Dict[str, Any]) -> Dict[str, Any]:
+        chat_id = str(params.get("chat_id") or "").strip()
+        scope_type = str(params.get("scope_type") or "").strip().lower() or (
+            "chat" if chat_id else "global"
+        )
+        memory_scope = {
+            key: value
+            for key, value in {
+                "memory_space_id": str(params.get("memory_space_id") or "").strip(),
+                "workspace_id": str(params.get("workspace_id") or "").strip(),
+            }.items()
+            if value
+        }
+        if scope_type == "global" and not chat_id:
+            return {"scope_type": "global", **memory_scope}
+        if scope_type == "chat" and chat_id:
+            return {"scope_type": "chat", "chat_id": chat_id, **memory_scope}
+        raise ValueError("导入任务的 scope_type 与 chat_id 不一致")
 
     async def _ensure_embedding_runtime_ready(self) -> None:
         report = await ensure_runtime_self_check(self.plugin)
@@ -3160,16 +3648,20 @@ class ImportTaskManager:
         file_record: ImportFileRecord,
         processed: ProcessedChunk,
         *,
+        metadata: Optional[Dict[str, Any]] = None,
         time_meta: Optional[Dict[str, Any]] = None,
     ) -> None:
         content = str(processed.chunk.text or "")
         if is_probable_hash_token(content):
-            logger.warning("跳过疑似哈希段落写入: source=%s preview=%s", self._source_label(file_record), content[:32])
+            logger.warning(f"跳过疑似哈希段落写入: source={self._source_label(file_record)} preview={content[:32]}")
             return
         data = _coerce_import_data_dict(processed.data, context="分块抽取结果")
-        para_hash = self.plugin.metadata_store.add_paragraph(
+        source = self._source_label(file_record)
+        para_hash = await self._add_paragraph_metadata(
+            file_record=file_record,
             content=content,
-            source=self._source_label(file_record),
+            source=source,
+            metadata=metadata,
             knowledge_type=_storage_type_from_strategy(processed.type),
             time_meta=time_meta,
         )
@@ -3205,47 +3697,148 @@ class ImportTaskManager:
             entities.extend(_normalize_import_entity_list(data.get(k)))
 
         uniq_entities = list({x.strip().lower(): x.strip() for x in entities if str(x).strip()}.values())
-        for name in uniq_entities:
-            await self._add_entity_with_vector(name, source_paragraph=para_hash)
+        await self._add_entities_with_vectors(uniq_entities, source_paragraph=para_hash)
+        await self._add_relations_with_vectors(relations, source_paragraph=para_hash)
 
-        for s, p, o in relations:
-            await self._add_relation(s, p, o, source_paragraph=para_hash)
+    async def _add_entities_with_vectors(
+        self,
+        names: List[str],
+        source_paragraph: str = "",
+    ) -> Dict[str, str]:
+        """批量写入实体元数据、图节点和缺失向量。"""
+        normalized_names: List[str] = []
+        for name in names:
+            name_token = str(name or "").strip()
+            if not name_token:
+                continue
+            normalized_names.append(name_token)
+        if not normalized_names:
+            return {}
 
-    async def _add_entity_with_vector(self, name: str, source_paragraph: str = "") -> str:
-        name_token = str(name or "").strip()
-        if not name_token:
-            return ""
-        if is_probable_hash_token(name_token):
-            logger.warning(f"跳过疑似哈希实体写入: entity={name_token[:32]}")
-            return ""
+        async with self._storage_lock:
+            entity_hashes: List[Tuple[str, str]] = []
+            with self.plugin.metadata_store.transaction(
+                immediate=True
+            ), self.plugin.graph_store.batch_update():
+                self.plugin.graph_store.add_nodes(normalized_names)
+                hashes = self.plugin.metadata_store.add_entities_batch(
+                    normalized_names,
+                    source_paragraph=source_paragraph,
+                )
+                entity_hashes.extend(zip(normalized_names, hashes, strict=True))
 
-        hash_value = self.plugin.metadata_store.add_entity(name=name_token, source_paragraph=source_paragraph)
-        self.plugin.graph_store.add_nodes([name_token])
-        if hash_value not in self.plugin.vector_store:
+            target_store = self._graph_vector_store()
+            pending_by_id: Dict[str, Tuple[str, str]] = {}
+            for name_token, hash_value in entity_hashes:
+                vector_id = self._graph_vector_id("entity", hash_value)
+                if target_store is not None and vector_id not in target_store:
+                    pending_by_id[vector_id] = (name_token, hash_value)
+
+        pending_items = list(pending_by_id.items())
+        write_batch_size = self._embedding_write_batch_size()
+        for offset in range(0, len(pending_items), write_batch_size):
+            batch_items = pending_items[offset : offset + write_batch_size]
             try:
+                if target_store is None:
+                    raise RuntimeError("graph_vector_store_missing")
                 if self._is_embedding_degraded():
                     raise RuntimeError("embedding_degraded")
-                emb = await self.plugin.embedding_manager.encode(name_token)
-                self.plugin.vector_store.add(emb.reshape(1, -1), [hash_value])
+                embeddings = np.asarray(
+                    await self.plugin.embedding_manager.encode_batch(
+                        [item[1][0] for item in batch_items]
+                    ),
+                    dtype=np.float32,
+                )
+                if embeddings.ndim == 1:
+                    embeddings = embeddings.reshape(1, -1)
+                if embeddings.shape[0] != len(batch_items):
+                    raise ValueError(
+                        "实体批量向量数量不匹配: "
+                        f"{embeddings.shape[0]} vs {len(batch_items)}"
+                    )
+                target_store.add(
+                    embeddings,
+                    [vector_id for vector_id, _ in batch_items],
+                )
             except Exception as exc:
                 if not self._allow_metadata_only_write():
                     raise
-                logger.warning(f"实体向量写入降级，保留 metadata/graph: entity={name_token} error={exc}")
-        return hash_value
+                logger.warning(
+                    "实体批量向量写入降级，保留 metadata/graph: "
+                    f"count={len(batch_items)} error={exc}"
+                )
+
+        return {name_token: hash_value for name_token, hash_value in entity_hashes}
+
+    async def _add_entity_with_vector(self, name: str, source_paragraph: str = "") -> str:
+        name_token = str(name or "").strip()
+        entity_hashes = await self._add_entities_with_vectors(
+            [name_token],
+            source_paragraph=source_paragraph,
+        )
+        return entity_hashes.get(name_token, "")
+
+    async def _add_relations_with_vectors(
+        self,
+        relations: List[Tuple[str, str, str]],
+        source_paragraph: str = "",
+    ) -> List[str]:
+        """健康向量运行期使用统一服务批量写关系，降级路径保留逐条状态语义。"""
+        normalized_relations: List[Tuple[str, str, str]] = []
+        for subject, predicate, obj in relations:
+            tokens = (
+                str(subject or "").strip(),
+                str(predicate or "").strip(),
+                str(obj or "").strip(),
+            )
+            if not all(tokens):
+                continue
+            normalized_relations.append(tokens)
+        if not normalized_relations:
+            return []
+
+        relation_write_service = self.plugin.relation_write_service
+        if relation_write_service is None or self._is_embedding_degraded():
+            relation_hashes: List[str] = []
+            for subject, predicate, obj in normalized_relations:
+                relation_hashes.append(
+                    await self._add_relation(
+                        subject,
+                        predicate,
+                        obj,
+                        source_paragraph=source_paragraph,
+                    )
+                )
+            return relation_hashes
+
+        # 保留原有 appearance_count/mention_count 语义：每次关系写入仍记录两端实体出现。
+        relation_entities = [
+            name
+            for subject, _, obj in normalized_relations
+            for name in (subject, obj)
+        ]
+        await self._add_entities_with_vectors(
+            relation_entities,
+            source_paragraph=source_paragraph,
+        )
+
+        rv_cfg = self.plugin.get_config("retrieval.relation_vectorization", {}) or {}
+        if not isinstance(rv_cfg, dict):
+            rv_cfg = {}
+        write_vector = bool(rv_cfg.get("enabled", False)) and bool(rv_cfg.get("write_on_import", True))
+        results = await relation_write_service.upsert_relations_with_vectors(
+            normalized_relations,
+            confidence=1.0,
+            source_paragraph=source_paragraph,
+            write_vector=write_vector,
+        )
+        return [result.hash_value for result in results]
 
     async def _add_relation(self, subject: str, predicate: str, obj: str, source_paragraph: str = "") -> str:
         subject_token = str(subject or "").strip()
         predicate_token = str(predicate or "").strip()
         object_token = str(obj or "").strip()
         if not (subject_token and predicate_token and object_token):
-            return ""
-        if any(is_probable_hash_token(token) for token in (subject_token, predicate_token, object_token)):
-            logger.warning(
-                "跳过疑似哈希关系写入: %s | %s | %s",
-                subject_token[:24],
-                predicate_token[:24],
-                object_token[:24],
-            )
             return ""
 
         await self._add_entity_with_vector(subject_token, source_paragraph=source_paragraph)
@@ -3255,69 +3848,102 @@ class ImportTaskManager:
             rv_cfg = {}
         write_vector = bool(rv_cfg.get("enabled", False)) and bool(rv_cfg.get("write_on_import", True))
 
-        relation_service = getattr(self.plugin, "relation_write_service", None)
-        if relation_service is not None:
-            result = await relation_service.upsert_relation_with_vector(
+        async with self._storage_lock:
+            rel_hash = self.plugin.metadata_store.add_relation(
                 subject=subject_token,
                 predicate=predicate_token,
                 obj=object_token,
                 confidence=1.0,
                 source_paragraph=source_paragraph,
-                write_vector=write_vector,
             )
-            return result.hash_value
+            self.plugin.graph_store.add_edges([(subject_token, object_token)], relation_hashes=[rel_hash])
+            if not write_vector:
+                return rel_hash
+            target_store = self._graph_vector_store()
+            vector_id = self._graph_vector_id("relation", rel_hash)
+            vector_exists = target_store is not None and vector_id in target_store
+            self.plugin.metadata_store.set_relation_vector_state(rel_hash, "ready" if vector_exists else "pending")
 
-        rel_hash = self.plugin.metadata_store.add_relation(
-            subject=subject_token,
-            predicate=predicate_token,
-            obj=object_token,
-            source_paragraph=source_paragraph,
-            confidence=1.0,
-        )
-        self.plugin.graph_store.add_edges([(subject_token, object_token)], relation_hashes=[rel_hash])
+        if vector_exists:
+            return rel_hash
+
         try:
-            self.plugin.metadata_store.set_relation_vector_state(rel_hash, "none")
-        except Exception:
-            pass
+            if target_store is None:
+                raise RuntimeError("graph_vector_store_missing")
+            vector_text = RelationWriteService.build_relation_vector_text(
+                subject_token,
+                predicate_token,
+                object_token,
+            )
+            emb = await self.plugin.embedding_manager.encode(vector_text)
+            if vector_id in target_store:
+                await self._set_relation_vector_state_locked(rel_hash, "ready")
+                return rel_hash
+            added_count = target_store.add(emb.reshape(1, -1), [vector_id])
+            if added_count == 0 and vector_id not in target_store:
+                raise RuntimeError("relation vector add returned 0 without existing vector")
+            await self._set_relation_vector_state_locked(rel_hash, "ready")
+        except ValueError as exc:
+            if target_store is not None and vector_id in target_store:
+                await self._set_relation_vector_state_locked(rel_hash, "ready")
+            else:
+                await self._set_relation_vector_state_locked(rel_hash, "failed", error=str(exc), bump_retry=True)
+                logger.warning(f"关系向量写入失败，保留 metadata/graph: relation={rel_hash[:16]} error={exc}")
+        except Exception as exc:
+            await self._set_relation_vector_state_locked(rel_hash, "failed", error=str(exc), bump_retry=True)
+            logger.warning(f"关系向量写入降级，保留 metadata/graph: relation={rel_hash[:16]} error={exc}")
         return rel_hash
-    async def _select_model(self) -> Any:
-        models = llm_api.get_available_models()
+
+    async def _select_model(self) -> ResolvedLLMModel:
+        models = get_text_generation_model_tasks(llm_api)
         if not models:
             raise RuntimeError("没有可用 LLM 模型")
 
         config_model = str(self._cfg("advanced.extraction_model", "auto") or "auto").strip()
-        if config_model.lower() != "auto" and config_model in models:
-            return models[config_model]
+        if config_model.lower() != "auto":
+            task_name, task_config, selected_model_name = resolve_text_generation_model_selector(models, config_model)
+            if task_name and task_config:
+                return ResolvedLLMModel(
+                    task_name=task_name,
+                    task_config=task_config,
+                    selected_model_name=selected_model_name,
+                )
+            logger.warning(f"advanced.extraction_model={config_model!r} 不可用于文本生成，已回退自动选择")
 
-        for task_name in [
-            "lpmm_entity_extract",
-            "lpmm_rdf_build",
-            "replyer",
-            "utils",
-            "planner",
-            "tool_use",
-        ]:
-            if task_name in models:
-                return models[task_name]
+        task_name, task_config = pick_text_generation_task(
+            models,
+            preferred=(
+                "memory",
+                "utils",
+                "lpmm_entity_extract",
+                "lpmm_rdf_build",
+                "replyer",
+                "planner",
+                "tool_use",
+            ),
+        )
+        if task_name and task_config:
+            return ResolvedLLMModel(task_name=task_name, task_config=task_config)
+        raise RuntimeError("没有可用 LLM 模型")
 
-        return models[next(iter(models))]
-
-    async def _llm_call(self, prompt: str, model_config: Any) -> Dict[str, Any]:
+    async def _llm_call(self, prompt: str, resolved_model: ResolvedLLMModel) -> Dict[str, Any]:
         cfg = self._llm_retry_config()
         retries = int(cfg["retries"])
-        task_name = llm_api.resolve_task_name_from_model_config(model_config)
+        llm_timeout = float(cfg.get("llm_call_seconds", 0.0) or 0.0)
         last_error: Optional[Exception] = None
         for attempt in range(retries + 1):
             try:
-                result = await llm_api.generate(
-                    llm_api.LLMServiceRequest(
-                        task_name=task_name,
-                        request_type="A_Memorix.WebImport",
-                        prompt=prompt,
-                        temperature=getattr(model_config, "temperature", None),
-                        max_tokens=getattr(model_config, "max_tokens", None),
-                    )
+                generate_coro = generate_with_resolved_model(
+                    resolved_model,
+                    request_type="A_Memorix.WebImport",
+                    prompt=prompt,
+                    temperature=getattr(resolved_model.task_config, "temperature", None),
+                    max_tokens=getattr(resolved_model.task_config, "max_tokens", None),
                 )
+                if llm_timeout > 0:
+                    result = await asyncio.wait_for(generate_coro, timeout=llm_timeout)
+                else:
+                    result = await generate_coro
                 success = bool(result.success)
                 response = str(result.completion.response or "")
                 if not success or not response:
@@ -3367,7 +3993,7 @@ class ImportTaskManager:
     async def _extract_chat_time_meta_with_llm(
         self,
         text: str,
-        model_config: Any,
+        resolved_model: ResolvedLLMModel,
         *,
         reference_time: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
@@ -3401,7 +4027,7 @@ JSON schema:
 }}
 """
         try:
-            result = await self._llm_call(prompt, model_config)
+            result = await self._llm_call(prompt, resolved_model)
         except Exception as e:
             logger.warning(f"chat_log 时间语义抽取失败: {e}")
             return None
@@ -3431,20 +4057,39 @@ JSON schema:
             return QuoteStrategy(filename)
         return None
 
-    def _instantiate_strategy(self, filename: str, strategy: ImportStrategy) -> Any:
+    def _instantiate_strategy(
+        self,
+        filename: str,
+        strategy: ImportStrategy,
+        *,
+        import_params: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        params = import_params or {}
         if strategy == ImportStrategy.FACTUAL:
-            return FactualStrategy(filename)
+            return FactualStrategy(filename, target_size=_coerce_int(params.get("factual_target_size"), 1200))
         if strategy == ImportStrategy.QUOTE:
             return QuoteStrategy(filename)
-        return NarrativeStrategy(filename)
+        return NarrativeStrategy(
+            filename,
+            window_size=_coerce_int(params.get("narrative_window_size"), 1600),
+            overlap=_coerce_int(params.get("narrative_overlap"), 400),
+        )
 
-    def _determine_strategy(self, filename: str, content: str, override: str, *, chat_log: bool = False) -> Any:
+    def _determine_strategy(
+        self,
+        filename: str,
+        content: str,
+        override: str,
+        *,
+        chat_log: bool = False,
+        import_params: Optional[Dict[str, Any]] = None,
+    ) -> Any:
         strategy = select_import_strategy(
             content,
             override=override,
             chat_log=chat_log,
         )
-        return self._instantiate_strategy(filename, strategy)
+        return self._instantiate_strategy(filename, strategy, import_params=import_params)
 
     async def _set_file_strategy(self, task_id: str, file_id: str, strategy: Any) -> None:
         if isinstance(strategy, str):
@@ -3513,7 +4158,10 @@ JSON schema:
             f.current_step = step
             f.updated_at = _now()
             task.updated_at = _now()
-            if step in {"preparing", "splitting", "extracting", "writing", "saving"} and task.status in {"queued", "preparing"}:
+            if step in {"preparing", "splitting", "extracting", "writing", "saving"} and task.status in {
+                "queued",
+                "preparing",
+            }:
                 task.status = "running"
                 task.current_step = "running"
 

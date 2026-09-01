@@ -1,6 +1,6 @@
 # A_Memorix 配置参考 (v2.0.0)
 
-本文档对应当前仓库代码（`__version__ = 2.0.0`、`SCHEMA_VERSION = 10`）。
+本文档对应当前仓库代码（`__version__ = 2.0.0`、`SCHEMA_VERSION = 21`）。
 
 说明：
 
@@ -22,6 +22,7 @@ data_dir = "data/a-memorix"
 [embedding]
 model_name = "auto"
 dimension = 1024
+dimension_request_mode = "explicit"
 batch_size = 32
 max_concurrent = 5
 enable_cache = false
@@ -58,11 +59,10 @@ candidate_k = 80
 relation_candidate_k = 60
 
 [threshold]
-min_threshold = 0.3
+min_threshold = 0.29
 max_threshold = 0.95
 percentile = 75.0
-min_results = 3
-enable_auto_adjust = true
+min_results = 4
 
 [filter]
 enabled = true
@@ -72,8 +72,11 @@ chats = []
 [episode]
 enabled = true
 generation_enabled = true
-pending_batch_size = 20
-pending_max_retry = 3
+source_poll_interval_seconds = 1
+source_batch_size = 20
+source_max_retry = 3
+source_lease_seconds = 1800
+source_max_wait_seconds = 60
 max_paragraphs_per_call = 20
 max_chars_per_call = 6000
 source_time_window_hours = 24
@@ -85,12 +88,20 @@ refresh_interval_minutes = 30
 active_window_hours = 72
 max_refresh_per_cycle = 50
 top_k_evidence = 12
+evidence_classification_max_tokens = 1200
+evidence_classification_temperature = 0.1
 
 [memory]
 enabled = true
 half_life_hours = 24.0
 prune_threshold = 0.1
+revive_threshold = 0.15
 freeze_duration_hours = 24.0
+access_reinforcement_alpha = 0.05
+access_reinforcement_cooldown_minutes = 60
+explicit_reinforcement_alpha = 0.5
+weaken_alpha = 0.5
+lifecycle_batch_size = 1000
 
 [advanced]
 enable_auto_save = true
@@ -105,6 +116,17 @@ max_file_size_mb = 20
 max_paste_chars = 200000
 default_file_concurrency = 2
 default_chunk_concurrency = 4
+default_narrative_window_size = 1600
+default_narrative_overlap = 400
+default_factual_target_size = 1200
+max_chunk_chars = 3200
+
+[web.import.timeout]
+llm_call_seconds = 240
+process_poll_seconds = 1
+process_terminate_seconds = 5
+process_kill_seconds = 3
+convert_preflight_seconds = 20
 
 [web.tuning]
 enabled = true
@@ -120,7 +142,7 @@ default_sample_size = 24
 
 - 长期记忆控制台：适合修改高频项，例如 embedding、检索、Episode、人物画像、导入与调优的常用开关。
 - 原始 TOML：适合复制整份配置、批量调整参数，或修改未在可视化表单中展示的高级项。
-- raw-only 高级项仍包括：`retrieval.fusion.*`、`retrieval.search.relation_intent.*`、`retrieval.search.graph_recall.*`、`retrieval.search.posterior_graph.*`、`retrieval.aggregate.*`、`memory.orphan.*`、`advanced.extraction_model`、`web.import.llm_retry.*`、`web.import.path_aliases`、`web.import.convert.*`、`web.tuning.llm_retry.*`、`web.tuning.eval_query_timeout_seconds`。
+- raw-only 高级项仍包括：`retrieval.search.relation_intent.*`、`retrieval.search.graph_recall.*`、`retrieval.search.posterior_graph.*`、`retrieval.aggregate.*`、`memory.orphan.*`、`advanced.extraction_model`、`web.import.llm_retry.*`、`web.import.timeout.*`、`web.import.convert.*`、`web.tuning.llm_retry.*`、`web.tuning.eval_query_timeout_seconds`。
 
 ## 1. 存储与嵌入
 
@@ -131,15 +153,17 @@ default_sample_size = 24
 
 补充说明：
 
-- 部分离线脚本若未显式覆盖路径，会回退到 `A_memorix.paths.default_data_dir()`（当前为 `data/plugins/a-dawn.a-memorix`）。
-- 建议在运维侧统一目录策略，避免“控制台写入目录”和“脚本处理目录”不一致。
+- 离线脚本若未显式覆盖路径，会回退到 `A_memorix.paths.default_data_dir()`，当前为 `data/a-memorix`。
+- 显式传入 `--data-dir` 时，应与运行时的 `storage.data_dir` 保持一致。
 
 ### `embedding`
 
 - `embedding.model_name` (默认 `auto`)
 : embedding 模型选择。
 - `embedding.dimension` (默认 `1024`)
-: 唯一公开的维度控制项。A_Memorix 内部会自动映射为 provider 所需请求字段，并在运行时做真实探测与校验。
+: 期望的向量维度，用于初始化新向量库、运行时自检和显式维度请求。
+- `embedding.dimension_request_mode` (默认 `explicit`)
+: 是否在 embedding 请求中携带维度参数。`explicit` 仅在调用方显式指定 `dimensions` 时携带；`always` 保持旧行为，默认 encode 也会向 OpenAI 传 `dimensions`、向 Gemini 传 `output_dimensionality`；`never` 始终不传，让模型返回自然维度。
 - `embedding.batch_size` (默认 `32`)
 - `embedding.max_concurrent` (默认 `5`)
 - `embedding.enable_cache` (默认 `false`)
@@ -169,6 +193,40 @@ default_sample_size = 24
 - `retrieval.ppr_concurrency_limit` (默认 `4`)
 - `retrieval.enable_parallel` (默认 `true`)
 - `retrieval.relation_vectorization.enabled` (默认 `false`)
+- `retrieval.relation_vectorization.backfill_enabled` (默认 `false`)
+- `retrieval.relation_vectorization.write_on_import` (默认 `true`)
+- `retrieval.vector_pools.mode` (默认 `"dual"`)
+- `retrieval.vector_pools.graph_top_k` (默认 `40`)
+- `retrieval.vector_pools.graph_weight` (默认 `0.15`)
+
+### `retrieval.relation_vectorization` (`RelationVectorizationConfig`)
+
+关系向量化默认关闭。开启 `enabled` 后，运行时会允许关系写入向量库；开启 `backfill_enabled` 后，后台维护流程会为已有关系补写向量；`write_on_import` 控制摘要导入、网页导入和迁移脚本写入关系时是否同步写入关系向量。
+
+### `retrieval.vector_pools` (`VectorPoolsConfig`)
+
+双向量池检索默认使用 `dual`：段落向量池只召回段落，图谱向量池召回 `entity:<hash>` 和 `relation:<hash>`，再映射回支撑段落并作为 evidence 参与排序。切换为 `single` 可保持单向量池行为。
+
+常用键（默认值）：
+
+- `mode = "dual"` (`single`/`dual`)
+- `paragraph_top_k = 20`
+- `graph_top_k = 40`
+- `graph_expand_paragraph_k = 80`
+- `relation_expand_per_hit = 5`
+- `entity_expand_per_hit = 8`
+- `relation_evidence_weight = 1.0`
+- `entity_evidence_weight = 0.55`
+- `semantic_weight = 0.65`
+- `sparse_weight = 0.20`
+- `graph_weight = 0.15`
+- `relation_intent.graph_top_k = 80`
+- `relation_intent.semantic_weight = 0.45`
+- `relation_intent.sparse_weight = 0.15`
+- `relation_intent.graph_weight = 0.40`
+- `relation_intent.return_relation_items = false`
+
+`relation_vectorization.enabled` 控制关系向量是否写入图谱池，`vector_pools.mode` 控制检索时是否使用双池。两者语义不同。
 
 ### `retrieval.sparse` (`SparseBM25Config`)
 
@@ -215,7 +273,7 @@ default_sample_size = 24
 
 ### `retrieval.search.posterior_graph` (`PosteriorGraphConfig`)
 
-- `enabled` (默认 `true`)
+- `enabled` (默认 `false`，需要后验图补位时显式开启)
 - `drop_ratio` (默认 `0.15`)
 - `min_core_results` (默认 `2`)
 - `max_graph_slots` (默认 `2`)
@@ -244,12 +302,13 @@ default_sample_size = 24
 
 ### `threshold` (`ThresholdConfig`)
 
-- `threshold.min_threshold` (默认 `0.3`)
+- `threshold.min_threshold` (默认 `0.29`)
 - `threshold.max_threshold` (默认 `0.95`)
 - `threshold.percentile` (默认 `75.0`)
 - `threshold.std_multiplier` (默认 `1.5`)
-- `threshold.min_results` (默认 `3`)
-- `threshold.enable_auto_adjust` (默认 `true`)
+- `threshold.min_results` (默认 `4`)
+
+阈值只由当前请求的候选分数分布计算。运行时只累计次数、总和、最小值、最大值用于统计展示，不保存阈值序列，也不把累计值反馈给后续请求。
 
 ## 4. 聊天过滤
 
@@ -262,6 +321,21 @@ default_sample_size = 24
 enabled = true
 mode = "blacklist" # blacklist / whitelist
 chats = ["group:123", "user:456", "stream:abc"]
+
+[filter.retrieval.chat_stream]
+enabled = false
+mode = "blacklist"
+chats = []
+
+[filter.retrieval.chat_summary]
+enabled = false
+mode = "blacklist"
+chats = []
+
+[filter.retrieval.episode]
+enabled = false
+mode = "blacklist"
+chats = []
 ```
 
 规则：
@@ -271,6 +345,48 @@ chats = ["group:123", "user:456", "stream:abc"]
 - 列表为空时：
   - `blacklist` => 全允许
   - `whitelist` => 全拒绝
+- `chats` 支持 `group:<group_id>`、`user:<user_id>`、`private:<user_id>`、
+  `stream:<session_id>`；裸字符串会匹配 stream/group/user 任一 token。
+- `filter.retrieval.*` 只在检索结果后置过滤阶段生效，不影响写入、聊天摘要生成、
+  Episode 生成、人物画像刷新或画像快照。
+- `chat_stream` 裁剪普通 paragraph/relation 命中；`chat_summary` 裁剪
+  `source_type=chat_summary` 或 `source=chat_summary:<session_id>` 命中；
+  `episode` 裁剪 Episode 命中。
+- 人物画像当前保持全局聚合与缓存，不按群组隔离。
+
+### `global_memory_sharing_enabled`
+
+- 默认 `false`
+- 关闭时，普通记忆查询只检索当前聊天流以及 `shared_memory_groups`
+  配置出的同组聊天流。
+- 开启时，普通记忆查询会在所有聊天流范围内检索；
+  `shared_memory_groups` 会保留配置，但不再限制普通查询范围。
+
+### `shared_memory_groups`
+
+用于配置多个聊天流共享同一长期记忆检索范围。写入仍保留原始
+`chat_id`，只在检索时把当前聊天流扩展为同组允许范围。
+
+```toml
+[[shared_memory_groups]]
+
+[[shared_memory_groups.targets]]
+platform = "qq"
+item_id = "123"
+rule_type = "group"
+
+[[shared_memory_groups.targets]]
+platform = "qq"
+item_id = "456"
+rule_type = "group"
+```
+
+注意：
+
+- `filter.whitelist` 只控制哪些聊天流允许读写记忆。
+- `filter.retrieval.*` 只裁剪已经召回的检索结果，不会扩大检索范围。
+- `shared_memory_groups` 才控制哪些聊天流互相共享检索范围。
+- 成员会解析为系统已知的真实聊天流 ID；解析不到的目标不会生效。
 
 ## 5. Episode
 
@@ -278,8 +394,12 @@ chats = ["group:123", "user:456", "stream:abc"]
 
 - `episode.enabled` (默认 `true`)
 - `episode.generation_enabled` (默认 `true`)
-- `episode.pending_batch_size` (默认 `20`，部分路径默认 `12`)
-- `episode.pending_max_retry` (默认 `3`)
+- `episode.source_poll_interval_seconds` (默认 `1.0`)
+- `episode.source_batch_size` (默认 `20`)
+- `episode.source_max_retry` (默认 `3`)
+: 每个来源版本最多尝试3次，包含首次尝试。
+- `episode.source_lease_seconds` (默认 `1800.0`)
+- `episode.source_max_wait_seconds` (默认 `60.0`)
 - `episode.max_paragraphs_per_call` (默认 `20`)
 - `episode.max_chars_per_call` (默认 `6000`)
 - `episode.source_time_window_hours` (默认 `24`)
@@ -295,6 +415,8 @@ chats = ["group:123", "user:456", "stream:abc"]
 - `person_profile.active_window_hours` (默认 `72`)
 - `person_profile.max_refresh_per_cycle` (默认 `50`)
 - `person_profile.top_k_evidence` (默认 `12`)
+- `person_profile.evidence_classification_max_tokens` (默认 `1200`)
+- `person_profile.evidence_classification_temperature` (默认 `0.1`)
 
 ## 7. 记忆演化与回收
 
@@ -304,14 +426,23 @@ chats = ["group:123", "user:456", "stream:abc"]
 - `memory.half_life_hours` (默认 `24.0`)
 - `memory.base_decay_interval_hours` (默认 `1.0`)
 - `memory.prune_threshold` (默认 `0.1`)
+- `memory.revive_threshold` (默认 `0.15`，应高于冻结阈值)
 - `memory.freeze_duration_hours` (默认 `24.0`)
+- `memory.access_reinforcement_alpha` (默认 `0.05`，仅对最终返回且实际采用的 relation 命中生效)
+- `memory.access_reinforcement_cooldown_minutes` (默认 `60`，设为 `0` 时不限制访问加强频率)
+- `memory.explicit_reinforcement_alpha` (默认 `0.5`)
+- `memory.weaken_alpha` (默认 `0.5`)
+- `memory.lifecycle_batch_size` (默认 `1000`)
 
 ### `memory.orphan`
 
 - `enable_soft_delete` (默认 `true`)
 - `entity_retention_days` (默认 `7.0`)
-- `paragraph_retention_days` (默认 `7.0`)
 - `sweep_grace_hours` (默认 `24.0`)
+
+Paragraph 不再因为年龄较大或缺少实体、关系派生物而自动回收。只有显式设置
+`expires_at` 的临时段落会进入自动删除流程；永久段落和存在 external ref 的段落
+始终跳过自动回收。
 
 ## 8. 高级运行时
 
@@ -333,9 +464,21 @@ chats = ["group:123", "user:456", "stream:abc"]
 - `web.import.max_paste_chars` (默认 `200000`)
 - `web.import.default_file_concurrency` (默认 `2`)
 - `web.import.default_chunk_concurrency` (默认 `4`)
+- `web.import.default_narrative_window_size` (默认 `1600`)
+- `web.import.default_narrative_overlap` (默认 `400`)
+- `web.import.default_factual_target_size` (默认 `1200`)
+- `web.import.max_chunk_chars` (默认 `3200`)
 - `web.import.max_file_concurrency` (默认 `6`)
 - `web.import.max_chunk_concurrency` (默认 `12`)
 - `web.import.poll_interval_ms` (默认 `1000`)
+
+### 超时
+
+- `web.import.timeout.llm_call_seconds` (默认 `240`，`0` 表示不额外限制)
+- `web.import.timeout.process_poll_seconds` (默认 `1`)
+- `web.import.timeout.process_terminate_seconds` (默认 `5`)
+- `web.import.timeout.process_kill_seconds` (默认 `3`)
+- `web.import.timeout.convert_preflight_seconds` (默认 `20`)
 
 ### 重试与路径
 
@@ -343,7 +486,7 @@ chats = ["group:123", "user:456", "stream:abc"]
 - `web.import.llm_retry.min_wait_seconds` (默认 `3`)
 - `web.import.llm_retry.max_wait_seconds` (默认 `40`)
 - `web.import.llm_retry.backoff_multiplier` (默认 `3`)
-- `web.import.path_aliases` (默认内置 `raw/lpmm/plugin_data`)
+- 导入目录固定从 `storage.data_dir/imports` 派生，内置 `raw/lpmm/maibot/converted` 逻辑别名，不接受外部路径配置
 
 ### 转换阶段
 

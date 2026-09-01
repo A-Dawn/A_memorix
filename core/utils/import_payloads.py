@@ -1,4 +1,4 @@
-"""Shared import payload normalization helpers."""
+"""导入载荷共用的归一化辅助工具。"""
 
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ def normalize_entity_import_item(item: Any) -> Optional[str]:
     else:
         name = ""
 
-    if not name or is_probable_hash_token(name):
+    if not name:
         return None
     return name
 
@@ -66,8 +66,6 @@ def normalize_relation_import_item(item: Any) -> Optional[Dict[str, str]]:
     predicate = str(item.get("predicate", "") or "").strip()
     obj = str(item.get("object", "") or "").strip()
     if not (subject and predicate and obj):
-        return None
-    if any(is_probable_hash_token(token) for token in (subject, predicate, obj)):
         return None
     return {
         "subject": subject,
@@ -110,7 +108,7 @@ def normalize_paragraph_import_item(
     *,
     default_source: str,
 ) -> Dict[str, Any]:
-    """Normalize one paragraph import item from text/json payloads."""
+    """归一化来自文本或 JSON 载荷的一条段落导入项。"""
 
     if isinstance(item, str):
         content = str(item or "")
@@ -191,6 +189,6 @@ def normalize_paragraph_import_item(
 
 
 def normalize_summary_knowledge_type(value: Any) -> KnowledgeType:
-    """Normalize config-driven summary knowledge type."""
+    """归一化由配置指定的摘要知识类型。"""
 
     return resolve_stored_knowledge_type(value, content="")

@@ -10,17 +10,11 @@ def package_root() -> Path:
 
 
 def src_root() -> Path:
-    root = package_root()
-    if root.parent.name == "src":
-        return root.parent
-    return root
+    return package_root().parent
 
 
 def repo_root() -> Path:
-    root = package_root()
-    if root.parent.name == "src":
-        return root.parent.parent
-    return root
+    return src_root().parent
 
 
 def config_path() -> Path:
@@ -28,7 +22,7 @@ def config_path() -> Path:
 
 
 def default_data_dir() -> Path:
-    return repo_root() / "data" / "plugins" / "a-dawn.a-memorix"
+    return repo_root() / "data" / "a-memorix"
 
 
 def artifacts_root() -> Path:
