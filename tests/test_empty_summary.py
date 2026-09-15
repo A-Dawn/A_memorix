@@ -1,5 +1,6 @@
 """在提供 src 宿主依赖的环境运行：python -m pytest tests/test_empty_summary.py。"""
 
+from importlib import import_module
 import json
 from pathlib import Path
 import sys
@@ -14,8 +15,8 @@ package = ModuleType("memorix_under_test")
 package.__path__ = [str(Path(__file__).resolve().parents[1])]
 sys.modules[package.__name__] = package
 
-from memorix_under_test.core.runtime.sdk_memory_kernel import SDKMemoryKernel
-from memorix_under_test.core.utils import summary_importer as module
+SDKMemoryKernel = import_module("memorix_under_test.core.runtime.sdk_memory_kernel").SDKMemoryKernel
+module = import_module("memorix_under_test.core.utils.summary_importer")
 
 
 @pytest.fixture
