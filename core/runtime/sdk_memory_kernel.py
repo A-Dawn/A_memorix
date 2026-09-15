@@ -830,13 +830,16 @@ class SDKMemoryKernel:
     ) -> Dict[str, Any]:
         await self.initialize()
         assert self.summary_importer
-        success, detail = await self.summary_importer.import_from_stream(
+        import_result = await self.summary_importer.import_from_stream(
             stream_id=str(chat_id or "").strip(),
             context_length=context_length,
             include_personality=include_personality,
             time_end=time_end,
             metadata=metadata,
         )
+        success, detail = import_result
+        if success and bool(getattr(import_result, "skipped", False)):
+            return {"success": True, "detail": detail, "skipped": True}
         if success:
             await self.rebuild_episodes_for_sources([self._build_source("chat_summary", chat_id, [])])
             self._persist()
@@ -888,6 +891,8 @@ class SDKMemoryKernel:
             )
             result.setdefault("external_id", external_id)
             result.setdefault("chat_id", chat_id)
+            if result.get("success") and result.get("skipped"):
+                result["skipped_ids"] = [external_token]
             return result
         return await self.ingest_text(
             external_id=external_id,
