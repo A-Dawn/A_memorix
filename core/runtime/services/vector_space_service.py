@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import asyncio
 import hashlib
 import json
+import re
 import shutil
 import time
 
@@ -86,6 +87,55 @@ class MemoryVectorSpaceService(KernelServiceBase):
         self._active_vector_space_id = space_id
         self._vector_space_inputs = self._read_inputs()
         self._register_current_space(fingerprint)
+
+    def _list_spaces(self) -> List[Dict[str, Any]]:
+        catalog = self._catalog_root()
+        if not catalog.exists():
+            return []
+        selected = self._read_active_space()
+        items: List[Dict[str, Any]] = []
+        for root in catalog.iterdir():
+            if not root.is_dir() or re.fullmatch(r"[0-9a-f]{64}", root.name) is None:
+                continue
+            info_path = root / "space.json"
+            info = json.loads(info_path.read_text(encoding="utf-8")) if info_path.exists() else {}
+            fingerprint = info.get("embedding_fingerprint", {})
+            state = "saved"
+            if root.name == self._target_vector_space_id:
+                state = "syncing"
+                fingerprint = self._current_embedding_fingerprint_for_validation() or fingerprint
+            elif root.name in {self._active_vector_space_id, selected}:
+                state = "active"
+            counts: Dict[str, int] = {}
+            for pool in ("paragraph", "graph", "single"):
+                meta_path = root / ("" if pool == "single" else pool) / "vectors_metadata.json"
+                if meta_path.exists():
+                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                    counts[pool] = len(meta.get("known_hashes", [])) - len(meta.get("deleted_ids", []))
+            items.append({
+                **info, "space_id": root.name, "embedding_fingerprint": fingerprint,
+                "state": state, "can_delete": state == "saved",
+                "vector_count": sum(counts.values()), "counts": counts,
+                "size_bytes": sum(path.stat().st_size for path in root.rglob("*") if path.is_file()),
+            })
+        return sorted(items, key=lambda item: float(item.get("last_used_at", 0)), reverse=True)
+
+    async def list_spaces(self) -> Dict[str, Any]:
+        # 读取状态不等待耗时的重嵌入，界面可以及时显示同步中的库。
+        return {"success": True, "items": await asyncio.to_thread(self._list_spaces)}
+
+    async def delete_space(self, space_id: str) -> Dict[str, Any]:
+        async with self._vector_rebuild_lock:
+            if re.fullmatch(r"[0-9a-f]{64}", space_id) is None:
+                return {"success": False, "error": "vector_space_not_found"}
+            selected = await asyncio.to_thread(self._read_active_space)
+            if space_id in {self._active_vector_space_id, self._target_vector_space_id, selected}:
+                return {"success": False, "error": "vector_space_in_use"}
+            root = self._catalog_root() / space_id
+            if not await asyncio.to_thread(root.is_dir):
+                return {"success": False, "error": "vector_space_not_found"}
+            await asyncio.to_thread(shutil.rmtree, root)
+            return {"success": True, "deleted": space_id}
 
     async def synchronize(self, *, force: bool = False) -> Dict[str, Any]:
         fingerprint = self._current_embedding_fingerprint_for_validation()

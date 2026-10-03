@@ -1080,6 +1080,12 @@ class MemoryVectorRuntimeService(KernelServiceBase):
             self._persist()
             return {"success": True, "saved": True, "data_dir": str(self.data_dir)}
 
+        if act == "list_vector_spaces":
+            return await self._vector_space_service.list_spaces()
+
+        if act == "delete_vector_space":
+            return await self._vector_space_service.delete_space(str(kwargs["space_id"]))
+
         if act == "get_config":
             degraded = self._embedding_degraded_snapshot()
             backfill_counts = self._paragraph_vector_backfill_counts()
