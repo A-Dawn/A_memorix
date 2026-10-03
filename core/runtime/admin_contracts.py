@@ -69,12 +69,20 @@ async def _dispatch_memory_feedback_admin(kernel: Any, command: AdminCommand) ->
     return await kernel.memory_feedback_admin(action=command.action, **command.payload)
 
 
+async def _dispatch_memory_fact_admin(kernel: Any, command: AdminCommand) -> Any:
+    return await kernel.memory_fact_admin(action=command.action, **command.payload)
+
+
 async def _dispatch_memory_runtime_admin(kernel: Any, command: AdminCommand) -> Any:
     return await kernel.memory_runtime_admin(action=command.action, **command.payload)
 
 
 async def _dispatch_memory_import_admin(kernel: Any, command: AdminCommand) -> Any:
     return await kernel.memory_import_admin(action=command.action, **command.payload)
+
+
+async def _dispatch_memory_bundle_admin(kernel: Any, command: AdminCommand) -> Any:
+    return await kernel.memory_bundle_admin(action=command.action, **command.payload)
 
 
 async def _dispatch_memory_tuning_admin(kernel: Any, command: AdminCommand) -> Any:
@@ -110,7 +118,7 @@ _GRAPH_ACTIONS = {
     "update_edge_weight",
 }
 _SOURCE_ACTIONS = {"list", "delete", "batch_delete"}
-_EPISODE_ACTIONS = {"query", "list", "get", "status", "rebuild", "process_sources"}
+_EPISODE_ACTIONS = {"query", "list", "get", "status", "rebuild", "process_sources", "discard_migration_backfill"}
 _PROFILE_ACTIONS = {
     "query",
     "evidence",
@@ -118,10 +126,14 @@ _PROFILE_ACTIONS = {
     "status",
     "process_pending",
     "list",
+    "get_aliases",
+    "set_aliases",
+    "delete_aliases",
     "set_override",
     "delete_override",
 }
 _FEEDBACK_ACTIONS = {"list", "get", "rollback"}
+_FACT_ACTIONS = {"get", "list", "create", "update", "retract", "restore"}
 _RUNTIME_ACTIONS = {
     "save",
     "get_config",
@@ -154,6 +166,7 @@ _IMPORT_ACTIONS = {
     "cancel",
     "retry_failed",
 }
+_BUNDLE_ACTIONS = {"export", "inspect", "import", "list", "resolve_file", "uninstall"}
 _TUNING_ACTIONS = {
     "settings",
     "get_settings",
@@ -200,6 +213,11 @@ ADMIN_COMPONENT_SPECS: dict[str, AdminComponentSpec] = {
         actions=frozenset(_FEEDBACK_ACTIONS),
         dispatcher=_dispatch_memory_feedback_admin,
     ),
+    "memory_fact_admin": AdminComponentSpec(
+        component_name="memory_fact_admin",
+        actions=frozenset(_FACT_ACTIONS),
+        dispatcher=_dispatch_memory_fact_admin,
+    ),
     "memory_runtime_admin": AdminComponentSpec(
         component_name="memory_runtime_admin",
         actions=frozenset(_RUNTIME_ACTIONS),
@@ -209,6 +227,11 @@ ADMIN_COMPONENT_SPECS: dict[str, AdminComponentSpec] = {
         component_name="memory_import_admin",
         actions=frozenset(_IMPORT_ACTIONS),
         dispatcher=_dispatch_memory_import_admin,
+    ),
+    "memory_bundle_admin": AdminComponentSpec(
+        component_name="memory_bundle_admin",
+        actions=frozenset(_BUNDLE_ACTIONS),
+        dispatcher=_dispatch_memory_bundle_admin,
     ),
     "memory_tuning_admin": AdminComponentSpec(
         component_name="memory_tuning_admin",

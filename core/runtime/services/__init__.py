@@ -1,4 +1,5 @@
 from .background_task_service import MemoryBackgroundTaskService
+from .bundle_admin_service import MemoryBundleAdminService
 from .chat_filter_service import MemoryChatFilterService
 from .correction_admin_service import MemoryCorrectionAdminService
 from .delete_admin_service import MemoryDeleteAdminService
@@ -7,8 +8,10 @@ from .dual_vector_state_service import MemoryDualVectorStateService
 from .embedding_state_service import MemoryEmbeddingStateService
 from .episode_admin_service import MemoryEpisodeAdminService
 from .feedback_correction_service import MemoryFeedbackCorrectionService
+from .fact_admin_service import MemoryFactAdminService
 from .graph_admin_service import MemoryGraphAdminService
 from .import_tuning_admin_service import MemoryImportTuningAdminService
+from .image_service import MemoryImageService
 from .ingest_service import MemoryIngestService
 from .memory_maintenance_service import MemoryMaintenanceService
 from .memory_search_service import MemorySearchService
@@ -28,6 +31,7 @@ from .vector_runtime_service import MemoryVectorRuntimeService
 
 __all__ = [
     "MemoryBackgroundTaskService",
+    "MemoryBundleAdminService",
     "MemoryChatFilterService",
     "MemoryCorrectionAdminService",
     "MemoryDeleteAdminService",
@@ -36,8 +40,10 @@ __all__ = [
     "MemoryEmbeddingStateService",
     "MemoryEpisodeAdminService",
     "MemoryFeedbackCorrectionService",
+    "MemoryFactAdminService",
     "MemoryGraphAdminService",
     "MemoryImportTuningAdminService",
+    "MemoryImageService",
     "MemoryIngestService",
     "MemoryMaintenanceService",
     "MemorySearchService",

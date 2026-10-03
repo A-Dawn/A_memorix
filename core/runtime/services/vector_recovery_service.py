@@ -27,26 +27,29 @@ class MemoryVectorRecoveryService(KernelServiceBase):
         "quarantined",
         "metadata_reset",
         "new_generation_ready",
+        "copying",
         "completed",
     )
     _KNOWN_RECOVERABLE_CODES = {
-        "v1_id_set_mismatch",
         "v1_metadata_invalid",
         "v1_metadata_id_collision",
         "v1_tombstone_invalid",
         "v1_tombstone_orphaned",
-        "v1_dimension_mismatch",
-        "v1_fingerprint_missing",
-        "v1_fingerprint_mismatch",
-        "v2_dimension_mismatch",
-        "v2_fingerprint_missing",
-        "v2_fingerprint_mismatch",
         "v2_commit_invalid",
         "v2_commit_mismatch",
         "dual_pool_missing",
         "vector_pair_missing",
         "vector_pair_truncated",
         "vector_pair_count_mismatch",
+    }
+    _EMBEDDING_COMPATIBILITY_CODES = {
+        "embedding_fingerprint_unavailable",
+        "v1_dimension_mismatch",
+        "v1_fingerprint_missing",
+        "v1_fingerprint_mismatch",
+        "v2_dimension_mismatch",
+        "v2_fingerprint_missing",
+        "v2_fingerprint_mismatch",
     }
     _QUARANTINE_RETENTION_SECONDS = 7 * 24 * 60 * 60
 
@@ -55,6 +58,41 @@ class MemoryVectorRecoveryService(KernelServiceBase):
 
     def _vector_quarantine_root(self) -> Path:
         return self.data_dir / "vector_quarantine"
+
+    def _v1_reconciliation_evidence_root(self) -> Path:
+        return self.data_dir / "vector_reconciliation_evidence"
+
+    def _v1_valid_hashes_for_pool(self, pool: str) -> List[str]:
+        if self.metadata_store is None:
+            raise RuntimeError("V1 向量对账时 MetadataStore 尚未连接")
+        hashes_by_type: Dict[str, List[str]] = {}
+        for item_type, table in (("paragraph", "paragraphs"), ("entity", "entities"), ("relation", "relations")):
+            active_filter = self._active_row_filter_sql(table)
+            hashes_by_type[item_type] = [
+                str(row["hash"])
+                for row in self.metadata_store.query(
+                    f"SELECT hash FROM {table} WHERE {active_filter} ORDER BY hash ASC"
+                )
+                if str(row.get("hash", "") or "").strip()
+            ]
+
+        pool_token = str(pool or "").strip().lower()
+        if pool_token == "paragraph":
+            return hashes_by_type["paragraph"]
+        if pool_token == "graph":
+            return [
+                f"{item_type}:{hash_value}"
+                for item_type in ("entity", "relation")
+                for hash_value in hashes_by_type[item_type]
+            ]
+        if pool_token != "single":
+            raise ValueError(f"未知 V1 向量池类型: {pool}")
+
+        owner_counts: Dict[str, int] = {}
+        for values in hashes_by_type.values():
+            for hash_value in values:
+                owner_counts[hash_value] = owner_counts.get(hash_value, 0) + 1
+        return sorted(hash_value for hash_value, count in owner_counts.items() if count == 1)
 
     def _read_vector_recovery_journal(self) -> Optional[Dict[str, Any]]:
         path = self._vector_recovery_journal_path()
@@ -81,6 +119,14 @@ class MemoryVectorRecoveryService(KernelServiceBase):
         except ValueError:
             return False
 
+    @classmethod
+    def _effective_recovery_stage(cls, journal: Dict[str, Any]) -> str:
+        stage = str(journal.get("stage", "") or "")
+        copy_state = str((journal.get("copy") or {}).get("state", "") or "")
+        if stage == "completed" and copy_state not in {"completed", "skipped"}:
+            return "copying"
+        return stage
+
     def _set_vector_health(self, **patch: Any) -> None:
         self._vector_health.update(patch)
         self._vector_health["updated_at"] = time.time()
@@ -91,8 +137,20 @@ class MemoryVectorRecoveryService(KernelServiceBase):
         return snapshot
 
     def _disable_vector_channel(self, exc: BaseException) -> None:
-        """未知向量异常只关闭能力，不移动、删除或覆盖原文件。"""
+        """关闭不可信向量能力，但不移动、删除或覆盖原文件。"""
         error_code = exc.error_code if isinstance(exc, VectorStoreIntegrityError) else "vector_unclassified_error"
+        if error_code == "embedding_fingerprint_unavailable":
+            state = "verification_pending"
+            recovery_stage = "waiting_embedding_probe"
+        elif error_code in self._EMBEDDING_COMPATIBILITY_CODES:
+            state = "incompatible"
+            recovery_stage = "rebuild_required"
+        elif error_code == "vector_generation_missing":
+            state = "unavailable"
+            recovery_stage = "rebuild_required"
+        else:
+            state = "unavailable"
+            recovery_stage = "not_started"
         self.vector_store = None
         self.paragraph_vector_store = None
         self.graph_vector_store = None
@@ -101,14 +159,17 @@ class MemoryVectorRecoveryService(KernelServiceBase):
         self._set_runtime_capability("vector_read", False)
         self._set_runtime_capability("vector_write", False)
         self._set_vector_health(
-            state="unavailable",
+            state=state,
             error_code=error_code,
             reason=str(exc),
-            recovery_stage="not_started",
+            recovery_stage=recovery_stage,
             operation_id="",
             trusted_coverage=0.0,
         )
-        logger.exception(f"向量通道发生未分类异常，已保持原文件并降级运行: {exc}")
+        logger.warning(
+            "向量通道暂不可用，已保持原文件并降级运行: "
+            f"code={error_code}, error={exc}"
+        )
 
     def _open_trusted_view(self, quarantine_path: Path) -> Optional[ReadOnlyVectorStoreView]:
         try:
@@ -155,7 +216,7 @@ class MemoryVectorRecoveryService(KernelServiceBase):
         *,
         error: Optional[VectorStoreIntegrityError] = None,
     ) -> Dict[str, Any]:
-        stage = str(journal.get("stage", "") or "")
+        stage = self._effective_recovery_stage(journal)
         if stage not in self._STAGES:
             raise RuntimeError(f"向量恢复日志阶段无效: {stage or 'missing'}")
         operation_id = str(journal.get("operation_id", "") or "")
@@ -195,7 +256,7 @@ class MemoryVectorRecoveryService(KernelServiceBase):
         legacy_view = self._open_trusted_view(quarantine_path)
         self._legacy_vector_view = legacy_view
         report = legacy_view.report.to_dict() if legacy_view is not None else {}
-        if not self._stage_at_least(stage, "completed"):
+        if not self._stage_at_least(stage, "copying"):
             journal["trusted_view"] = report
             journal["copy"] = {
                 "state": "pending" if legacy_view is not None else "skipped",
@@ -204,9 +265,11 @@ class MemoryVectorRecoveryService(KernelServiceBase):
                 "copied": 0,
                 "total": int(report.get("trusted_count", 0) or 0),
             }
-            journal["stage"] = "completed"
-            journal["completed_at"] = time.time()
+            journal["stage"] = "copying" if legacy_view is not None else "completed"
+            if legacy_view is None:
+                journal["completed_at"] = time.time()
             self._write_vector_recovery_journal(journal)
+            stage = str(journal["stage"])
 
         self._set_runtime_capability("vector_write", True)
         self._set_runtime_capability("vector_read", True)
@@ -215,7 +278,7 @@ class MemoryVectorRecoveryService(KernelServiceBase):
             error_code=(error.error_code if error is not None else str(journal.get("error_code", ""))),
             reason=(str(error) if error is not None else str(journal.get("reason", ""))),
             trusted_coverage=float(report.get("coverage", 0.0) or 0.0),
-            recovery_stage="completed",
+            recovery_stage=stage,
             operation_id=operation_id,
             copy_progress=dict(journal.get("copy") or {}),
         )
@@ -225,7 +288,7 @@ class MemoryVectorRecoveryService(KernelServiceBase):
         if error.error_code not in self._KNOWN_RECOVERABLE_CODES:
             return False
         journal = self._read_vector_recovery_journal()
-        if journal is None or str(journal.get("stage", "")) == "completed":
+        if journal is None or self._effective_recovery_stage(journal) == "completed":
             operation_id = f"{int(time.time())}-{uuid.uuid4().hex[:12]}"
             journal = {
                 "version": 1,
@@ -248,7 +311,7 @@ class MemoryVectorRecoveryService(KernelServiceBase):
         journal = self._read_vector_recovery_journal()
         if journal is None:
             return
-        stage = str(journal.get("stage", "") or "")
+        stage = self._effective_recovery_stage(journal)
         if stage != "completed":
             self._resume_known_vector_recovery(journal)
             return
@@ -262,7 +325,7 @@ class MemoryVectorRecoveryService(KernelServiceBase):
             error_code=str(journal.get("error_code", "") or ""),
             reason=str(journal.get("reason", "") or ""),
             trusted_coverage=float(report.get("coverage", 0.0) or 0.0),
-            recovery_stage="completed",
+            recovery_stage=stage,
             operation_id=str(journal.get("operation_id", "") or ""),
             copy_progress=dict(journal.get("copy") or {}),
         )
@@ -309,6 +372,8 @@ class MemoryVectorRecoveryService(KernelServiceBase):
             copy_state["finished_at"] = time.time()
             copy_state["total"] = len(targets)
             journal["copy"] = copy_state
+            journal["stage"] = "completed"
+            journal["completed_at"] = copy_state["finished_at"]
             self._write_vector_recovery_journal(journal)
             self._legacy_vector_view = None
             self._set_vector_health(
@@ -354,6 +419,9 @@ class MemoryVectorRecoveryService(KernelServiceBase):
         if copy_state["state"] == "completed":
             copy_state["finished_at"] = time.time()
         journal["copy"] = copy_state
+        journal["stage"] = "completed" if copy_state["state"] == "completed" else "copying"
+        if copy_state["state"] == "completed":
+            journal["completed_at"] = copy_state["finished_at"]
         self._write_vector_recovery_journal(journal)
         completed = copy_state["state"] == "completed"
         if completed:

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import time
+import unicodedata
 
 from ...utils import profile_policy
 from ...utils.feedback_policy import (
@@ -17,6 +18,35 @@ from .base import KernelServiceBase
 
 
 class MemoryProfileAdminService(KernelServiceBase):
+    @staticmethod
+    def _profile_relevance_grams(value: str) -> Set[str]:
+        normalized = unicodedata.normalize("NFKC", value).casefold()
+        token = "".join(char for char in normalized if char.isalnum())
+        ignored = {"用户", "这个", "那个", "自己", "喜欢"}
+        return {token[index : index + 2] for index in range(len(token) - 1)} - ignored
+
+    def _uncertain_profile_candidates(self, person_id: str, context_text: str) -> Dict[str, Any]:
+        """从最近的未确认事实中选择当前消息相关的候选。"""
+
+        assert self.metadata_store is not None
+        count = self.metadata_store.count_uncertain_person_fact_claims(person_id)
+        claims = self.metadata_store.list_uncertain_person_fact_claims(person_id, limit=512) if context_text else []
+        query_grams = self._profile_relevance_grams(context_text)
+        ranked = []
+        if query_grams:
+            for claim in claims:
+                overlap = query_grams & self._profile_relevance_grams(str(claim.get("value_text", "")))
+                if overlap:
+                    ranked.append((len(overlap), float(claim.get("last_confirmed_at", 0)), claim))
+        ranked.sort(key=lambda item: (-item[0], -item[1], str(item[2].get("claim_id", ""))))
+        return {
+            "uncertain_fact_count": count,
+            "uncertain_candidates": [
+                {"claim_id": str(claim.get("claim_id", "")), "text": str(claim.get("value_text", ""))}
+                for _, _, claim in ranked[:2]
+            ],
+        }
+
     def _mark_person_active(self, person_id: str) -> None:
         token = str(person_id or "").strip()
         if not token:
@@ -203,7 +233,19 @@ class MemoryProfileAdminService(KernelServiceBase):
                 force_refresh=bool(kwargs.get("force_refresh", False)),
                 source_note="sdk_memory_kernel.memory_profile_admin.query",
             )
-            return profile if isinstance(profile, dict) else {"success": False, "error": "invalid profile payload"}
+            if not isinstance(profile, dict):
+                return {"success": False, "error": "invalid profile payload"}
+            person_id = str(profile.get("person_id", "") or "").strip()
+            if bool(profile.get("success")) and person_id:
+                profile.update(
+                    self._uncertain_profile_candidates(
+                        person_id,
+                        str(kwargs.get("context_text", "") or ""),
+                    )
+                )
+                if bool(profile.get("has_manual_override")):
+                    profile["uncertain_candidates"] = []
+            return profile
 
         if act == "evidence":
             return await self._profile_evidence_admin(
@@ -277,6 +319,62 @@ class MemoryProfileAdminService(KernelServiceBase):
                     }
                 )
             return {"success": True, "items": items, "count": len(items)}
+
+        if act == "get_aliases":
+            person_id = str(kwargs.get("person_id", "") or "").strip()
+            if not person_id:
+                return {"success": False, "error": "person_id 不能为空"}
+            return {"success": True, **self.person_profile_service.get_person_alias_details(person_id)}
+
+        if act == "set_aliases":
+            person_id = str(kwargs.get("person_id", "") or "").strip()
+            aliases = kwargs.get("aliases")
+            if not isinstance(aliases, list):
+                return {"success": False, "error": "aliases 必须是字符串列表"}
+            try:
+                with self.metadata_store.transaction(immediate=True) as conn:
+                    override = self.metadata_store.set_person_profile_alias_override(
+                        person_id=person_id,
+                        aliases=aliases,
+                        updated_by=str(kwargs.get("updated_by", "") or ""),
+                        source=str(kwargs.get("source", "") or "memory_profile_admin"),
+                        conn=conn,
+                    )
+                    refresh_request = None
+                    if bool(self._cfg("person_profile.enabled", True)):
+                        refresh_request = self.metadata_store.enqueue_person_profile_refresh(
+                            person_id=person_id,
+                            reason="person_aliases_updated",
+                            conn=conn,
+                        )
+            except ValueError as error:
+                return {"success": False, "error": str(error)}
+            return {
+                "success": True,
+                "override": override,
+                "refresh_queued": refresh_request is not None,
+                **self.person_profile_service.get_person_alias_details(person_id),
+            }
+
+        if act == "delete_aliases":
+            person_id = str(kwargs.get("person_id", "") or "").strip()
+            if not person_id:
+                return {"success": False, "error": "person_id 不能为空"}
+            with self.metadata_store.transaction(immediate=True) as conn:
+                deleted = self.metadata_store.delete_person_profile_alias_override(person_id, conn=conn)
+                refresh_request = None
+                if bool(self._cfg("person_profile.enabled", True)):
+                    refresh_request = self.metadata_store.enqueue_person_profile_refresh(
+                        person_id=person_id,
+                        reason="person_aliases_override_deleted",
+                        conn=conn,
+                    )
+            return {
+                "success": True,
+                "deleted": deleted,
+                "refresh_queued": refresh_request is not None,
+                **self.person_profile_service.get_person_alias_details(person_id),
+            }
 
         if act == "set_override":
             person_id = str(kwargs.get("person_id", "") or "").strip()
@@ -435,6 +533,9 @@ class MemoryProfileAdminService(KernelServiceBase):
             "manual_override_text": str(profile.get("manual_override_text", "") or ""),
             "evidence": evidence[: max(1, int(limit or 12))],
             "evidence_count": len(evidence),
+            "uncertain_fact_count": self.metadata_store.count_uncertain_person_fact_claims(
+                str(profile.get("person_id", "") or requested_person_id)
+            ),
             "raw_profile": profile,
         }
 

@@ -99,6 +99,11 @@ class KernelRuntimeFacade:
     def allow_metadata_only_write(self) -> bool:
         return self._kernel._allow_metadata_only_write()
 
+    def persist_vector_store(self, store: VectorStore) -> None:
+        """通过内核统一入口保存向量及其 embedding 模型指纹。"""
+
+        self._kernel._save_vector_store(store)
+
     async def ingest_text(self, **kwargs: Any) -> Dict[str, Any]:
         """让派生写入统一复用内核的 external ID 幂等入口。"""
 
@@ -124,3 +129,13 @@ class KernelRuntimeFacade:
         error: str = "",
     ) -> None:
         self._kernel._enqueue_paragraph_vector_backfill(paragraph_hash, error=error)
+
+    def record_person_evidence_written(self, person_ids: Sequence[str], *, reason: str) -> None:
+        """在人物证据提交后激活人物并合并画像刷新请求。"""
+
+        unique_person_ids = list(
+            dict.fromkeys(str(person_id or "").strip() for person_id in person_ids if str(person_id or "").strip())
+        )
+        for person_id in unique_person_ids:
+            self._kernel._mark_person_active(person_id)
+            self._kernel._enqueue_person_profile_refresh(person_id, reason=reason)

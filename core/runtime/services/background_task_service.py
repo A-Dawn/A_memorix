@@ -30,6 +30,8 @@ class MemoryBackgroundTaskService(KernelServiceBase):
             self._ensure_background_task("person_profile_refresh_queue", self._person_profile_refresh_queue_loop)
             self._ensure_background_task("feedback_correction", self._feedback_correction_loop)
             self._ensure_background_task("feedback_correction_reconcile", self._feedback_correction_reconcile_loop)
+            if self.image_memory_runtime is not None:
+                self._ensure_background_task("image_embedding", self._image_embedding_loop)
             if self._legacy_vector_view is not None:
                 self._ensure_background_task("legacy_vector_copy", self._legacy_vector_copy_loop)
             if self._should_start_dual_vector_auto_migration():
@@ -220,6 +222,19 @@ class MemoryBackgroundTaskService(KernelServiceBase):
         except Exception as exc:
             logger.warning(f"auto_save loop 异常: {exc}")
 
+    async def _image_embedding_loop(self) -> None:
+        """持续认领图片嵌入任务，并由租约 CAS 保证发布安全。"""
+
+        while not self._background_stopping and self.image_memory_runtime is not None:
+            try:
+                await self.image_memory_runtime.process_jobs_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(f"图片嵌入任务异常，将在下一轮重试: {exc}")
+            interval = float(self._cfg("image_memory.job_poll_interval_seconds", 2.0) or 2.0)
+            await self._sleep_background(max(0.1, interval))
+
     async def _storage_cleanup_loop(self) -> None:
         """持续消费跨存储清理与关系图投影任务，确保崩溃后可以恢复进度。"""
         while not self._background_stopping:
@@ -263,6 +278,20 @@ class MemoryBackgroundTaskService(KernelServiceBase):
                 await worker
             except Exception as exc:
                 logger.warning(f"向量索引训练任务取消收尾异常: {exc}")
+            raise
+
+    async def _run_legacy_vector_io_in_thread(self, operation: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        worker = asyncio.create_task(
+            asyncio.to_thread(operation, *args, **kwargs),
+            name="A_Memorix.legacy_vector_copy.worker",
+        )
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            try:
+                await worker
+            except Exception as exc:
+                logger.warning(f"可信旧向量复制任务取消收尾异常: {exc}")
             raise
 
     async def _train_runtime_vector_indexes_once(self) -> Dict[str, Dict[str, Any]]:
@@ -341,18 +370,24 @@ class MemoryBackgroundTaskService(KernelServiceBase):
     async def _embedding_probe_loop(self) -> None:
         try:
             while not self._background_stopping:
-                await asyncio.sleep(self._embedding_probe_interval_seconds())
+                startup_deferred = self._is_startup_self_check_deferred()
+                vector_fingerprint_pending = (
+                    str(self._vector_health.get("error_code", "") or "")
+                    == "embedding_fingerprint_unavailable"
+                )
+                should_probe = (
+                    (self._embedding_fallback_enabled() or startup_deferred or vector_fingerprint_pending)
+                    and (self._is_embedding_degraded() or startup_deferred or vector_fingerprint_pending)
+                )
+                if should_probe:
+                    try:
+                        await self._recover_embedding_once()
+                    except Exception as exc:
+                        logger.warning(f"embedding 恢复探测失败: {exc}")
                 if self._background_stopping:
                     break
-                startup_deferred = self._is_startup_self_check_deferred()
-                if not self._embedding_fallback_enabled() and not startup_deferred:
-                    continue
-                if not self._is_embedding_degraded() and not startup_deferred:
-                    continue
-                try:
-                    await self._recover_embedding_once()
-                except Exception as exc:
-                    logger.warning(f"embedding 恢复探测失败: {exc}")
+                # 第一次探测应在后台任务启动后立即执行，避免已有向量等待完整探测周期才恢复。
+                await asyncio.sleep(self._embedding_probe_interval_seconds())
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -382,10 +417,14 @@ class MemoryBackgroundTaskService(KernelServiceBase):
         """持续复制可信旧向量；该任务从不调用 embedding。"""
         try:
             while not self._background_stopping and self._legacy_vector_view is not None:
-                result = self._copy_legacy_vectors_once(batch_size=256)
-                if bool(result.get("done", False)):
-                    self._cleanup_vector_quarantine()
-                    break
+                async with self._vector_rebuild_lock:
+                    result = await self._run_legacy_vector_io_in_thread(
+                        self._copy_legacy_vectors_once,
+                        batch_size=256,
+                    )
+                    if bool(result.get("done", False)):
+                        await self._run_legacy_vector_io_in_thread(self._cleanup_vector_quarantine)
+                        break
                 await asyncio.sleep(0.1)
         except asyncio.CancelledError:
             raise

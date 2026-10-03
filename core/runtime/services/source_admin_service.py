@@ -13,13 +13,17 @@ class MemorySourceAdminService(KernelServiceBase):
         act = str(action or "").strip().lower()
         if act == "list":
             sources = self.metadata_store.get_all_sources()
+            # 批量判断阻塞态，避免来源列表页对每个来源各做一次 episodes 全表扫描
+            blocked_flags = self.metadata_store.get_episode_source_query_blocked_flags(
+                [row.get("source", "") or "" for row in sources]
+            )
             items = []
             for row in sources:
                 source_name = str(row.get("source", "") or "").strip()
                 items.append(
                     {
                         **row,
-                        "episode_rebuild_blocked": self.metadata_store.is_episode_source_query_blocked(source_name),
+                        "episode_rebuild_blocked": blocked_flags.get(source_name, False),
                     }
                 )
             return {"success": True, "items": items, "count": len(items)}

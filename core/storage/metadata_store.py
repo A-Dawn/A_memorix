@@ -30,6 +30,7 @@ from .metadata_episode import MetadataEpisodeMixin
 from .metadata_fact import MetadataFactMixin
 from .metadata_feedback import MetadataFeedbackMixin
 from .metadata_fts import MetadataFTSMixin
+from .metadata_image import MetadataImageMixin
 from .metadata_profile import MetadataProfileMixin
 from .metadata_schema import MetadataSchemaMixin, SCHEMA_VERSION
 from .sqlite_connection import SQLiteConnectionManager
@@ -45,6 +46,7 @@ class MetadataStore(
     MetadataEpisodeMixin,
     MetadataFactMixin,
     MetadataFeedbackMixin,
+    MetadataImageMixin,
     MetadataProfileMixin,
 ):
     """
@@ -710,7 +712,7 @@ class MetadataStore(
         self,
         hash_values: Sequence[str],
     ) -> Dict[str, Dict[str, Any]]:
-        """批量获取段落，按输入 hash 去重后返回 hash -> paragraph。"""
+        """批量获取有效段落，按输入 hash 去重后返回 hash -> paragraph。"""
         normalized = self._normalize_hash_sequence(hash_values)
         if not normalized:
             return {}
@@ -723,6 +725,7 @@ class MetadataStore(
                 f"""
                 SELECT * FROM paragraphs
                 WHERE hash IN ({placeholders})
+                  AND (is_deleted IS NULL OR is_deleted = 0)
                 """,
                 tuple(batch),
             )
@@ -789,6 +792,7 @@ class MetadataStore(
         source: Optional[str] = None,
         limit: int = 100,
         allow_created_fallback: bool = True,
+        allowed_hashes: Optional[Sequence[str]] = None,
     ) -> List[Dict[str, Any]]:
         """
         查询时序命中的段落（区间相交语义）。
@@ -807,6 +811,12 @@ class MetadataStore(
 
         conditions = ["(p.is_deleted IS NULL OR p.is_deleted = 0)"]
         params: List[Any] = []
+        if allowed_hashes is not None:
+            normalized_allowed = self._normalize_hash_sequence(allowed_hashes)
+            if not normalized_allowed:
+                return []
+            conditions.append("p.hash IN (SELECT value FROM json_each(?))")
+            params.append(json.dumps(normalized_allowed, ensure_ascii=False))
 
         if source:
             conditions.append("p.source = ?")
@@ -1632,6 +1642,33 @@ class MetadataStore(
 
         return [dict(row) for row in cursor.fetchall()]
 
+    def get_summary_checkpoint(self, external_id: str) -> Optional[Dict[str, Any]]:
+        """读取成功空摘要的幂等记录。"""
+        rows = self.query("SELECT * FROM chat_summary_checkpoints WHERE external_id=?", (external_id,))
+        return rows[0] if rows else None
+
+    def record_summary_checkpoint(self, *, external_id: str, chat_id: str, trigger_message_count: int) -> None:
+        """原子记录空摘要成功，重复标识不允许跨聊天流使用。"""
+        with self.transaction(immediate=True) as database:
+            row = database.execute(
+                "SELECT chat_id FROM chat_summary_checkpoints WHERE external_id=?", (external_id,)
+            ).fetchone()
+            if row is not None and row["chat_id"] != chat_id:
+                raise ValueError("空摘要标识已绑定到其他聊天流")
+            database.execute(
+                "INSERT OR IGNORE INTO chat_summary_checkpoints "
+                "(external_id, chat_id, trigger_message_count, created_at) VALUES (?, ?, ?, ?)",
+                (external_id, chat_id, max(0, trigger_message_count), datetime.now().timestamp()),
+            )
+
+    def get_summary_checkpoint_count(self, chat_id: str) -> int:
+        """返回该真实聊天流已成功跳过的最新触发计数。"""
+        rows = self.query(
+            "SELECT COALESCE(MAX(trigger_message_count), 0) AS count FROM chat_summary_checkpoints WHERE chat_id=?",
+            (chat_id,),
+        )
+        return int(rows[0]["count"])
+
     def get_external_memory_ref(self, external_id: str) -> Optional[Dict[str, Any]]:
         """按 external_id 查询外部记忆映射。"""
         token = str(external_id or "").strip()
@@ -1924,6 +1961,7 @@ class MetadataStore(
         reason: str = "",
         updated_by: str = "",
         result: Optional[Dict[str, Any]] = None,
+        conn: Optional[sqlite3.Connection] = None,
     ) -> Dict[str, Any]:
         operation_id = f"v5_{uuid.uuid4().hex}"
         created_at = datetime.now().timestamp()
@@ -1937,7 +1975,8 @@ class MetadataStore(
             "resolved_hashes": [str(item or "").strip() for item in (resolved_hashes or []) if str(item or "").strip()],
             "result": result or {},
         }
-        cursor = self._conn.cursor()
+        connection = self._resolve_conn(conn)
+        cursor = connection.cursor()
         cursor.execute(
             """
             INSERT INTO memory_v5_operations (
@@ -1955,7 +1994,8 @@ class MetadataStore(
                 self._json_dumps(payload["result"]),
             ),
         )
-        self._conn.commit()
+        if conn is None:
+            connection.commit()
         return payload
 
     def create_fuzzy_modify_plan(
@@ -2697,9 +2737,14 @@ class MetadataStore(
         resolved = str(row[0])
         return [resolved]
 
-    def rebuild_relation_hash_aliases(self) -> Dict[str, Any]:
+    def rebuild_relation_hash_aliases(
+        self,
+        *,
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> Dict[str, Any]:
         """重建 32 位 relation hash 别名映射。"""
-        cursor = self._conn.cursor()
+        connection = self._resolve_conn(conn)
+        cursor = connection.cursor()
         # 历史库兜底：缺表时先创建，避免迁移过程直接中断。
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS relation_hash_aliases (
@@ -2736,7 +2781,8 @@ class MetadataStore(
                 "INSERT INTO relation_hash_aliases(alias32, hash) VALUES (?, ?)",
                 (alias, full_hash),
             )
-        self._conn.commit()
+        if conn is None:
+            connection.commit()
         return {
             "inserted": len(alias_map) - len(conflicts),
             "conflict_count": len(conflicts),
@@ -2895,6 +2941,7 @@ class MetadataStore(
             "memory_feedback_action_logs",
             "paragraph_stale_relation_marks",
             "person_profile_refresh_queue",
+            "person_profile_alias_overrides",
             "fact_transitions",
             "fact_evidence",
             "fact_claims",

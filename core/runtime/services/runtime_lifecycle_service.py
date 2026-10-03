@@ -74,6 +74,7 @@ class MemoryRuntimeLifecycleService(KernelServiceBase):
 
         self.embedding_manager = None
         self.metadata_store = None
+        self.image_memory_runtime = None
         self.graph_store = None
         self.vector_store = None
         self.paragraph_vector_store = None
@@ -107,7 +108,10 @@ class MemoryRuntimeLifecycleService(KernelServiceBase):
             return
 
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        kernel_module.run_startup_format_migration(self.data_dir)
+        try:
+            kernel_module.run_startup_format_migration(self.data_dir)
+        except Exception as exc:
+            logger.exception(f"[sdk] 历史格式转换失败，将由各存储通道独立校验并降级: {exc}")
         try:
             self.embedding_manager = kernel_module.create_embedding_api_adapter(
                 batch_size=int(self._cfg("embedding.batch_size", 32)),
@@ -134,7 +138,7 @@ class MemoryRuntimeLifecycleService(KernelServiceBase):
         provisional_dimension = int(self.embedding_dimension)
         if stored_dimension is not None and stored_dimension != provisional_dimension:
             logger.warning(
-                "历史向量维度与当前配置不同，将按当前维度创建新世代: "
+                "历史向量维度与当前配置不同，将保留原世代并等待显式重建: "
                 f"stored={stored_dimension}, current={provisional_dimension}"
             )
 
@@ -146,6 +150,34 @@ class MemoryRuntimeLifecycleService(KernelServiceBase):
         self.metadata_store = kernel_module.MetadataStore(data_dir=self.data_dir / "metadata")
         self.metadata_store.connect()
         self._set_runtime_capability("metadata", True)
+
+        image_config = self._cfg("image_memory", {}) or {}
+        if bool(image_config.get("enabled", True)):
+            from ...image import ImageAssetStore, ImageMemoryRuntime
+            from ...image.embedder import HostImageEmbedder
+
+            asset_store = ImageAssetStore(
+                self.data_dir / "images" / "assets",
+                max_bytes=int(image_config.get("max_bytes", 10 * 1024 * 1024)),
+                max_pixels=int(image_config.get("max_pixels", 40_000_000)),
+            )
+
+            def persist_image_vectors(store, fingerprint) -> None:
+                store.save(embedding_fingerprint=fingerprint)
+
+            self.image_memory_runtime = ImageMemoryRuntime(
+                metadata_store=self.metadata_store,
+                asset_store=asset_store,
+                embedder=HostImageEmbedder(
+                    task_name=str(image_config.get("task_name", "image_embedding")),
+                    preprocess_version=str(image_config.get("preprocess_version", "identity_v1")),
+                    probe_retry_seconds=float(image_config.get("probe_retry_seconds", 60.0)),
+                ),
+                vector_root=self.data_dir / "images" / "vectors",
+                config=image_config,
+                persist_vector_store=persist_image_vectors,
+            )
+            await self.image_memory_runtime.recover_assets()
 
         try:
             self.graph_store = kernel_module.GraphStore(
@@ -212,27 +244,10 @@ class MemoryRuntimeLifecycleService(KernelServiceBase):
             self._cleanup_stale_dual_vector_build_dirs()
             self._resume_vector_recovery_if_needed()
 
-            dual_loaded = False
-            if self._dual_vector_pools_config_enabled():
-                dual_loaded = self._reload_dual_vector_stores_from_disk()
-            if dual_loaded and self._legacy_vector_view is None:
-                self._set_vector_health(
-                    state="healthy",
-                    error_code="",
-                    reason="",
-                    trusted_coverage=1.0,
-                    recovery_stage="idle",
-                    operation_id="",
-                    copy_progress={},
-                )
-            elif self._legacy_vector_view is None and self.vector_store.has_data():
-                self.vector_store.load(
-                    expected_embedding_fingerprint=self._current_embedding_fingerprint()
-                )
-                self.vector_store.warmup_index(force_train=True)
+            self._embedding_state_service._load_vector_stores_for_runtime()
             self._set_runtime_capability("vector_read", True)
             self._set_runtime_capability("vector_write", True)
-            if not dual_loaded and self._legacy_vector_view is None:
+            if self._legacy_vector_view is None:
                 self._set_vector_health(
                     state="healthy",
                     error_code="",
@@ -282,9 +297,15 @@ class MemoryRuntimeLifecycleService(KernelServiceBase):
             if configured_pool_mode == effective_pool_mode
             else f"{effective_pool_mode}(configured={configured_pool_mode})"
         )
-        logger.info(
-            f"[sdk] 向量存储初始化完成: dim={self.embedding_dimension}, mode=SQ8, vector_pools={pool_mode_label}"
-        )
+        if self._runtime_capabilities["vector_read"]:
+            logger.info(
+                f"[sdk] 向量存储初始化完成: dim={self.embedding_dimension}, mode=SQ8, vector_pools={pool_mode_label}"
+            )
+        else:
+            logger.info(
+                "[sdk] 记忆运行时初始化完成，向量通道尚不可用: "
+                f"state={self._vector_health['state']}, code={self._vector_health['error_code']}"
+            )
 
         self._mark_startup_self_check_deferred()
 
@@ -336,6 +357,7 @@ class MemoryRuntimeLifecycleService(KernelServiceBase):
                 self.vector_store,
                 self.paragraph_vector_store,
                 self.graph_vector_store,
+                self.image_memory_runtime.vector_store if self.image_memory_runtime is not None else None,
             )
         )
         if has_writable_store and not self._runtime_writer_lock.held:

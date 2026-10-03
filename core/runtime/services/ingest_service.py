@@ -112,6 +112,17 @@ class MemoryIngestService(KernelServiceBase):
                 reason=str(claim_spec.get("reason", "") or "person_fact_ingest"),
                 observed_at=timestamp,
             )
+            if trusted and result.get("idempotent") and str(result.get("authority", "")) == "summary_derived":
+                self.metadata_store.update_fact_claim_classification(
+                    str(result["claim_id"]),
+                    stability=str(claim_spec.get("stability", "stable") or "stable"),
+                    profile_section=str(claim_spec.get("profile_section", "stable_facts") or "stable_facts"),
+                    authority=default_authority,
+                    confidence=float(claim_spec.get("confidence", 1.0) or 1.0),
+                    valid_from=result.get("valid_from"),
+                    valid_to=result.get("valid_to"),
+                    reason="person_fact_reverified",
+                )
             claim_ids.append(str(result["claim_id"]))
         return claim_ids
 
@@ -357,6 +368,33 @@ class MemoryIngestService(KernelServiceBase):
 
         existing_ref = self.metadata_store.get_external_memory_ref(external_token)
         if existing_ref:
+            if source_type == "person_fact" and isinstance((metadata or {}).get("fact_claim"), dict):
+                claim_spec = (metadata or {})["fact_claim"]
+                if str(claim_spec.get("trust", "") or "").strip().casefold() in _TRUSTED_FACT_ORIGINS:
+                    paragraph_hash = str(existing_ref.get("paragraph_hash", "") or "")
+                    claim_ids = self._write_person_fact_claims(
+                        paragraph_hash=paragraph_hash,
+                        content=content,
+                        person_ids=tokens(person_ids),
+                        metadata=coerce_metadata_dict(metadata),
+                        timestamp=timestamp,
+                    )
+                    if (metadata or {}).get("evidence_message_ids"):
+                        self.metadata_store.update_paragraph_metadata(
+                            paragraph_hash,
+                            {"evidence_message_ids": metadata["evidence_message_ids"]},
+                            merge=True,
+                        )
+                    for person_id in tokens(person_ids):
+                        self._enqueue_person_profile_refresh(person_id, reason="person_fact_reverified")
+                    self._persist()
+                    return {
+                        "success": True,
+                        "stored_ids": [paragraph_hash],
+                        "skipped_ids": [],
+                        "fact_claim_ids": claim_ids,
+                        "detail": "person_fact_reverified",
+                    }
             return {
                 "stored_ids": [],
                 "skipped_ids": [str(existing_ref.get("paragraph_hash", "") or "")],
@@ -364,8 +402,9 @@ class MemoryIngestService(KernelServiceBase):
             }
 
         person_tokens = tokens(person_ids)
-        participant_tokens = tokens(participants)
-        entity_tokens = merge_tokens(entities, person_tokens, participant_tokens)
+        person_token_set = set(person_tokens)
+        participant_tokens = [token for token in tokens(participants) if token not in person_token_set]
+        entity_tokens = merge_tokens(entities, participant_tokens)
         source = build_source(source_type, chat_id, person_tokens)
         paragraph_meta = coerce_metadata_dict(metadata)
         paragraph_meta.update(
