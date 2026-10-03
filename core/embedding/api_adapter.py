@@ -64,6 +64,7 @@ class EmbeddingAPIAdapter:
         self._total_time = 0.0
         self._last_success_model_name = ""
         self._last_success_provider_name = ""
+        self._last_configuration_key = ""
 
         logger.info(
             "Embedding 初始化: "
@@ -139,17 +140,25 @@ class EmbeddingAPIAdapter:
             "dimension": effective_dimension,
             "dimension_request_mode": self.dimension_request_mode,
         }
+        if model_token != "auto":
+            model_info = self._find_model_info(model_token)
+            provider = self._find_provider(model_info.api_provider)
+            compare_payload["model_identifier"] = model_info.model_identifier
+            compare_payload["base_url"] = provider.base_url.rstrip("/")
+            compare_payload["extra_params"] = self._strip_dimension_control_keys(model_info.extra_params)
         if model_token == "auto":
             compare_payload["candidate_models"] = candidate_names
 
         return {
-            "version": 1,
+            "version": 2,
             "hash": self._fingerprint_hash(compare_payload),
             "model": model_token,
             "provider": provider_token,
             "dimension": effective_dimension,
             "dimension_request_mode": self.dimension_request_mode,
             "source": source,
+            "model_identifier": compare_payload.get("model_identifier", ""),
+            "base_url": compare_payload.get("base_url", ""),
         }
 
     def get_requested_dimension(self) -> int:
@@ -321,21 +330,29 @@ class EmbeddingAPIAdapter:
         return None
 
     def _dimension_cache_key(self) -> str:
-        candidate_names = self._resolve_candidate_model_names()
-        return "|".join(
-            [
-                str(self.model_name or "auto"),
-                str(self.default_dimension),
-                str(self.dimension_request_mode),
-                ",".join(candidate_names),
-            ]
-        )
+        models = []
+        for name in self._resolve_candidate_model_names():
+            info = self._find_model_info(name)
+            provider = self._find_provider(info.api_provider)
+            models.append((name, info.model_identifier, provider.base_url.rstrip("/"),
+                           self._strip_dimension_control_keys(info.extra_params)))
+        return self._fingerprint_hash({
+            "models": models, "dimension": self.default_dimension,
+            "mode": self.dimension_request_mode,
+        })
 
     def _embedding_cache_key(self, text: str, dimensions: Optional[int]) -> Tuple[str, int, str]:
         requested_dimension = self._resolve_canonical_dimension(dimensions)
         return (self._dimension_cache_key(), int(requested_dimension), str(text or ""))
 
     async def _detect_dimension(self) -> int:
+        configuration_key = self._dimension_cache_key()
+        if configuration_key != self._last_configuration_key:
+            self._dimension_detected = False
+            self._dimension = None
+            self._last_success_model_name = ""
+            self._last_success_provider_name = ""
+            self._last_configuration_key = configuration_key
         if self._dimension_detected and self._dimension is not None:
             return self._dimension
 

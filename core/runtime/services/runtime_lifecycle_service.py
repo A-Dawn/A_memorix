@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import List
 
+import asyncio
 import time
 
 from src.common.logger import get_logger
@@ -129,6 +130,9 @@ class MemoryRuntimeLifecycleService(KernelServiceBase):
             logger.exception(f"[sdk] Embedding 通道初始化失败，核心运行时继续启动: {exc}")
         else:
             self._set_runtime_capability("embedding", True)
+
+        self._active_vector_space_id = await asyncio.to_thread(self._vector_space_service._read_active_space)
+        self._vector_space_inputs = await asyncio.to_thread(self._vector_space_service._read_inputs)
 
         try:
             stored_dimension = self._stored_vector_dimension()

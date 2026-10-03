@@ -129,6 +129,10 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
         self._last_maintenance_at: Optional[float] = None
         self._request_dedup_tasks: Dict[str, asyncio.Task] = {}
         self._vector_rebuild_lock = asyncio.Lock()
+        self._active_vector_space_id = ""
+        self._target_vector_space_id = ""
+        self._vector_space_inputs: Dict[str, str] = {}
+        self._vector_space_sources: Dict[str, VectorStore] = {}
         # 关系图是整图快照，单个 SDK 内的投影发布必须覆盖领取到 CAS 的完整临界区。
         self._relation_graph_projection_lock = RLock()
         # 跨进程只允许一个活动 SDK 写同一数据目录。OS 在进程退出时自动释放锁。
@@ -224,6 +228,9 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
             MemoryVectorRuntimeService,
         )
 
+        from .services.vector_space_service import MemoryVectorSpaceService
+
+        self._vector_space_service = MemoryVectorSpaceService(self)
         self._graph_admin_service = MemoryGraphAdminService(self)
         self._background_task_service = MemoryBackgroundTaskService(self)
         self._bundle_admin_service = MemoryBundleAdminService(self)
@@ -770,6 +777,7 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
         items: Sequence[tuple[str, str]],
         batch_size: int,
         vector_store: Optional[VectorStore] = None,
+        item_type: str = "paragraph",
     ) -> tuple[int, int, str, List[str], List[str]]:
         service = self._vector_runtime_service
         return await type(service)._encode_and_add_rebuild_vectors(
@@ -777,6 +785,7 @@ class SDKMemoryKernel(KernelCompatibilityMixin):
             items=items,
             batch_size=batch_size,
             vector_store=vector_store,
+            item_type=item_type,
         )
 
     def _copy_rebuild_vectors_from_store(

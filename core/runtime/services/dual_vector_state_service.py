@@ -27,6 +27,8 @@ class MemoryDualVectorStateService(KernelServiceBase):
         return self._dual_vector_pools_config_enabled() and self._dual_vector_pools_ready
 
     def _vectors_root(self) -> Path:
+        if self._active_vector_space_id:
+            return self.data_dir / "vectors" / "spaces" / self._active_vector_space_id
         return self.data_dir / "vectors"
 
     def _paragraph_vector_dir(self) -> Path:

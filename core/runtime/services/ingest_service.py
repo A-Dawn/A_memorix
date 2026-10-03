@@ -209,6 +209,7 @@ class MemoryIngestService(KernelServiceBase):
             if getattr(embedding, "ndim", 1) == 1:
                 embedding = embedding.reshape(1, -1)
             target_store.add(vectors=embedding, ids=[token])
+            self._vector_space_service.record_input("paragraph", token, text)
             if token not in target_store:
                 raise RuntimeError("段落向量写入后成员校验失败")
             return {
