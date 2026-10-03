@@ -590,19 +590,6 @@ class PersonProfileService:
                 self._append_profile_bucket(merged, section, value)
         return merged
 
-    def _confine_untrusted_profile_buckets(
-        self,
-        classified_buckets: Dict[str, List[str]],
-    ) -> Dict[str, List[str]]:
-        """禁止模型分类结果直接成为稳定画像真相。"""
-
-        confined: Dict[str, List[str]] = {key: [] for key in classified_buckets}
-        for section, values in classified_buckets.items():
-            target = section if section in {"recent_interactions", "uncertain_notes"} else "uncertain_notes"
-            for value in values:
-                self._append_profile_bucket(confined, target, value)
-        return confined
-
     @staticmethod
     def _list_tokens(value: Any) -> List[str]:
         if value is None:
@@ -994,10 +981,7 @@ class PersonProfileService:
         for key in buckets:
             source_values = llm_result.get(key) or fallback.get(key) or []
             for value in source_values:
-                target_key = key
-                if key == "stable_facts" and self._looks_uncertain_or_temporary(value):
-                    target_key = "uncertain_notes"
-                self._append_profile_bucket(buckets, target_key, value)
+                self._append_profile_bucket(buckets, key, value)
         return buckets
 
     def _build_profile_classification_candidates(
@@ -1214,20 +1198,14 @@ class PersonProfileService:
                 payload["aliases"] = aliases
             return self._apply_manual_override(pid, payload)
 
-        unstructured_vector_evidence = [
-            item
-            for item in vector_evidence
-            if not self._source_type_from_source(str(item.get("source", ""))) == "person_fact"
-        ]
         classified_buckets = await self._classify_profile_evidence(
             person_id=pid,
             primary_name=primary_name,
             aliases=aliases,
             relation_edges=relation_edges,
-            vector_evidence=unstructured_vector_evidence,
+            vector_evidence=vector_evidence,
             memory_traits=memory_traits,
         )
-        classified_buckets = self._confine_untrusted_profile_buckets(classified_buckets)
         classified_buckets = self._merge_fact_claim_buckets(classified_buckets, fact_claims)
 
         evidence_ids = [
