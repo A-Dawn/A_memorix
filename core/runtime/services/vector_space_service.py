@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 import asyncio
 import hashlib
@@ -53,6 +53,15 @@ class MemoryVectorSpaceService(KernelServiceBase):
 
     def record_input(self, item_type: str, item_id: str, text: str) -> None:
         self._vector_space_inputs[f"{item_type}:{item_id}"] = self.input_hash(text)
+
+    async def run_io(self, function: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        """取消时先等当前文件操作结束，避免关机后线程继续改动向量目录。"""
+        worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            await worker
+            raise
 
     def _register_current_space(self, fingerprint: Dict[str, Any]) -> None:
         space_id = self._active_vector_space_id
@@ -122,22 +131,25 @@ class MemoryVectorSpaceService(KernelServiceBase):
 
     async def list_spaces(self) -> Dict[str, Any]:
         # 读取状态不等待耗时的重嵌入，界面可以及时显示同步中的库。
-        return {"success": True, "items": await asyncio.to_thread(self._list_spaces)}
+        return {"success": True, "items": await self.run_io(self._list_spaces)}
 
     async def delete_space(self, space_id: str) -> Dict[str, Any]:
         async with self._vector_rebuild_lock:
             if re.fullmatch(r"[0-9a-f]{64}", space_id) is None:
                 return {"success": False, "error": "vector_space_not_found"}
-            selected = await asyncio.to_thread(self._read_active_space)
+            selected = await self.run_io(self._read_active_space)
             if space_id in {self._active_vector_space_id, self._target_vector_space_id, selected}:
                 return {"success": False, "error": "vector_space_in_use"}
             root = self._catalog_root() / space_id
-            if not await asyncio.to_thread(root.is_dir):
+            if not await self.run_io(root.is_dir):
                 return {"success": False, "error": "vector_space_not_found"}
-            await asyncio.to_thread(shutil.rmtree, root)
+            await self.run_io(shutil.rmtree, root)
             return {"success": True, "deleted": space_id}
 
-    async def synchronize(self, *, force: bool = False) -> Dict[str, Any]:
+    async def synchronize(
+        self, *, force: bool = False, batch_size: Optional[int] = None,
+        include_relations: Optional[bool] = None,
+    ) -> Dict[str, Any]:
         fingerprint = self._current_embedding_fingerprint_for_validation()
         if fingerprint is None:
             return {"success": False, "error": "embedding_fingerprint_unavailable"}
@@ -158,11 +170,11 @@ class MemoryVectorSpaceService(KernelServiceBase):
                 if old_fingerprint is not None:
                     for store in (self.vector_store, self.paragraph_vector_store, self.graph_vector_store):
                         if store is not None:
-                            await asyncio.to_thread(store.save, embedding_fingerprint=old_fingerprint)
-                    await asyncio.to_thread(self._save_inputs)
-                await asyncio.to_thread(self._migrate_legacy_space)
+                            await self.run_io(store.save, embedding_fingerprint=old_fingerprint)
+                    await self.run_io(self._save_inputs)
+                await self.run_io(self._migrate_legacy_space)
                 self._active_vector_space_id = space_id
-                self._vector_space_inputs = await asyncio.to_thread(self._read_inputs)
+                self._vector_space_inputs = await self.run_io(self._read_inputs)
                 original_inputs = dict(self._vector_space_inputs)
                 self._vector_space_sources = {}
                 self._dual_vector_pools_ready = False
@@ -171,9 +183,9 @@ class MemoryVectorSpaceService(KernelServiceBase):
                 self.vector_store = self._make_vector_store(self._vectors_root())
                 self.paragraph_vector_store = None
                 self.graph_vector_store = None
-                await asyncio.to_thread(self.metadata_store.reset_vector_projection_state)
+                await self.run_io(self.metadata_store.reset_vector_projection_state)
                 # 已保存的目标库先加载为复制来源；全量计划只对缺失或变化的输入调用模型。
-                await asyncio.to_thread(self._embedding_state_service._load_vector_stores_for_runtime)
+                await self.run_io(self._embedding_state_service._load_vector_stores_for_runtime)
                 if self._dual_vector_pools_enabled():
                     self._vector_space_sources = {
                         "paragraph": self.paragraph_vector_store,
@@ -181,16 +193,21 @@ class MemoryVectorSpaceService(KernelServiceBase):
                     }
                 elif self.vector_store.has_data():
                     self._vector_space_sources = {"single": self.vector_store}
-                result = await self._vector_runtime_service._rebuild_all_vectors_locked(reuse_space=True)
+                result = await self._vector_runtime_service._rebuild_all_vectors_locked(
+                    reuse_space=not force, batch_size=batch_size, include_relations=include_relations,
+                )
                 if not result.get("success"):
                     raise RuntimeError(str(result.get("errors") or result.get("error") or "向量库同步失败"))
-                await asyncio.to_thread(self._register_current_space, fingerprint)
+                await self.run_io(self._register_current_space, fingerprint)
                 logger.info(f"模型向量库已启用: model={fingerprint.get('model')}, space={space_id}")
                 return {**result, "changed": True, "space_id": space_id}
-            except Exception as exc:
+            except BaseException as exc:
                 self._vector_space_inputs = original_inputs
-                self._set_vector_health(state="unavailable", error_code="vector_space_sync_failed", reason=str(exc))
-                self._set_embedding_degraded(active=True, reason=str(exc))
+                reason = "向量库同步已取消" if isinstance(exc, asyncio.CancelledError) else str(exc)
+                self._set_runtime_capability("vector_read", False)
+                self._set_runtime_capability("vector_write", False)
+                self._set_vector_health(state="unavailable", error_code="vector_space_sync_failed", reason=reason)
+                self._set_embedding_degraded(active=True, reason=reason)
                 raise
             finally:
                 self._vector_space_sources = {}

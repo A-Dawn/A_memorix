@@ -32,6 +32,7 @@ class EmbeddingAPIAdapter:
     """适配宿主 embedding 请求接口。"""
 
     _GLOBAL_DIMENSION_CACHE: Dict[str, int] = {}
+    _GLOBAL_DIMENSION_MODELS: Dict[str, Tuple[str, str]] = {}
     _GLOBAL_TEXT_EMBEDDING_CACHE: Dict[Tuple[str, int, str], np.ndarray] = {}
 
     def __init__(
@@ -320,6 +321,9 @@ class EmbeddingAPIAdapter:
                 )
                 self._last_success_model_name = str(candidate_name or "").strip()
                 self._last_success_provider_name = str(model_info.api_provider or "").strip()
+                self._GLOBAL_DIMENSION_MODELS[self._dimension_cache_key()] = (
+                    self._last_success_model_name, self._last_success_provider_name,
+                )
                 return vector.tolist()
             except Exception as exc:
                 last_exc = exc
@@ -361,6 +365,9 @@ class EmbeddingAPIAdapter:
         if cached_dimension is not None:
             self._dimension = int(cached_dimension)
             self._dimension_detected = True
+            observed_model = self._GLOBAL_DIMENSION_MODELS.get(cache_key)
+            if observed_model is not None:
+                self._last_success_model_name, self._last_success_provider_name = observed_model
             logger.debug(f"嵌入维度命中进程缓存: {self._dimension}")
             return self._dimension
 

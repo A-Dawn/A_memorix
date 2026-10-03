@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-import asyncio
 import shutil
 import tempfile
 import time
@@ -223,7 +222,7 @@ class MemoryVectorRuntimeService(KernelServiceBase):
                 logger.warning(f"加载旧单池向量用于双池增量补齐失败，将回退 embedding 重建: {exc}")
 
         paragraph_where = self._active_row_filter_sql("paragraphs")
-        paragraph_rows = await asyncio.to_thread(self.metadata_store.query,
+        paragraph_rows = await self._vector_space_service.run_io(self.metadata_store.query,
             f"""
             SELECT hash, content
             FROM paragraphs
@@ -250,7 +249,7 @@ class MemoryVectorRuntimeService(KernelServiceBase):
             errors.append(f"paragraph_pool_backfill:{error}")
 
         entity_where = self._active_row_filter_sql("entities")
-        entity_rows = await asyncio.to_thread(self.metadata_store.query,
+        entity_rows = await self._vector_space_service.run_io(self.metadata_store.query,
             f"""
             SELECT hash, name
             FROM entities
@@ -281,7 +280,7 @@ class MemoryVectorRuntimeService(KernelServiceBase):
 
         if self.relation_vectors_enabled:
             relation_where = self._active_row_filter_sql("relations")
-            relation_rows = await asyncio.to_thread(self.metadata_store.query,
+            relation_rows = await self._vector_space_service.run_io(self.metadata_store.query,
                 f"""
                 SELECT hash, subject, predicate, object
                 FROM relations
@@ -388,7 +387,7 @@ class MemoryVectorRuntimeService(KernelServiceBase):
         if source_store is not None and vector_store is None:
             reusable = [(item_id, item_id) for item_id, text in items
                         if self._vector_space_inputs.get(f"{item_type}:{item_id}") == self._vector_space_service.input_hash(text)]
-            copied, copied_ids, _missing = await asyncio.to_thread(
+            copied, copied_ids, _missing = await self._vector_space_service.run_io(
                 self._copy_rebuild_vectors_from_store, source_store=source_store,
                 target_store=target_store, id_pairs=reusable, batch_size=batch_size,
             )
@@ -518,7 +517,7 @@ class MemoryVectorRuntimeService(KernelServiceBase):
                 changed_pairs.append(pair)
             else:
                 id_pairs.append(pair)
-        copied, copied_source_ids, missing_pairs = await asyncio.to_thread(
+        copied, copied_source_ids, missing_pairs = await self._vector_space_service.run_io(
             self._copy_rebuild_vectors_from_store,
             source_store=source_store,
             target_store=target_store,
@@ -581,12 +580,24 @@ class MemoryVectorRuntimeService(KernelServiceBase):
                 "error": "vector_rebuild_running",
                 "detail": "已有向量重建任务正在运行",
             }
+        switch_space = False
         async with self._vector_rebuild_lock:
-            return await self._rebuild_all_vectors_locked(
-                batch_size=batch_size,
-                include_relations=include_relations,
-                dry_run=dry_run,
-            )
+            stored_fingerprint = await self._vector_space_service.run_io(self._stored_embedding_fingerprint)
+            if not dry_run and (self._active_vector_space_id or stored_fingerprint is not None):
+                await self._detect_current_embedding_dimension_for_rebuild()
+                fingerprint = self._current_embedding_fingerprint_for_validation()
+                previous_space_id = self._active_vector_space_id or self._vector_space_service.space_id(stored_fingerprint)
+                switch_space = fingerprint is not None and self._vector_space_service.space_id(fingerprint) != previous_space_id
+            if not switch_space:
+                return await self._rebuild_all_vectors_locked(
+                    batch_size=batch_size,
+                    include_relations=include_relations,
+                    dry_run=dry_run,
+                )
+        # 手动重建也应落到当前模型的目录，保留原模型的库以供切回。
+        return await self._vector_space_service.synchronize(
+            force=True, batch_size=batch_size, include_relations=include_relations,
+        )
 
     async def _rebuild_all_vectors_locked(
         self,
@@ -606,7 +617,7 @@ class MemoryVectorRuntimeService(KernelServiceBase):
         if self.metadata_store is None or self.embedding_manager is None:
             return {"success": False, "error": "runtime_components_missing"}
 
-        target_counts = await asyncio.to_thread(self._count_vector_rebuild_targets)
+        target_counts = await self._vector_space_service.run_io(self._count_vector_rebuild_targets)
         relation_enabled = bool(self.relation_vectors_enabled if include_relations is None else include_relations)
         if not relation_enabled:
             target_counts["relations"] = 0
@@ -661,28 +672,28 @@ class MemoryVectorRuntimeService(KernelServiceBase):
         if dual_mode and legacy_source_store is not None and legacy_source_store.has_data():
             try:
                 self._update_dual_vector_auto_migration_stage("legacy_source_load")
-                await asyncio.to_thread(legacy_source_store.load)
+                await self._vector_space_service.run_io(legacy_source_store.load)
                 self._update_dual_vector_auto_migration_stage("legacy_source_warmup")
-                await asyncio.to_thread(legacy_source_store.warmup_index, force_train=False)
+                await self._vector_space_service.run_io(legacy_source_store.warmup_index, force_train=False)
                 self._update_dual_vector_auto_migration_stage("legacy_source_ready")
             except Exception as exc:
                 logger.warning(f"加载旧单池向量用于双池迁移失败，将回退 embedding 重建: {exc}")
         if not dual_mode:
             self._dual_vector_pools_ready = False
-            await asyncio.to_thread(self._remove_dual_vector_ready_manifest)
+            await self._vector_space_service.run_io(self._remove_dual_vector_ready_manifest)
             if reuse_space:
-                single_build_root = Path(await asyncio.to_thread(
+                single_build_root = Path(await self._vector_space_service.run_io(
                     tempfile.mkdtemp, prefix="single_build_", dir=self._vectors_root(),
                 ))
                 self.vector_store = self._make_vector_store(single_build_root)
             else:
                 self.vector_store = self._make_vector_store(self._vectors_root())
-                await asyncio.to_thread(self.vector_store.clear)
+                await self._vector_space_service.run_io(self.vector_store.clear)
             self.paragraph_vector_store = self._make_vector_store(self._paragraph_vector_dir())
             self.graph_vector_store = self._make_vector_store(self._graph_vector_dir())
             self._refresh_relation_write_service()
         else:
-            dual_build_root, paragraph_data_dir, graph_data_dir = await asyncio.to_thread(
+            dual_build_root, paragraph_data_dir, graph_data_dir = await self._vector_space_service.run_io(
                 self._prepare_dual_vector_build_dirs
             )
             build_paragraph_vector_store = self._make_vector_store(paragraph_data_dir)
@@ -702,7 +713,7 @@ class MemoryVectorRuntimeService(KernelServiceBase):
         entity_where = self._active_row_filter_sql("entities")
         relation_where = self._active_row_filter_sql("relations")
 
-        paragraph_rows = await asyncio.to_thread(self.metadata_store.query,
+        paragraph_rows = await self._vector_space_service.run_io(self.metadata_store.query,
             f"""
             SELECT hash, content
             FROM paragraphs
@@ -741,7 +752,7 @@ class MemoryVectorRuntimeService(KernelServiceBase):
             paragraph_migration=dict(migration_stats.get("paragraphs") or {}),
         )
 
-        entity_rows = await asyncio.to_thread(self.metadata_store.query,
+        entity_rows = await self._vector_space_service.run_io(self.metadata_store.query,
             f"""
             SELECT hash, name
             FROM entities
@@ -783,7 +794,7 @@ class MemoryVectorRuntimeService(KernelServiceBase):
         )
 
         if relation_enabled:
-            relation_rows = await asyncio.to_thread(self.metadata_store.query,
+            relation_rows = await self._vector_space_service.run_io(self.metadata_store.query,
                 f"""
                 SELECT hash, subject, predicate, object
                 FROM relations
@@ -867,7 +878,7 @@ class MemoryVectorRuntimeService(KernelServiceBase):
                     )
                 conn.commit()
 
-            await asyncio.to_thread(update_relation_states)
+            await self._vector_space_service.run_io(update_relation_states)
 
         done_total = sum(int(item["done"]) for item in stats.values())
         failed_total = sum(int(item["failed"]) for item in stats.values())
@@ -896,20 +907,20 @@ class MemoryVectorRuntimeService(KernelServiceBase):
                 try:
                     if build_paragraph_vector_store is not None:
                         self._update_dual_vector_auto_migration_stage("paragraph_pool_warmup")
-                        await asyncio.to_thread(build_paragraph_vector_store.warmup_index, force_train=True)
+                        await self._vector_space_service.run_io(build_paragraph_vector_store.warmup_index, force_train=True)
                         self._update_dual_vector_auto_migration_stage("paragraph_pool_save")
-                        await asyncio.to_thread(self._save_vector_store, build_paragraph_vector_store)
+                        await self._vector_space_service.run_io(self._save_vector_store, build_paragraph_vector_store)
                     if build_graph_vector_store is not None:
                         self._update_dual_vector_auto_migration_stage("graph_pool_warmup")
-                        await asyncio.to_thread(build_graph_vector_store.warmup_index, force_train=True)
+                        await self._vector_space_service.run_io(build_graph_vector_store.warmup_index, force_train=True)
                         self._update_dual_vector_auto_migration_stage("graph_pool_save")
-                        await asyncio.to_thread(self._save_vector_store, build_graph_vector_store)
+                        await self._vector_space_service.run_io(self._save_vector_store, build_graph_vector_store)
                     self._update_dual_vector_auto_migration_stage("activate_dirs")
-                    await asyncio.to_thread(self._activate_dual_vector_build_dirs, dual_build_root)
+                    await self._vector_space_service.run_io(self._activate_dual_vector_build_dirs, dual_build_root)
                     self._update_dual_vector_auto_migration_stage("write_manifest")
-                    await asyncio.to_thread(self._write_dual_vector_ready_manifest, stats=stats, migration_stats=migration_stats)
+                    await self._vector_space_service.run_io(self._write_dual_vector_ready_manifest, stats=stats, migration_stats=migration_stats)
                     self._update_dual_vector_auto_migration_stage("reload_dual_stores")
-                    activation_ok = await asyncio.to_thread(self._reload_dual_vector_stores_from_disk)
+                    activation_ok = await self._vector_space_service.run_io(self._reload_dual_vector_stores_from_disk)
                     if not activation_ok:
                         errors.append("dual_pool_activation:ready_manifest_unusable")
                     else:
@@ -922,14 +933,14 @@ class MemoryVectorRuntimeService(KernelServiceBase):
                             for item in backfill_result.get("errors", []) or []:
                                 errors.append(str(item))
                         self._update_dual_vector_auto_migration_stage("clear_legacy_single_pool")
-                        await asyncio.to_thread(self._clear_legacy_single_vector_files_after_dual_ready)
+                        await self._vector_space_service.run_io(self._clear_legacy_single_vector_files_after_dual_ready)
                 except Exception as exc:
                     activation_ok = False
                     self._dual_vector_pools_ready = False
                     errors.append(f"dual_pool_activation:{str(exc)[:500]}")
                     logger.warning(f"双池临时构建目录切换失败，保留原有向量池: {exc}")
-                    await asyncio.to_thread(self._drop_dual_build_root, dual_build_root)
-                    await asyncio.to_thread(self._reload_dual_vector_stores_from_disk)
+                    await self._vector_space_service.run_io(self._drop_dual_build_root, dual_build_root)
+                    await self._vector_space_service.run_io(self._reload_dual_vector_stores_from_disk)
             else:
                 activation_ok = False
                 if failed_total == 0:
@@ -938,12 +949,12 @@ class MemoryVectorRuntimeService(KernelServiceBase):
                         f"paragraph={actual_paragraph_vectors}/{expected_paragraph_vectors}, "
                         f"graph={actual_graph_vectors}/{expected_graph_vectors}"
                     )
-                await asyncio.to_thread(self._drop_dual_build_root, dual_build_root)
-                await asyncio.to_thread(self._reload_dual_vector_stores_from_disk)
+                await self._vector_space_service.run_io(self._drop_dual_build_root, dual_build_root)
+                await self._vector_space_service.run_io(self._reload_dual_vector_stores_from_disk)
             self._refresh_relation_write_service()
         else:
             self._update_dual_vector_auto_migration_stage("single_pool_warmup")
-            await asyncio.to_thread(self.vector_store.warmup_index, force_train=True)
+            await self._vector_space_service.run_io(self.vector_store.warmup_index, force_train=True)
             if single_build_root is not None:
                 def activate_single_pool() -> None:
                     self._save_vector_store(self.vector_store)
@@ -952,7 +963,8 @@ class MemoryVectorRuntimeService(KernelServiceBase):
                     shutil.rmtree(single_build_root)
                     self.vector_store = self._make_vector_store(self._vectors_root())
                     self.vector_store.load(expected_embedding_fingerprint=self._current_embedding_fingerprint())
-                await asyncio.to_thread(activate_single_pool)
+                    self.vector_store.warmup_index(force_train=True)
+                await self._vector_space_service.run_io(activate_single_pool)
             self.paragraph_vector_store = self._make_vector_store(self._paragraph_vector_dir())
             self.graph_vector_store = self._make_vector_store(self._graph_vector_dir())
             self._refresh_relation_write_service()
@@ -987,12 +999,12 @@ class MemoryVectorRuntimeService(KernelServiceBase):
             for item_type, items in (("paragraph", paragraph_items), ("entity", entity_items), ("relation", relation_items if relation_enabled else [])):
                 for item_id, text in items:
                     self._vector_space_service.record_input(item_type, item_id, text)
-            await asyncio.to_thread(self._vector_space_service._save_inputs)
+            await self._vector_space_service.run_io(self._vector_space_service._save_inputs)
         elapsed_ms = (time.time() - started) * 1000.0
         if not rebuild_success:
             self._vector_space_inputs = original_inputs
         if rebuild_success:
-            await asyncio.to_thread(self._cleanup_stale_dual_vector_build_dirs)
+            await self._vector_space_service.run_io(self._cleanup_stale_dual_vector_build_dirs)
             self._vector_persist_blocked_until_rebuild = False
             self._vector_rebuild_source_dimension = None
             self._set_runtime_capability("vector_read", True)
@@ -1010,7 +1022,7 @@ class MemoryVectorRuntimeService(KernelServiceBase):
         self._update_dual_vector_auto_migration_stage(
             "persist", rebuild_success=rebuild_success, errors=list(errors[:5])
         )
-        await asyncio.to_thread(self._persist, force_vectors=rebuild_success)
+        await self._vector_space_service.run_io(self._persist, force_vectors=rebuild_success)
         return {
             "success": rebuild_success,
             "dry_run": False,
