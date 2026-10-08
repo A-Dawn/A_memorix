@@ -1056,6 +1056,8 @@ class MetadataFactMixin:
             claim_spec = dict(raw_claim) if isinstance(raw_claim, dict) else {}
             trust = _normalized_token(claim_spec.get("trust"))
             observed_at = row.get("event_time") or row.get("created_at")
+            # 无分类的旧摘要不能在迁移时获得模型未给出的稳定结论。
+            user_supported = evidence_source == "user_supported"
             result = self.upsert_fact_claim(
                 scope_type="person",
                 scope_id=person_id,
@@ -1063,12 +1065,12 @@ class MetadataFactMixin:
                 value_text=content,
                 polarity=str(claim_spec.get("polarity", "positive")),
                 cardinality=str(claim_spec.get("cardinality", "set")),
-                stability=str(claim_spec.get("stability", "stable")),
-                profile_section=str(claim_spec.get("profile_section", "stable_facts")),
+                stability=str(claim_spec.get("stability", "stable" if user_supported else "uncertain")),
+                profile_section=str(claim_spec.get("profile_section", "stable_facts" if user_supported else "uncertain_notes")),
                 authority=str(claim_spec.get("authority") or (
                     "direct_user" if evidence_source == "user_supported" else "summary_derived"
                 )),
-                confidence=float(claim_spec.get("confidence", 1.0)),
+                confidence=float(claim_spec.get("confidence", 1.0 if user_supported else 0.5)),
                 evidence_type="paragraph",
                 evidence_id=paragraph_hash,
                 evidence_metadata={
