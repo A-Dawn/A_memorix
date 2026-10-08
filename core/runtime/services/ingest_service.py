@@ -602,7 +602,8 @@ class MemoryIngestService(KernelServiceBase):
                         await heartbeat_task
                     except Exception as heartbeat_exc:
                         logger.warning(f"Episode 来源租约心跳异常: source={source}, error={heartbeat_exc}")
-                publish_result = self.metadata_store.publish_episode_source_rebuild(
+                publish_result = await asyncio.to_thread(
+                    self.metadata_store.publish_episode_source_rebuild,
                     source,
                     lease_token=lease_token,
                     claimed_revision=claimed_revision,
