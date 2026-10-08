@@ -288,6 +288,9 @@ class EmbeddingAPIAdapter:
         if not candidate_names:
             raise RuntimeError("embedding 任务未配置模型")
 
+        # 在发起请求前解析完整配置，配置错误不能吞掉已经成功的模型响应。
+        configuration_key = self._dimension_cache_key()
+
         last_exc: Optional[BaseException] = None
         for candidate_name in candidate_names:
             try:
@@ -321,7 +324,7 @@ class EmbeddingAPIAdapter:
                 )
                 self._last_success_model_name = str(candidate_name or "").strip()
                 self._last_success_provider_name = str(model_info.api_provider or "").strip()
-                self._GLOBAL_DIMENSION_MODELS[self._dimension_cache_key()] = (
+                self._GLOBAL_DIMENSION_MODELS[configuration_key] = (
                     self._last_success_model_name, self._last_success_provider_name,
                 )
                 return vector.tolist()
