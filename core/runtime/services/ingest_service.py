@@ -608,6 +608,7 @@ class MemoryIngestService(KernelServiceBase):
                     claimed_revision=claimed_revision,
                     generation_hash=generation_hash,
                     episodes_payloads=list(plan.get("payloads") or []),
+                    empty_group_fingerprints=list(plan.get("empty_group_fingerprints") or []),
                 )
                 if not bool(publish_result.get("published")):
                     is_superseded = bool(publish_result.get("superseded"))

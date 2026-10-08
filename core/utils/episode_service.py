@@ -575,6 +575,10 @@ class EpisodeService:
         paragraphs = await asyncio.to_thread(self._enrich_paragraph_participants, paragraphs)
         groups = self.group_paragraphs(paragraphs)
         existing_episodes = await asyncio.to_thread(self.metadata_store.get_episodes_by_source, token)
+        cached_empty_groups = set(await asyncio.to_thread(
+            self.metadata_store.get_episode_empty_group_fingerprints, token,
+        ))
+        empty_group_fingerprints: List[str] = []
         cached_by_fingerprint: Dict[str, List[Dict[str, Any]]] = {}
         for episode in existing_episodes:
             input_fingerprint = str(episode.get("input_fingerprint", "") or "").strip()
@@ -590,6 +594,10 @@ class EpisodeService:
             group["_segmentation_generation"] = generation
             input_fingerprint = self._group_input_fingerprint(group)
             group["_input_fingerprint"] = input_fingerprint
+            if input_fingerprint in cached_empty_groups:
+                empty_group_fingerprints.append(input_fingerprint)
+                reused_group_count += 1
+                continue
             cached_payloads = self._reusable_group_payloads(
                 group,
                 input_fingerprint,
@@ -601,7 +609,10 @@ class EpisodeService:
                 reused_episode_count += len(cached_payloads)
                 continue
             result = await self._build_episode_payloads_for_group(group)
-            payloads.extend(list(result.get("payloads") or []))
+            group_payloads = list(result.get("payloads") or [])
+            payloads.extend(group_payloads)
+            if not group_payloads:
+                empty_group_fingerprints.append(input_fingerprint)
             fallback_count += int(result.get("fallback_count") or 0)
             recomputed_group_count += 1
 
@@ -616,6 +627,7 @@ class EpisodeService:
             "reused_episode_count": reused_episode_count,
             "recomputed_group_count": recomputed_group_count,
             "generation_hash": generation_hash,
+            "empty_group_fingerprints": empty_group_fingerprints,
         }
 
     async def rebuild_source(self, source: str) -> Dict[str, Any]:
@@ -627,6 +639,7 @@ class EpisodeService:
         replace_result = await asyncio.to_thread(
             self.metadata_store.replace_episodes_for_source, token,
             list(plan.get("payloads") or []),
+            empty_group_fingerprints=list(plan.get("empty_group_fingerprints") or []),
         )
         result = {key: value for key, value in plan.items() if key != "payloads"}
         result["episode_count"] = int(replace_result.get("episode_count") or 0)

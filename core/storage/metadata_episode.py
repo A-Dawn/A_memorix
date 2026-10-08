@@ -413,6 +413,7 @@ class MetadataEpisodeMixin:
         claimed_revision: int,
         generation_hash: str,
         episodes_payloads: List[Dict[str, Any]],
+        empty_group_fingerprints: Optional[List[str]] = None,
         now: Optional[float] = None,
     ) -> Dict[str, Any]:
         """仅在来源版本未变化时替换完整快照并完成任务。"""
@@ -465,7 +466,9 @@ class MetadataEpisodeMixin:
                     "episode_count": 0,
                 }
 
-            replace_result = self.replace_episodes_for_source(token, episodes_payloads)
+            replace_result = self.replace_episodes_for_source(
+                token, episodes_payloads, empty_group_fingerprints=empty_group_fingerprints,
+            )
             cursor.execute(
                 """
                 UPDATE episode_rebuild_sources
@@ -767,10 +770,20 @@ class MetadataEpisodeMixin:
             for source, token in normalized.items()
         }
 
+    def get_episode_empty_group_fingerprints(self, source: str) -> List[str]:
+        """读取已成功处理且结果为空的分组。"""
+        cursor = self._conn.execute(
+            "SELECT input_fingerprint FROM episode_empty_groups WHERE source = ?",
+            (self._normalize_episode_source(source),),
+        )
+        return [str(row["input_fingerprint"]) for row in cursor.fetchall()]
+
     def replace_episodes_for_source(
         self,
         source: str,
         episodes_payloads: List[Dict[str, Any]],
+        *,
+        empty_group_fingerprints: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """按 source 全量替换 episode 结果。"""
         token = self._normalize_episode_source(source)
@@ -782,6 +795,12 @@ class MetadataEpisodeMixin:
 
         with self.transaction(immediate=True) as connection:
             cursor = connection.cursor()
+            # 空结果与情景快照在同一事务中发布；失效租约不能提前写入缓存。
+            cursor.execute("DELETE FROM episode_empty_groups WHERE source = ?", (token,))
+            cursor.executemany(
+                "INSERT INTO episode_empty_groups (source, input_fingerprint) VALUES (?, ?)",
+                [(token, fingerprint) for fingerprint in dict.fromkeys(empty_group_fingerprints or [])],
+            )
             cursor.execute(
                 """
                 SELECT episode_id, created_at

@@ -129,6 +129,7 @@ async def _run_rebuilds(store: MetadataStore, plugin_config: Dict[str, Any], sou
                 claimed_revision=claimed_revision,
                 generation_hash=generation_hash,
                 episodes_payloads=list(plan.get("payloads") or []),
+                empty_group_fingerprints=list(plan.get("empty_group_fingerprints") or []),
             )
             if not bool(result.get("published")):
                 reason = "superseded" if bool(result.get("superseded")) else "lease_lost_or_claim_mismatch"
