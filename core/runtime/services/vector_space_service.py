@@ -68,12 +68,15 @@ class MemoryVectorSpaceService(KernelServiceBase):
         root = self._catalog_root() / space_id
         path = root / "space.json"
         previous = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-        self._write_json(path, {
-            "space_id": space_id,
-            "embedding_fingerprint": fingerprint,
-            "created_at": previous.get("created_at", time.time()),
-            "last_used_at": time.time(),
-        })
+        self._write_json(
+            path,
+            {
+                "space_id": space_id,
+                "embedding_fingerprint": fingerprint,
+                "created_at": previous.get("created_at", time.time()),
+                "last_used_at": time.time(),
+            },
+        )
         self._write_json(self.data_dir / "vectors" / "active.json", {"space_id": space_id})
         self._save_inputs()
 
@@ -88,8 +91,17 @@ class MemoryVectorSpaceService(KernelServiceBase):
         space_id = self.space_id(fingerprint)
         target = self._catalog_root() / space_id
         target.mkdir(parents=True, exist_ok=True)
-        for name in ("paragraph", "graph", "dual_ready.json", "embedding_inputs.json",
-                     "vectors.bin", "vectors_ids.bin", "vectors.index", "vectors_metadata.json", "vectors_metadata.pkl"):
+        for name in (
+            "paragraph",
+            "graph",
+            "dual_ready.json",
+            "embedding_inputs.json",
+            "vectors.bin",
+            "vectors_ids.bin",
+            "vectors.index",
+            "vectors_metadata.json",
+            "vectors_metadata.pkl",
+        ):
             source = old_root / name
             if source.exists():
                 shutil.move(str(source), str(target / name))
@@ -121,12 +133,18 @@ class MemoryVectorSpaceService(KernelServiceBase):
                 if meta_path.exists():
                     meta = json.loads(meta_path.read_text(encoding="utf-8"))
                     counts[pool] = len(meta.get("known_hashes", [])) - len(meta.get("deleted_ids", []))
-            items.append({
-                **info, "space_id": root.name, "embedding_fingerprint": fingerprint,
-                "state": state, "can_delete": state == "saved",
-                "vector_count": sum(counts.values()), "counts": counts,
-                "size_bytes": sum(path.stat().st_size for path in root.rglob("*") if path.is_file()),
-            })
+            items.append(
+                {
+                    **info,
+                    "space_id": root.name,
+                    "embedding_fingerprint": fingerprint,
+                    "state": state,
+                    "can_delete": state == "saved",
+                    "vector_count": sum(counts.values()),
+                    "counts": counts,
+                    "size_bytes": sum(path.stat().st_size for path in root.rglob("*") if path.is_file()),
+                }
+            )
         return sorted(items, key=lambda item: float(item.get("last_used_at", 0)), reverse=True)
 
     async def list_spaces(self) -> Dict[str, Any]:
@@ -147,7 +165,10 @@ class MemoryVectorSpaceService(KernelServiceBase):
             return {"success": True, "deleted": space_id}
 
     async def synchronize(
-        self, *, force: bool = False, batch_size: Optional[int] = None,
+        self,
+        *,
+        force: bool = False,
+        batch_size: Optional[int] = None,
         include_relations: Optional[bool] = None,
     ) -> Dict[str, Any]:
         fingerprint = self._current_embedding_fingerprint_for_validation()
@@ -194,7 +215,9 @@ class MemoryVectorSpaceService(KernelServiceBase):
                 elif self.vector_store.has_data():
                     self._vector_space_sources = {"single": self.vector_store}
                 result = await self._vector_runtime_service._rebuild_all_vectors_locked(
-                    reuse_space=not force, batch_size=batch_size, include_relations=include_relations,
+                    reuse_space=not force,
+                    batch_size=batch_size,
+                    include_relations=include_relations,
                 )
                 if not result.get("success"):
                     raise RuntimeError(str(result.get("errors") or result.get("error") or "向量库同步失败"))
