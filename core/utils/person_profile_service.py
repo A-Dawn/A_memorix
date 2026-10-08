@@ -45,7 +45,7 @@ from .profile_text import build_profile_injection_text, build_structured_profile
 logger = get_logger("A_Memorix.PersonProfileService")
 
 PROFILE_CLASSIFICATION_REQUEST_TYPE = "A_Memorix.PersonProfileEvidenceClassify"
-PROFILE_GENERATION_VERSION = 2
+PROFILE_GENERATION_VERSION = 3
 
 
 class PersonProfileService:
