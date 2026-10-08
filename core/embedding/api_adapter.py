@@ -325,7 +325,8 @@ class EmbeddingAPIAdapter:
                 self._last_success_model_name = str(candidate_name or "").strip()
                 self._last_success_provider_name = str(model_info.api_provider or "").strip()
                 self._GLOBAL_DIMENSION_MODELS[configuration_key] = (
-                    self._last_success_model_name, self._last_success_provider_name,
+                    self._last_success_model_name,
+                    self._last_success_provider_name,
                 )
                 return vector.tolist()
             except Exception as exc:
@@ -341,12 +342,21 @@ class EmbeddingAPIAdapter:
         for name in self._resolve_candidate_model_names():
             info = self._find_model_info(name)
             provider = self._find_provider(info.api_provider)
-            models.append((name, info.model_identifier, provider.base_url.rstrip("/"),
-                           self._strip_dimension_control_keys(info.extra_params)))
-        return self._fingerprint_hash({
-            "models": models, "dimension": self.default_dimension,
-            "mode": self.dimension_request_mode,
-        })
+            models.append(
+                (
+                    name,
+                    info.model_identifier,
+                    provider.base_url.rstrip("/"),
+                    self._strip_dimension_control_keys(info.extra_params),
+                )
+            )
+        return self._fingerprint_hash(
+            {
+                "models": models,
+                "dimension": self.default_dimension,
+                "mode": self.dimension_request_mode,
+            }
+        )
 
     def _embedding_cache_key(self, text: str, dimensions: Optional[int]) -> Tuple[str, int, str]:
         requested_dimension = self._resolve_canonical_dimension(dimensions)

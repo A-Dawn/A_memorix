@@ -456,9 +456,15 @@ class MemoryEmbeddingStateService(KernelServiceBase):
         if ok or report.get("code") == "embedding_dimension_mismatch":
             space_result = await self._vector_space_service.synchronize()
             if space_result.get("changed"):
-                return {"success": True, "recovered": True, "vector_restored": True,
-                        "vector_available": True, "vector_health": self._vector_health_snapshot(),
-                        "report": self._runtime_facade._runtime_self_check_report, "space": space_result}
+                return {
+                    "success": True,
+                    "recovered": True,
+                    "vector_restored": True,
+                    "vector_available": True,
+                    "vector_health": self._vector_health_snapshot(),
+                    "report": self._runtime_facade._runtime_self_check_report,
+                    "space": space_result,
+                }
         dimension_mismatch = self._apply_self_check_dimension_result(report)
         if dimension_mismatch:
             self._set_embedding_degraded(active=True, reason=dimension_mismatch, checked_at=checked_at)
