@@ -31,8 +31,7 @@ logger = get_logger("A_Memorix.EmbeddingAPIAdapter")
 class EmbeddingAPIAdapter:
     """适配宿主 embedding 请求接口。"""
 
-    _GLOBAL_DIMENSION_CACHE: Dict[str, int] = {}
-    _GLOBAL_DIMENSION_MODELS: Dict[str, Tuple[str, str]] = {}
+    _GLOBAL_DIMENSION_CACHE: Dict[str, Tuple[int, str, str]] = {}
     _GLOBAL_TEXT_EMBEDDING_CACHE: Dict[Tuple[str, int, str], np.ndarray] = {}
 
     def __init__(
@@ -65,6 +64,7 @@ class EmbeddingAPIAdapter:
         self._total_time = 0.0
         self._last_success_model_name = ""
         self._last_success_provider_name = ""
+        self._last_success_dimension: Optional[int] = None
         self._last_configuration_key = ""
 
         logger.info(
@@ -119,7 +119,7 @@ class EmbeddingAPIAdapter:
 
     def get_embedding_fingerprint(self, *, dimension: Optional[int] = None) -> Dict[str, Any]:
         """返回当前适配器所用向量空间的精简指纹。"""
-        effective_dimension = max(1, int(dimension or self.get_embedding_dimension()))
+        effective_dimension = max(1, int(dimension or self._last_success_dimension or self.get_embedding_dimension()))
         model_token = str(self._last_success_model_name or "").strip()
         provider_token = str(self._last_success_provider_name or "").strip()
         source = "observed" if model_token else "configured"
@@ -289,7 +289,7 @@ class EmbeddingAPIAdapter:
             raise RuntimeError("embedding 任务未配置模型")
 
         # 在发起请求前解析完整配置，配置错误不能吞掉已经成功的模型响应。
-        configuration_key = self._dimension_cache_key()
+        self._dimension_cache_key()
 
         last_exc: Optional[BaseException] = None
         for candidate_name in candidate_names:
@@ -324,10 +324,7 @@ class EmbeddingAPIAdapter:
                 )
                 self._last_success_model_name = str(candidate_name or "").strip()
                 self._last_success_provider_name = str(model_info.api_provider or "").strip()
-                self._GLOBAL_DIMENSION_MODELS[configuration_key] = (
-                    self._last_success_model_name,
-                    self._last_success_provider_name,
-                )
+                self._last_success_dimension = int(vector.size)
                 return vector.tolist()
             except Exception as exc:
                 last_exc = exc
@@ -369,18 +366,17 @@ class EmbeddingAPIAdapter:
             self._dimension = None
             self._last_success_model_name = ""
             self._last_success_provider_name = ""
+            self._last_success_dimension = None
             self._last_configuration_key = configuration_key
         if self._dimension_detected and self._dimension is not None:
             return self._dimension
 
         cache_key = self._dimension_cache_key()
-        cached_dimension = self._GLOBAL_DIMENSION_CACHE.get(cache_key)
-        if cached_dimension is not None:
-            self._dimension = int(cached_dimension)
+        cached_detection = self._GLOBAL_DIMENSION_CACHE.get(cache_key)
+        if cached_detection is not None:
+            self._dimension, self._last_success_model_name, self._last_success_provider_name = cached_detection
+            self._last_success_dimension = self._dimension if self._last_success_model_name else None
             self._dimension_detected = True
-            observed_model = self._GLOBAL_DIMENSION_MODELS.get(cache_key)
-            if observed_model is not None:
-                self._last_success_model_name, self._last_success_provider_name = observed_model
             logger.debug(f"嵌入维度命中进程缓存: {self._dimension}")
             return self._dimension
 
@@ -400,7 +396,12 @@ class EmbeddingAPIAdapter:
                         )
                     self._dimension = detected_dim
                     self._dimension_detected = True
-                    self._GLOBAL_DIMENSION_CACHE[cache_key] = int(detected_dim)
+                    # 模型身份和维度来自同一次探测，不能被后续普通编码拆开覆盖。
+                    self._GLOBAL_DIMENSION_CACHE[cache_key] = (
+                        int(detected_dim),
+                        self._last_success_model_name,
+                        self._last_success_provider_name,
+                    )
                     return detected_dim
             except Exception as exc:
                 logger.debug(f"带维度参数探测失败: {exc}，尝试不带维度参数探测")
@@ -411,7 +412,11 @@ class EmbeddingAPIAdapter:
                 detected_dim = len(test_embedding)
                 self._dimension = detected_dim
                 self._dimension_detected = True
-                self._GLOBAL_DIMENSION_CACHE[cache_key] = int(detected_dim)
+                self._GLOBAL_DIMENSION_CACHE[cache_key] = (
+                    int(detected_dim),
+                    self._last_success_model_name,
+                    self._last_success_provider_name,
+                )
                 logger.info(f"嵌入维度: {detected_dim} (自然输出)")
                 return detected_dim
             logger.warning(f"嵌入维度检测失败，使用 configured_dimension: {self.default_dimension}")
@@ -420,7 +425,7 @@ class EmbeddingAPIAdapter:
 
         self._dimension = self.default_dimension
         self._dimension_detected = True
-        self._GLOBAL_DIMENSION_CACHE[cache_key] = int(self.default_dimension)
+        self._GLOBAL_DIMENSION_CACHE[cache_key] = (int(self.default_dimension), "", "")
         return self.default_dimension
 
     async def encode(
