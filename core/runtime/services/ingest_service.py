@@ -351,10 +351,14 @@ class MemoryIngestService(KernelServiceBase):
         if not content:
             return {"stored_ids": [], "skipped_ids": [external_token], "reason": "empty_text"}
 
-        existing_ref = self.metadata_store.get_external_memory_ref(external_token)
+        existing_ref = await asyncio.to_thread(self.metadata_store.get_external_memory_ref, external_token)
         if existing_ref:
             if source_type == "person_fact":
                 paragraph_hash = str(existing_ref.get("paragraph_hash", "") or "")
+                paragraph = await asyncio.to_thread(self.metadata_store.get_paragraph, paragraph_hash)
+                # 幂等重放只重新分类原段落，不能用同一来源 ID 写入不同正文。
+                if paragraph is None or normalize_text(paragraph["content"]) != content:
+                    raise ValueError(f"person_fact external_id={external_token} 与已保存的段落正文不一致")
                 claim_ids = self._write_person_fact_claims(
                     paragraph_hash=paragraph_hash,
                     content=content,
