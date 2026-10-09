@@ -50,6 +50,8 @@ class MemoryIngestService(KernelServiceBase):
 
         raw_claim = metadata.get("fact_claim")
         claim_spec = dict(raw_claim) if isinstance(raw_claim, dict) else {}
+        raw_confidence = claim_spec.get("confidence")
+        confidence = 1.0 if raw_confidence is None else float(raw_confidence)
         evidence_source = str(metadata.get("evidence_source", "") or "").strip()
         trust = str(claim_spec.get("trust", "") or "").strip().casefold()
         default_authority = {
@@ -72,7 +74,7 @@ class MemoryIngestService(KernelServiceBase):
                 stability=str(claim_spec.get("stability", "stable")),
                 profile_section=str(claim_spec.get("profile_section", "stable_facts")),
                 authority=str(claim_spec.get("authority", default_authority)),
-                confidence=float(claim_spec.get("confidence", 1.0)),
+                confidence=confidence,
                 valid_from=claim_spec.get("valid_from"),
                 valid_to=claim_spec.get("valid_to"),
                 evidence_type="paragraph",
@@ -100,7 +102,7 @@ class MemoryIngestService(KernelServiceBase):
                     stability=str(claim_spec.get("stability", "stable") or "stable"),
                     profile_section=str(claim_spec.get("profile_section", "stable_facts") or "stable_facts"),
                     authority=default_authority,
-                    confidence=float(claim_spec.get("confidence", 1.0) or 1.0),
+                    confidence=confidence,
                     valid_from=result.get("valid_from"),
                     valid_to=result.get("valid_to"),
                     reason="person_fact_reverified",
