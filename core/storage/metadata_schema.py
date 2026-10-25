@@ -62,7 +62,7 @@ class MetadataSchemaMixin:
 
     @staticmethod
     def _ensure_summary_checkpoint_tables(cursor: sqlite3.Cursor) -> None:
-        """保存成功空摘要的幂等标识与触发进度，不生成可检索段落。"""
+        """独立保存已完成摘要窗口的标识与进度，空增量也能推进游标。"""
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS chat_summary_checkpoints (
                 external_id TEXT PRIMARY KEY,

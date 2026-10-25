@@ -153,7 +153,7 @@ def _message_timestamp(message: Any) -> Optional[float]:
 
 def _paragraph_created_at(paragraph: Dict[str, Any]) -> float:
     try:
-        return float(paragraph.get("created_at") or 0.0)
+        return float(paragraph.get("summary_observed_at", paragraph.get("created_at")) or 0.0)
     except Exception:
         return 0.0
 
@@ -543,14 +543,14 @@ class SummaryImporter:
         if not external_id:
             return None
         checkpoint = self.metadata_store.get_summary_checkpoint(external_id)
-        if checkpoint is not None:
-            if checkpoint["chat_id"] != stream_id:
-                raise ValueError("空摘要标识已绑定到其他聊天流")
-            return SummaryImportResult(
-                True, "该窗口已完成空增量总结", source=f"chat_summary:{stream_id}", skipped=True
-            )
+        if checkpoint is not None and checkpoint["chat_id"] != stream_id:
+            raise ValueError("摘要标识已绑定到其他聊天流")
         existing = self.metadata_store.get_external_memory_ref(external_id)
         if existing is None:
+            if checkpoint is not None:
+                return SummaryImportResult(
+                    True, "该窗口已完成空增量总结", source=f"chat_summary:{stream_id}", skipped=True
+                )
             return None
         paragraph_hash = str(existing.get("paragraph_hash", "") or "").strip()
         paragraph = self.metadata_store.get_paragraph(paragraph_hash) if paragraph_hash else None
@@ -560,10 +560,23 @@ class SummaryImporter:
             )
         expected_source = f"chat_summary:{stream_id}"
         actual_source = str(paragraph.get("source", "") or "").strip()
-        if actual_source != expected_source:
+        # 正文哈希可由多个群共享，窗口归属以独立的 external ID 来源记录为准。
+        ref_metadata = coerce_metadata_dict(existing.get("metadata"))
+        ref_chat_id = str(ref_metadata.get("chat_id", "") or "").strip()
+        origin_matches = (
+            existing.get("source_type") == "chat_summary" and ref_chat_id == stream_id
+            if ref_chat_id else actual_source == expected_source
+        )
+        if not origin_matches:
             raise RuntimeError(
                 f"摘要 external ID 已绑定到其他聊天流: external_id={external_id} "
                 f"expected={expected_source} actual={actual_source}"
+            )
+        # 公共写入可能已成功，但调用方在记录游标前中断；重试时补齐窗口进度。
+        if checkpoint is None and metadata.get("trigger_message_count"):
+            self.metadata_store.record_summary_checkpoint(
+                external_id=external_id, chat_id=stream_id,
+                trigger_message_count=int(metadata["trigger_message_count"]),
             )
         return SummaryImportResult(
             True,
@@ -581,7 +594,7 @@ class SummaryImporter:
         if limit <= 0:
             return ""
         try:
-            paragraphs = self.metadata_store.get_live_paragraphs_by_source(f"chat_summary:{stream_id}")
+            paragraphs = self.metadata_store.get_chat_summary_history(stream_id)
         except Exception as exc:
             logger.debug(f"读取历史摘要回顾失败: stream_id={stream_id} error={exc}")
             return ""
@@ -630,9 +643,16 @@ class SummaryImporter:
         if not stream_token:
             return SummaryImportResult(False, "stream_id 不能为空")
         external_id = str((metadata or {}).get("external_id", "") or "").strip()
-        lock_key = f"external:{external_id}" if external_id else f"stream:{stream_token}"
-        lock = self._import_locks.setdefault(lock_key, asyncio.Lock())
-        async with lock:
+        # 始终持有聊天流锁；再锁 external ID，兼顾不同窗口串行化和跨流 ID 冲突。
+        stream_lock = self._import_locks.setdefault(f"stream:{stream_token}", asyncio.Lock())
+        async with stream_lock:
+            if external_id:
+                external_lock = self._import_locks.setdefault(f"external:{external_id}", asyncio.Lock())
+                async with external_lock:
+                    return await self._import_from_stream_unlocked(
+                        stream_token, context_length=context_length,
+                        include_personality=include_personality, time_end=time_end, metadata=metadata,
+                    )
             return await self._import_from_stream_unlocked(
                 stream_token,
                 context_length=context_length,
@@ -662,7 +682,8 @@ class SummaryImporter:
             SummaryImportResult: 导入结果；有增量时包含新增段落 hash，无增量时标记为 skipped。
         """
         try:
-            existing_result = self._existing_summary_result(
+            existing_result = await asyncio.to_thread(
+                self._existing_summary_result,
                 stream_id=stream_id,
                 metadata=metadata,
             )
@@ -771,7 +792,8 @@ class SummaryImporter:
                     return SummaryImportResult(False, "空增量必须同时返回空实体、空关系和空事实数组")
                 external_id = str((metadata or {}).get("external_id") or "").strip()
                 if external_id:
-                    self.metadata_store.record_summary_checkpoint(
+                    await asyncio.to_thread(
+                        self.metadata_store.record_summary_checkpoint,
                         external_id=external_id,
                         chat_id=stream_id,
                         trigger_message_count=int((metadata or {}).get("trigger_message_count") or 0),
@@ -831,11 +853,20 @@ class SummaryImporter:
 
             external_id = str((metadata or {}).get("external_id", "") or "").strip()
             if external_id:
-                self.metadata_store.upsert_external_memory_ref(
+                await asyncio.to_thread(
+                    self.metadata_store.upsert_external_memory_ref,
                     external_id=external_id,
                     paragraph_hash=paragraph_hash,
                     source_type="chat_summary",
-                    metadata={"chat_id": stream_id},
+                    metadata={
+                        "chat_id": stream_id, "person_ids": metadata.get("person_ids", []),
+                        "trigger_message_count": int(metadata.get("trigger_message_count") or 0),
+                    },
+                )
+                await asyncio.to_thread(
+                    self.metadata_store.record_summary_checkpoint,
+                    external_id=external_id, chat_id=stream_id,
+                    trigger_message_count=int(metadata.get("trigger_message_count") or 0),
                 )
 
             result_msg = f"总结导入成功|长度: {len(summary_text)}|实体: {len(entities)}|关系: {len(relations)}"
