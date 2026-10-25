@@ -31,6 +31,7 @@ from .metadata_fact import MetadataFactMixin
 from .metadata_feedback import MetadataFeedbackMixin
 from .metadata_fts import MetadataFTSMixin
 from .metadata_image import MetadataImageMixin
+from .metadata_identity import MetadataIdentityMixin
 from .metadata_profile import MetadataProfileMixin
 from .metadata_schema import MetadataSchemaMixin, SCHEMA_VERSION
 from .sqlite_connection import SQLiteConnectionManager
@@ -47,6 +48,7 @@ class MetadataStore(
     MetadataFactMixin,
     MetadataFeedbackMixin,
     MetadataImageMixin,
+    MetadataIdentityMixin,
     MetadataProfileMixin,
 ):
     """
@@ -2942,6 +2944,8 @@ class MetadataStore(
             "paragraph_stale_relation_marks",
             "person_profile_refresh_queue",
             "person_profile_alias_overrides",
+            "person_identity_aliases",
+            "person_identities",
             "fact_transitions",
             "fact_evidence",
             "fact_claims",

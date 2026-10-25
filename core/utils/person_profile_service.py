@@ -242,8 +242,8 @@ class PersonProfileService:
             return None
 
     @staticmethod
-    def resolve_person_id(identifier: str) -> str:
-        """按 person_id 或姓名/别名解析 person_id。"""
+    def resolve_person_id(identifier: str, *, metadata_store: Optional[MetadataStore] = None) -> str:
+        """按 ID 或唯一的确切称呼解析；同名、子串匹配不能用来认领身份。"""
         if not identifier:
             return ""
         key = str(identifier).strip()
@@ -256,24 +256,25 @@ class PersonProfileService:
                 if record:
                     return str(record)
 
-                record = session.exec(
-                    select(PersonInfo.person_id)
+                records = session.exec(
+                    select(PersonInfo)
                     .where(
                         or_(
                             PersonInfo.person_name == key,
                             PersonInfo.user_nickname == key,
+                            PersonInfo.group_cardname.contains(key),
                         )
                     )
-                    .limit(1)
-                ).first()
-                if record:
-                    return str(record)
-
-                record = session.exec(
-                    select(PersonInfo.person_id).where(PersonInfo.group_cardname.contains(key)).limit(1)
-                ).first()
-                if record:
-                    return str(record)
+                ).all()
+                candidates = {
+                    str(record.person_id) for record in records
+                    if key in [record.person_name, record.user_nickname,
+                               *PersonProfileService._parse_group_nicks(record.group_cardname)]
+                }
+                if metadata_store is not None:
+                    candidates.update(item["person_id"] for item in metadata_store.find_person_identities(key))
+                if candidates:
+                    return next(iter(candidates)) if len(candidates) == 1 else ""
         except Exception as e:
             logger.warning(f"按别名解析 person_id 失败: identifier={key}, err={e}")
 
@@ -282,7 +283,8 @@ class PersonProfileService:
 
         return ""
 
-    def _parse_group_nicks(self, raw_value: Any) -> List[str]:
+    @staticmethod
+    def _parse_group_nicks(raw_value: Any) -> List[str]:
         if not raw_value:
             return []
         if isinstance(raw_value, list):
@@ -380,23 +382,27 @@ class PersonProfileService:
         return suggestions
 
     def _get_derived_person_aliases(self, person_id: str) -> Tuple[List[str], str, List[str]]:
-        """只从人物主档案中的可信身份字段推导自动别名。"""
+        """从 ID 绑定的历史称呼和人物主档案推导自动别名。"""
         aliases: List[str] = []
         primary_name = ""
         memory_traits: List[str] = []
         if not person_id:
             return aliases, primary_name, memory_traits
+        identity = self.metadata_store.get_person_identity(person_id)
+        if identity:
+            aliases = list(identity["aliases"])
+            primary_name = str(identity["canonical_name"])
         try:
             with get_db_session(auto_commit=False) as session:
                 record = session.exec(select(PersonInfo).where(PersonInfo.person_id == person_id).limit(1)).first()
                 if not record:
-                    return [person_id], person_id, memory_traits
+                    return aliases or [person_id], primary_name or person_id, memory_traits
             person_name = str(record.person_name or "").strip()
             nickname = str(record.user_nickname or "").strip()
             group_nicks = self._parse_group_nicks(record.group_cardname)
             memory_traits = self._parse_memory_traits(record.memory_points)
 
-            primary_name = (
+            primary_name = primary_name or (
                 person_name
                 or nickname
                 or next((item for item in group_nicks if item), "")
@@ -404,7 +410,8 @@ class PersonProfileService:
                 or person_id
             )
 
-            candidates = [person_name, nickname] + group_nicks
+            candidates = [*aliases, person_name, nickname] + group_nicks
+            aliases = []
             seen = set()
             for item in candidates:
                 norm = str(item or "").strip()
@@ -1135,7 +1142,7 @@ class PersonProfileService:
         """查询或刷新人物画像。"""
         pid = str(person_id or "").strip()
         if not pid and person_keyword:
-            pid = self.resolve_person_id(person_keyword)
+            pid = self.resolve_person_id(person_keyword, metadata_store=self.metadata_store)
 
         if not pid:
             return {

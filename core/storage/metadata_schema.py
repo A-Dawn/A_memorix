@@ -16,12 +16,38 @@ from .knowledge_types import (
 
 logger = get_logger("A_Memorix.MetadataSchema")
 
-SCHEMA_VERSION = 27
+SCHEMA_VERSION = 28
 RUNTIME_AUTO_MIGRATION_MIN_SCHEMA_VERSION = 9
 
 
 class MetadataSchemaMixin:
     """维护元数据数据库表结构、版本迁移与数据规范化。"""
+
+    @staticmethod
+    def _ensure_person_identity_tables(cursor: sqlite3.Cursor) -> None:
+        """昵称历史独立于人物画像和记忆正文保存，身份仅按平台用户 ID 确定。"""
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS person_identities (
+                person_id TEXT PRIMARY KEY,
+                platform TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                canonical_name TEXT NOT NULL UNIQUE,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                UNIQUE(platform, user_id)
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS person_identity_aliases (
+                person_id TEXT NOT NULL REFERENCES person_identities(person_id) ON DELETE CASCADE,
+                alias TEXT NOT NULL,
+                group_id TEXT NOT NULL DEFAULT '',
+                first_seen REAL NOT NULL,
+                last_seen REAL NOT NULL,
+                PRIMARY KEY(person_id, alias, group_id)
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_person_identity_alias ON person_identity_aliases(alias)")
 
     @staticmethod
     def _ensure_episode_empty_group_table(cursor: sqlite3.Cursor) -> None:
@@ -1518,6 +1544,7 @@ class MetadataSchemaMixin:
             )
         """)
         self._ensure_person_profile_alias_override_table(cursor)
+        self._ensure_person_identity_tables(cursor)
 
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_person_profile_switches_enabled
@@ -1845,6 +1872,7 @@ class MetadataSchemaMixin:
         cursor = self._conn.cursor()
         self._ensure_person_profile_snapshot_columns(cursor)
         self._ensure_person_profile_alias_override_table(cursor)
+        self._ensure_person_identity_tables(cursor)
 
         # vNext 关键表兜底：历史库可能缺失，需在迁移阶段主动补齐。
         cursor.execute("""

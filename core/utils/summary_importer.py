@@ -18,7 +18,7 @@ import traceback
 import numpy as np
 
 from src.common.logger import get_logger
-from src.common.prompt_i18n import load_prompt
+from src.common.prompt_i18n import extract_prompt_placeholders, load_prompt, load_prompt_template
 from src.config.config import config_manager, global_config
 from src.config.model_configs import TaskConfig
 from src.services import llm_service as llm_api
@@ -40,6 +40,7 @@ from .model_routing import (
 from .metadata import coerce_metadata_dict
 from .relation_write_service import RelationWriteService
 from .runtime_payloads import optional_float
+from .summary_identity import SummaryIdentityContext
 from .runtime_self_check import ensure_runtime_self_check, run_embedding_runtime_self_check
 
 logger = get_logger("A_Memorix.SummaryImporter")
@@ -681,7 +682,8 @@ class SummaryImporter:
 
             # 2. 获取历史消息
             query_time_end = time.time() if time_end is None else float(time_end)
-            messages = message_api.get_messages_by_time_in_chat(
+            messages = await asyncio.to_thread(
+                message_api.get_messages_by_time_in_chat,
                 chat_id=stream_id,
                 start_time=0.0,
                 end_time=query_time_end,
@@ -693,13 +695,15 @@ class SummaryImporter:
                 return SummaryImportResult(False, "未找到有效的聊天记录进行总结")
 
             # 转换为可读文本
-            chat_history_text = message_api.build_readable_messages(messages)
+            identity_context = SummaryIdentityContext(self.metadata_store, messages)
+            chat_history_text, identity_catalog = await asyncio.to_thread(identity_context.render)
             image_evidence_catalog, allowed_image_evidence = self._image_evidence_catalog(
                 messages,
                 stream_id=stream_id,
             )
             review_count = self._summary_review_count(metadata)
-            previous_summary_context = self._build_previous_summary_context(
+            previous_summary_context = await asyncio.to_thread(
+                self._build_previous_summary_context,
                 stream_id,
                 limit=review_count,
             )
@@ -713,6 +717,9 @@ class SummaryImporter:
                     personality_context = f"你的性格设定是：{personality}"
 
             # 4. 调用 LLM
+            template = load_prompt_template(SUMMARY_PROMPT_NAME)
+            if "identity_catalog" not in extract_prompt_placeholders(template.template):
+                raise ValueError("聊天摘要模板缺少 {identity_catalog}，请更新模板以使用程序确认的身份映射")
             prompt = load_prompt(
                 SUMMARY_PROMPT_NAME,
                 bot_name=bot_name,
@@ -720,6 +727,7 @@ class SummaryImporter:
                 previous_summary_context=previous_summary_context,
                 chat_history=chat_history_text,
                 image_evidence_catalog=image_evidence_catalog,
+                identity_catalog=identity_catalog,
             )
 
             resolved_model = self._resolve_summary_model_task()
@@ -774,6 +782,17 @@ class SummaryImporter:
                     source=f"chat_summary:{stream_id}",
                     skipped=True,
                 )
+            # 人物归属由程序给出的标记和 ID 确定；名称只在写入前按持久映射恢复。
+            identity_metadata = identity_context.metadata(
+                [summary_text, *entities, *(value for relation in relations for value in relation.values()),
+                 *(fact["text"] for fact in facts)]
+            )
+            summary_text = identity_context.restore_text(summary_text)
+            entities = [identity_context.restore_text(name) for name in entities]
+            relations = [{key: identity_context.restore_text(value) for key, value in relation.items()}
+                         for relation in relations]
+            facts = [{**fact, "text": identity_context.restore_text(fact["text"])} for fact in facts]
+            metadata = {**(metadata or {}), **identity_metadata}
             msg_times = [timestamp for msg in messages if (timestamp := _message_timestamp(msg)) is not None]
             time_meta = {}
             if msg_times:
@@ -892,6 +911,7 @@ class SummaryImporter:
                 source_type="chat_summary",
                 text=summary,
                 chat_id=stream_id,
+                person_ids=list((metadata or {}).get("person_ids", [])),
                 time_start=(time_meta or {}).get("event_time_start"),
                 time_end=(time_meta or {}).get("event_time_end"),
                 metadata=metadata,
