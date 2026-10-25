@@ -138,6 +138,15 @@ class PersonProfileService:
         stable_vector_evidence = [
             {key: value for key, value in item.items() if key != "score"} for item in vector_evidence
         ]
+        # 只过滤已知的检索评分字段，保留来源类型及其他证据元数据，原始证据不变。
+        ignored_metadata_fields = {"score_breakdown", "bm25_score", "ppr_signal", "ppr_focus_entity_count", "ppr_boost"}
+        for item in stable_vector_evidence:
+            if "metadata" in item:
+                item["metadata"] = {
+                    key: value
+                    for key, value in coerce_metadata_dict(item["metadata"]).items()
+                    if key not in ignored_metadata_fields
+                }
         payload = self._canonical_profile_value(
             {
                 "person_id": person_id,
