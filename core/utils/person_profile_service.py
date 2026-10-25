@@ -34,6 +34,7 @@ from ..retrieval import (
 )
 from ..storage import MetadataStore, GraphStore, VectorStore
 from .metadata import coerce_metadata_dict
+from .fact_deduplication import visible_fact_metadata
 from .model_routing import (
     ResolvedLLMModel,
     generate_with_resolved_model,
@@ -499,9 +500,13 @@ class PersonProfileService:
             relations = [rel for rel in relations if self._is_relation_bound_to_person(rel, person_id=person_id)]
         relations.sort(key=lambda item: float(item.get("confidence", 0.0)), reverse=True)
         relations = relations[: max(1, int(limit))]
+        supporting = self.metadata_store.get_paragraphs_by_relation_hashes([row["hash"] for row in relations]) if relations else {}
 
         edges: List[Dict[str, Any]] = []
         for rel in relations:
+            paragraphs = supporting.get(rel["hash"], [])
+            if paragraphs and not any(self.metadata_store.fact_relation_has_support(rel["hash"], row) for row in paragraphs):
+                continue
             edges.append(
                 {
                     "hash": str(rel.get("hash", "")),
@@ -552,8 +557,11 @@ class PersonProfileService:
 
         source = f"person_fact:{token}"
         paragraphs = [
-            row for row in self.metadata_store.get_paragraphs_by_source(source) if not bool(row.get("is_deleted", 0))
+            row for row in self.metadata_store.get_paragraphs_by_source(source)
+            if not bool(row.get("is_deleted", 0))
+            and coerce_metadata_dict(row.get("metadata")).get("dedup_phase") != "pending"
         ]
+        paragraphs = [value for row in paragraphs if (value := self.metadata_store.project_fact_paragraph(row)) is not None]
         paragraphs.sort(
             key=lambda item: float(item.get("updated_at") or item.get("created_at") or 0.0),
             reverse=True,
@@ -681,6 +689,24 @@ class PersonProfileService:
         self,
         evidence: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
+        projected: List[Dict[str, Any]] = []
+        for item in evidence:
+            item_metadata = coerce_metadata_dict(item.get("metadata"))
+            if (item.get("type") == "paragraph" and item.get("hash")
+                    and (item_metadata.get("dedup_managed") or item_metadata.get("dedup_phase") == "pending")):
+                paragraph = self.metadata_store.get_paragraph(item["hash"])
+                if paragraph is not None and (
+                    coerce_metadata_dict(paragraph.get("metadata")).get("dedup_managed")
+                    or coerce_metadata_dict(paragraph.get("metadata")).get("dedup_phase") == "pending"
+                ):
+                    paragraph = self.metadata_store.project_fact_paragraph(paragraph)
+                    if paragraph is None:
+                        continue
+                    item = {**item, "content": paragraph["content"]}
+            if "metadata" in item:
+                item = {**item, "metadata": visible_fact_metadata(coerce_metadata_dict(item["metadata"]))}
+            projected.append(item)
+        evidence = projected
         memory_cfg = global_config.a_memorix.integration
         if not bool(getattr(memory_cfg, "feedback_correction_paragraph_hard_filter_enabled", True)):
             return evidence

@@ -16,7 +16,7 @@ from .knowledge_types import (
 
 logger = get_logger("A_Memorix.MetadataSchema")
 
-SCHEMA_VERSION = 28
+SCHEMA_VERSION = 29
 RUNTIME_AUTO_MIGRATION_MIN_SCHEMA_VERSION = 9
 
 
@@ -75,6 +75,15 @@ class MetadataSchemaMixin:
             CREATE INDEX IF NOT EXISTS idx_chat_summary_checkpoints_chat
             ON chat_summary_checkpoints(chat_id, trigger_message_count)
         """)
+        columns = {row[1] for row in cursor.execute("PRAGMA table_info(chat_summary_checkpoints)")}
+        if "phase" not in columns:
+            cursor.execute("ALTER TABLE chat_summary_checkpoints ADD COLUMN phase TEXT NOT NULL DEFAULT 'complete'")
+        if "result_json" not in columns:
+            cursor.execute("ALTER TABLE chat_summary_checkpoints ADD COLUMN result_json TEXT")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_fact_claims_scope_value "
+                       "ON fact_claims(scope_type, scope_id, value_normalized, status)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_external_memory_refs_chat "
+                       "ON external_memory_refs(source_type, json_extract(metadata_json, '$.chat_id'))")
 
     def _assert_schema_compatible(self, db_existed: bool) -> None:
         """运行时执行 post-1.0 自动迁移；legacy/vNext 仍要求离线迁移。"""
@@ -112,7 +121,8 @@ class MetadataSchemaMixin:
         self._migrate_schema()
         alias_result = self.rebuild_relation_hash_aliases()
         knowledge_type_result = self.normalize_paragraph_knowledge_types()
-        fact_result = self.backfill_person_fact_claims()
+        # 28 已具备事实账本，29 只扩展写入检查点，不重新扫描和迁移存量人物记忆。
+        fact_result = self.backfill_person_fact_claims() if current_version < 28 else {"migrated": 0}
         self.set_schema_version(SCHEMA_VERSION)
         logger.info(
             f"metadata schema 运行时自动迁移完成: {current_version} -> {SCHEMA_VERSION}, "

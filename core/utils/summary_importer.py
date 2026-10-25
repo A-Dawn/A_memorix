@@ -38,6 +38,7 @@ from .model_routing import (
     get_text_generation_model_tasks,
 )
 from .metadata import coerce_metadata_dict
+from .fact_deduplication import FactDeduplicator, fact_scope_lock, observation_id
 from .relation_write_service import RelationWriteService
 from .runtime_payloads import optional_float
 from .summary_identity import SummaryIdentityContext
@@ -545,6 +546,8 @@ class SummaryImporter:
         checkpoint = self.metadata_store.get_summary_checkpoint(external_id)
         if checkpoint is not None and checkpoint["chat_id"] != stream_id:
             raise ValueError("摘要标识已绑定到其他聊天流")
+        if checkpoint is not None and checkpoint.get("phase") == "pending":
+            return None
         existing = self.metadata_store.get_external_memory_ref(external_id)
         if existing is None:
             if checkpoint is not None:
@@ -662,6 +665,85 @@ class SummaryImporter:
             )
 
     async def _import_from_stream_unlocked(
+        self, stream_id: str, **kwargs: Any,
+    ) -> SummaryImportResult:
+        async with fact_scope_lock(self.metadata_store, "chat", stream_id):
+            return await self._import_from_stream_scoped(stream_id, **kwargs)
+
+    async def _finish_fact_summary(self, payload: Dict[str, Any]) -> SummaryImportResult:
+        """从已持久化的决定继续写入；失败重试不重新总结、不重新判断重复。"""
+        plan = payload["plan"]
+        stream_id = plan["scope_id"]
+        metadata = payload["metadata"]
+        external_id = metadata["external_id"]
+        decisions = {row["fact_id"]: row for row in plan["decisions"]}
+        kept = [row for row in plan["facts"] if decisions[row["fact_id"]]["action"] != "reuse"]
+        paragraph_hash = ""
+        if kept:
+            text = "\n".join(row["text"] for row in kept)
+            person_ids = sorted({person_id for row in kept for person_id in row.get("person_ids", [])})
+            bindings = metadata.get("identity_bindings", {})
+            metadata = {**metadata, "person_ids": person_ids,
+                        "identity_bindings": {name: value for name, value in bindings.items()
+                                              if value["person_id"] in person_ids}}
+            kept_ids = {row["fact_id"] for row in kept}
+            entities = [name for name in payload["entities"] if name in text]
+            relations = [relation for index, relation in enumerate(payload["relations"])
+                         if kept_ids.intersection(plan["relation_support"].get(str(index), []))]
+            paragraph_hash = await self._execute_import(
+                text, entities, relations, stream_id, time_meta=payload["time_meta"],
+                metadata={**metadata, "dedup_managed": True, "dedup_phase": "pending",
+                          "dedup_fact_texts": [row["text"] for row in kept]},
+            )
+            await asyncio.to_thread(
+                self._link_summary_image_evidence, stream_id=stream_id, paragraph_hash=paragraph_hash,
+                facts=kept, allowed={tuple(value) for value in payload["allowed_images"]},
+            )
+        dedup = FactDeduplicator(self.metadata_store)
+        claim_ids = await asyncio.to_thread(dedup.commit, plan, paragraph_hash)
+        # 被复用的事实也保留本窗口图片证据，但不能把图片挂到无关的新摘要上。
+        for decision, claim_id in zip(plan["decisions"], claim_ids, strict=True):
+            if decision["action"] == "reuse":
+                evidence = await asyncio.to_thread(self.metadata_store.get_fact_evidence, claim_id)
+                target = next(row["evidence_id"] for row in evidence if row["evidence_type"] == "paragraph")
+                fact = next(row for row in plan["facts"] if row["fact_id"] == decision["fact_id"])
+                await asyncio.to_thread(self._link_summary_image_evidence, stream_id=stream_id,
+                                       paragraph_hash=target, facts=[fact],
+                                       allowed={tuple(value) for value in payload["allowed_images"]})
+        await asyncio.to_thread(self._persist_vector_store, self.vector_store)
+        await asyncio.to_thread(self.graph_store.save)
+        if paragraph_hash:
+            claim_map = dict(zip([row["fact_id"] for row in plan["decisions"]], claim_ids, strict=True))
+            relation_claims = {
+                self.metadata_store.compute_relation_hash(row["subject"], row["predicate"], row["object"]):
+                    [claim_map[fact_id] for fact_id in plan["relation_support"].get(str(index), [])
+                     if fact_id in {fact["fact_id"] for fact in kept}]
+                for index, row in enumerate(payload["relations"])
+            }
+            await asyncio.to_thread(self.metadata_store.update_paragraph_metadata, paragraph_hash,
+                                   {"fact_claim_ids": [claim_map[row["fact_id"]] for row in kept], "dedup_phase": "complete",
+                                    "dedup_relation_claims": relation_claims}, merge=True)
+            await asyncio.to_thread(
+                self.metadata_store.upsert_external_memory_ref, external_id=external_id,
+                paragraph_hash=paragraph_hash, source_type="chat_summary",
+                metadata={"chat_id": stream_id, "person_ids": metadata.get("person_ids", []),
+                          "dedup_phase": "complete", "trigger_message_count": metadata.get("trigger_message_count", 0)},
+            )
+        if paragraph_hash:
+            await asyncio.to_thread(self.metadata_store.enqueue_episode_source_rebuild, f"chat_summary:{stream_id}",
+                                   reason="dedup_summary_complete")
+            if self.plugin_config.get("person_profile", {}).get("enabled", True):
+                for person_id in metadata.get("person_ids", []):
+                    await asyncio.to_thread(self.metadata_store.enqueue_person_profile_refresh,
+                                           person_id=person_id, reason="dedup_summary_complete")
+        await asyncio.to_thread(
+            self.metadata_store.record_summary_checkpoint, external_id=external_id, chat_id=stream_id,
+            trigger_message_count=int(metadata.get("trigger_message_count") or 0), phase="complete",
+        )
+        return SummaryImportResult(True, "事实去重后总结写入完成" if kept else "该窗口事实均已存在，已追加来源证据",
+                                   paragraph_hash=paragraph_hash, source=f"chat_summary:{stream_id}", skipped=not kept)
+
+    async def _import_from_stream_scoped(
         self,
         stream_id: str,
         context_length: Optional[int] = None,
@@ -689,6 +771,10 @@ class SummaryImporter:
             )
             if existing_result is not None:
                 return existing_result
+            external_id = str((metadata or {}).get("external_id") or "")
+            checkpoint = await asyncio.to_thread(self.metadata_store.get_summary_checkpoint, external_id) if external_id else None
+            if checkpoint is not None and checkpoint.get("phase") == "pending":
+                return await self._finish_fact_summary(json.loads(checkpoint["result_json"]))
 
             self_check_ok, self_check_msg = await self._ensure_runtime_self_check()
             if not self_check_ok:
@@ -813,7 +899,8 @@ class SummaryImporter:
             entities = [identity_context.restore_text(name) for name in entities]
             relations = [{key: identity_context.restore_text(value) for key, value in relation.items()}
                          for relation in relations]
-            facts = [{**fact, "text": identity_context.restore_text(fact["text"])} for fact in facts]
+            facts = [{**fact, "person_ids": identity_context.metadata([fact["text"]])["person_ids"],
+                      "text": identity_context.restore_text(fact["text"])} for fact in facts]
             metadata = {**(metadata or {}), **identity_metadata}
             msg_times = [timestamp for msg in messages if (timestamp := _message_timestamp(msg)) is not None]
             time_meta = {}
@@ -832,6 +919,30 @@ class SummaryImporter:
                     key = (str(evidence["message_id"]), str(evidence["component_path"]))
                     if key not in allowed_image_evidence:
                         raise ValueError(f"总结模型返回了窗口外图片证据: {key[0]}:{key[1]}")
+            if facts:
+                source = {
+                    "platform": str(messages[0].platform), "chat_id": stream_id,
+                    "message_ids": [str(message.message_id) for message in messages],
+                    "observed_at": max(msg_times) if msg_times else None,
+                    **time_meta,
+                }
+                source["observation_id"] = observation_id(
+                    platform=source["platform"], chat_id=stream_id, message_ids=source["message_ids"],
+                    window_id=str(metadata.get("external_id") or ""),
+                )
+                if not str(metadata.get("external_id") or "").strip():
+                    metadata["external_id"] = f"summary:{source['observation_id']}"
+                dedup = FactDeduplicator(self.metadata_store, self.embedding_manager, self.vector_store, task_name_to_use)
+                plan = await dedup.plan(scope_type="chat", scope_id=stream_id, facts=facts,
+                                        source=source, relations=relations)
+                payload = {"plan": plan, "metadata": metadata, "entities": entities, "relations": relations,
+                           "time_meta": time_meta, "allowed_images": list(allowed_image_evidence)}
+                await asyncio.to_thread(
+                    self.metadata_store.record_summary_checkpoint, external_id=metadata["external_id"],
+                    chat_id=stream_id, trigger_message_count=int(metadata.get("trigger_message_count") or 0),
+                    phase="pending", result=payload,
+                )
+                return await self._finish_fact_summary(payload)
             paragraph_hash = await self._execute_import(
                 summary_text,
                 entities,
