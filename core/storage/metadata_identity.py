@@ -33,7 +33,8 @@ class MetadataIdentityMixin:
             else:
                 canonical_name = preferred_name.strip() or next(iter(names), user_id)
                 collision = conn.execute(
-                    "SELECT person_id FROM person_identities WHERE canonical_name = ?", (canonical_name,),
+                    "SELECT person_id FROM person_identities WHERE canonical_name = ?",
+                    (canonical_name,),
                 ).fetchone()
                 if collision is not None:
                     canonical_name = f"{canonical_name} [{person_id}]"
@@ -61,10 +62,16 @@ class MetadataIdentityMixin:
         if row is None:
             return None
         aliases = self._conn.execute(
-            "SELECT DISTINCT alias FROM person_identity_aliases WHERE person_id = ? ORDER BY alias", (person_id,),
+            "SELECT DISTINCT alias FROM person_identity_aliases WHERE person_id = ? ORDER BY alias",
+            (person_id,),
         ).fetchall()
-        return {"person_id": row[0], "platform": row[1], "user_id": row[2], "canonical_name": row[3],
-                "aliases": [str(item[0]) for item in aliases]}
+        return {
+            "person_id": row[0],
+            "platform": row[1],
+            "user_id": row[2],
+            "canonical_name": row[3],
+            "aliases": [str(item[0]) for item in aliases],
+        }
 
     def find_person_identities(self, alias: str, *, platform: str = "") -> List[Dict[str, Any]]:
         """同名称可以对应多人；调用方不得取第一条来猜测人物身份。"""

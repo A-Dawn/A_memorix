@@ -103,7 +103,9 @@ class MemoryProfileAdminService(KernelServiceBase):
 
         pid = str(person_id or "").strip()
         if not pid and person_keyword:
-            pid = self.person_profile_service.resolve_person_id(str(person_keyword or "").strip(), metadata_store=self.metadata_store)
+            pid = self.person_profile_service.resolve_person_id(
+                str(person_keyword or "").strip(), metadata_store=self.metadata_store
+            )
 
         dirty_request = self.metadata_store.get_person_profile_refresh_request(pid) if pid else None
         should_force_refresh = bool(force_refresh)
@@ -230,14 +232,18 @@ class MemoryProfileAdminService(KernelServiceBase):
         if act == "resolve_identity":
             person_id = await asyncio.to_thread(
                 self.person_profile_service.resolve_person_id,
-                str(kwargs["identifier"]).strip(), metadata_store=self.metadata_store,
+                str(kwargs["identifier"]).strip(),
+                metadata_store=self.metadata_store,
             )
             return {"success": True, "person_id": person_id}
         if act == "observe_identity":
             identity = await asyncio.to_thread(
-                observe_identity, self.metadata_store,
-                platform=str(kwargs["platform"]), user_id=str(kwargs["user_id"]),
-                aliases=list(kwargs["aliases"]), group_id=str(kwargs.get("group_id", "")),
+                observe_identity,
+                self.metadata_store,
+                platform=str(kwargs["platform"]),
+                user_id=str(kwargs["user_id"]),
+                aliases=list(kwargs["aliases"]),
+                group_id=str(kwargs.get("group_id", "")),
             )
             return {"success": True, **identity}
         if act == "query":

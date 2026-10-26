@@ -267,8 +267,7 @@ class PersonProfileService:
                     return str(record)
 
                 records = session.exec(
-                    select(PersonInfo)
-                    .where(
+                    select(PersonInfo).where(
                         or_(
                             PersonInfo.person_name == key,
                             PersonInfo.user_nickname == key,
@@ -277,9 +276,14 @@ class PersonProfileService:
                     )
                 ).all()
                 candidates = {
-                    str(record.person_id) for record in records
-                    if key in [record.person_name, record.user_nickname,
-                               *PersonProfileService._parse_group_nicks(record.group_cardname)]
+                    str(record.person_id)
+                    for record in records
+                    if key
+                    in [
+                        record.person_name,
+                        record.user_nickname,
+                        *PersonProfileService._parse_group_nicks(record.group_cardname),
+                    ]
                 }
                 if metadata_store is not None:
                     candidates.update(item["person_id"] for item in metadata_store.find_person_identities(key))
@@ -500,12 +504,18 @@ class PersonProfileService:
             relations = [rel for rel in relations if self._is_relation_bound_to_person(rel, person_id=person_id)]
         relations.sort(key=lambda item: float(item.get("confidence", 0.0)), reverse=True)
         relations = relations[: max(1, int(limit))]
-        supporting = self.metadata_store.get_paragraphs_by_relation_hashes([row["hash"] for row in relations]) if relations else {}
+        supporting = (
+            self.metadata_store.get_paragraphs_by_relation_hashes([row["hash"] for row in relations])
+            if relations
+            else {}
+        )
 
         edges: List[Dict[str, Any]] = []
         for rel in relations:
             paragraphs = supporting.get(rel["hash"], [])
-            if paragraphs and not any(self.metadata_store.fact_relation_has_support(rel["hash"], row) for row in paragraphs):
+            if paragraphs and not any(
+                self.metadata_store.fact_relation_has_support(rel["hash"], row) for row in paragraphs
+            ):
                 continue
             edges.append(
                 {
@@ -557,11 +567,14 @@ class PersonProfileService:
 
         source = f"person_fact:{token}"
         paragraphs = [
-            row for row in self.metadata_store.get_paragraphs_by_source(source)
+            row
+            for row in self.metadata_store.get_paragraphs_by_source(source)
             if not bool(row.get("is_deleted", 0))
             and coerce_metadata_dict(row.get("metadata")).get("dedup_phase") != "pending"
         ]
-        paragraphs = [value for row in paragraphs if (value := self.metadata_store.project_fact_paragraph(row)) is not None]
+        paragraphs = [
+            value for row in paragraphs if (value := self.metadata_store.project_fact_paragraph(row)) is not None
+        ]
         paragraphs.sort(
             key=lambda item: float(item.get("updated_at") or item.get("created_at") or 0.0),
             reverse=True,
@@ -692,8 +705,11 @@ class PersonProfileService:
         projected: List[Dict[str, Any]] = []
         for item in evidence:
             item_metadata = coerce_metadata_dict(item.get("metadata"))
-            if (item.get("type") == "paragraph" and item.get("hash")
-                    and (item_metadata.get("dedup_managed") or item_metadata.get("dedup_phase") == "pending")):
+            if (
+                item.get("type") == "paragraph"
+                and item.get("hash")
+                and (item_metadata.get("dedup_managed") or item_metadata.get("dedup_phase") == "pending")
+            ):
                 paragraph = self.metadata_store.get_paragraph(item["hash"])
                 if paragraph is not None and (
                     coerce_metadata_dict(paragraph.get("metadata")).get("dedup_managed")
@@ -702,7 +718,8 @@ class PersonProfileService:
                     paragraph = self.metadata_store.project_fact_paragraph(paragraph)
                     if paragraph is None:
                         continue
-                    item = {**item, "content": paragraph["content"]}
+                    # 投影只删除失效事实，不能扩大调用方已经截断的证据预算。
+                    item = {**item, "content": paragraph["content"][: len(item["content"])]}
             if "metadata" in item:
                 item = {**item, "metadata": visible_fact_metadata(coerce_metadata_dict(item["metadata"]))}
             projected.append(item)
