@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable, Coroutine, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Callable, Coroutine, Dict, Iterable, List, Optional, Sequence, TypeVar
 
 from json_repair import repair_json
 
@@ -21,6 +21,7 @@ from ..embedding import create_embedding_api_adapter
 from ..retrieval import RetrievalResult, SparseBM25Config, SparseBM25Index
 from ..storage import GraphStore, MetadataStore, QuantizationType, SparseMatrixFormat, VectorStore
 from ..utils.aggregate_query_service import AggregateQueryService
+from ..utils.async_storage import run_storage_io, wait_for_storage_task
 from ..utils.episode_retrieval_service import EpisodeRetrievalService
 from ..utils.episode_segmentation_service import EpisodeSegmentationService
 from ..utils.episode_service import EpisodeService
@@ -36,6 +37,8 @@ from ..utils.web_import_manager import ImportTaskManager
 from .search_runtime_initializer import SearchRuntimeBundle, build_search_runtime
 
 logger = get_logger("A_Memorix.SDKMemoryKernel")
+_StorageResult = TypeVar("_StorageResult")
+_QUEUE_IDLE_MAX_SECONDS = 300.0
 
 
 @dataclass
@@ -178,6 +181,14 @@ class SDKMemoryKernel:
         self._background_tasks: Dict[str, asyncio.Task] = {}
         self._background_lock = asyncio.Lock()
         self._background_stopping = False
+        self._queue_storage_lock = asyncio.Lock()
+        self._episode_batch_lock = asyncio.Lock()
+        self._paragraph_backfill_lock = asyncio.Lock()
+        self._queue_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._queue_wakeups = {
+            "episode_pending": asyncio.Event(),
+            "paragraph_vector_backfill": asyncio.Event(),
+        }
         self._active_person_timestamps: Dict[str, float] = {}
         self._embedding_degraded: Dict[str, Any] = {
             "active": False,
@@ -382,6 +393,7 @@ class SDKMemoryKernel:
                 )
             else:
                 logger.info("embedding 已恢复，退出降级态")
+                self._signal_queue_wakeup("paragraph_vector_backfill")
         self._apply_runtime_sparse_mode()
 
     def _apply_runtime_sparse_mode(self) -> None:
@@ -407,6 +419,53 @@ class SDKMemoryKernel:
         checked_at = float(report.get("checked_at") or time.time())
         self._embedding_degraded["last_check"] = checked_at
         return report
+
+    async def _run_queue_storage_io(self, operation: Callable[[MetadataStore], _StorageResult]) -> _StorageResult:
+        assert self.metadata_store is not None
+        metadata_store = self.metadata_store
+
+        def run() -> _StorageResult:
+            with metadata_store.queue_worker() as store:
+                return operation(store)
+
+        async with self._queue_storage_lock:
+            return await run_storage_io(run)
+
+    def _signal_queue_wakeup(self, name: str) -> None:
+        loop = self._queue_loop
+        if loop is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(self._queue_wakeups[name].set)
+
+    async def _enqueue_queue_row(
+        self, name: str, operation: Callable[[MetadataStore], None], *, wake: bool = True,
+    ) -> None:
+        def enqueue(store: MetadataStore) -> None:
+            operation(store)
+            if wake:
+                self._signal_queue_wakeup(name)
+
+        await self._run_queue_storage_io(enqueue)
+
+    async def _enqueue_episode_pending(self, paragraph_hash: str, source: str, *, wake: bool = True) -> None:
+        await self._enqueue_queue_row(
+            "episode_pending",
+            lambda store: store.enqueue_episode_pending(paragraph_hash, source=source),
+            wake=wake,
+        )
+
+    async def _enqueue_paragraph_vector_backfill_async(self, paragraph_hash: str, error: str) -> None:
+        await self._enqueue_queue_row(
+            "paragraph_vector_backfill",
+            lambda store: store.enqueue_paragraph_vector_backfill(paragraph_hash, error=error),
+        )
+
+    async def _release_queue_claim(self, operation: Callable[[MetadataStore], None]) -> None:
+        try:
+            # 清理任务独立等待 SQL 锁，即使调用方再次被取消也要释放已领取的队列项。
+            task = asyncio.create_task(self._run_queue_storage_io(operation))
+            await wait_for_storage_task(task)
+        except Exception:
+            logger.exception("释放已领取的记忆队列任务失败")
 
     def _enqueue_paragraph_vector_backfill(self, paragraph_hash: str, *, error: str = "") -> None:
         if self.metadata_store is None:
@@ -442,7 +501,7 @@ class SDKMemoryKernel:
         if self.vector_store is None or self.embedding_manager is None:
             if not allow_metadata_only:
                 raise RuntimeError("向量写入依赖未初始化")
-            self._enqueue_paragraph_vector_backfill(token, error="vector_runtime_components_missing")
+            await self._enqueue_paragraph_vector_backfill_async(token, "vector_runtime_components_missing")
             return {
                 "success": True,
                 "vector_written": False,
@@ -454,7 +513,7 @@ class SDKMemoryKernel:
         if self._is_embedding_degraded():
             if not allow_metadata_only:
                 raise RuntimeError("embedding 处于降级态，metadata-only 写入已禁用")
-            self._enqueue_paragraph_vector_backfill(token, error="embedding_degraded")
+            await self._enqueue_paragraph_vector_backfill_async(token, "embedding_degraded")
             return {
                 "success": True,
                 "vector_written": False,
@@ -490,7 +549,7 @@ class SDKMemoryKernel:
                 self._set_embedding_degraded(active=True, reason=error_text[:500], checked_at=time.time())
             if not allow_metadata_only:
                 raise
-            self._enqueue_paragraph_vector_backfill(token, error=error_text)
+            await self._enqueue_paragraph_vector_backfill_async(token, error_text)
             return {
                 "success": True,
                 "vector_written": False,
@@ -515,6 +574,12 @@ class SDKMemoryKernel:
         max_retry: Optional[int] = None,
         trigger: str = "manual",
     ) -> Dict[str, Any]:
+        async with self._paragraph_backfill_lock:
+            return await self._run_paragraph_backfill_batch(limit=limit, max_retry=max_retry, trigger=trigger)
+
+    async def _run_paragraph_backfill_batch(
+        self, *, limit: Optional[int], max_retry: Optional[int], trigger: str,
+    ) -> Dict[str, Any]:
         if self.metadata_store is None or self.vector_store is None or self.embedding_manager is None:
             return {"success": False, "processed": 0, "done": 0, "failed": 0, "trigger": trigger}
         if self._is_embedding_degraded():
@@ -529,55 +594,59 @@ class SDKMemoryKernel:
 
         safe_limit = max(1, int(limit or self._paragraph_vector_backfill_batch_size()))
         safe_retry = max(1, int(max_retry or self._paragraph_vector_backfill_max_retry()))
-        rows = self.metadata_store.fetch_paragraph_vector_backfill_batch(limit=safe_limit, max_retry=safe_retry)
-        if not rows:
-            return {"success": True, "processed": 0, "done": 0, "failed": 0, "trigger": trigger}
+        claimed_rows: List[Dict[str, Any]] = []
 
-        pending_hashes = [
-            str(row.get("paragraph_hash", "") or "").strip()
-            for row in rows
-            if str(row.get("paragraph_hash", "") or "").strip()
-        ]
-        if pending_hashes:
-            self.metadata_store.mark_paragraph_vector_backfill_running(pending_hashes)
+        def claim(store: MetadataStore) -> Dict[str, Dict[str, Any]]:
+            claimed_rows.extend(
+                store.claim_paragraph_vector_backfill_batch(limit=safe_limit, max_retry=safe_retry),
+            )
+            if not claimed_rows:
+                return {}
+            return store.get_paragraphs_by_hashes([row["paragraph_hash"] for row in claimed_rows])
 
-        done_hashes: List[str] = []
-        failed_count = 0
-        for row in rows:
-            paragraph_hash = str(row.get("paragraph_hash", "") or "").strip()
-            if not paragraph_hash:
-                continue
-            if paragraph_hash in self.vector_store:
-                done_hashes.append(paragraph_hash)
-                continue
-            paragraph = self.metadata_store.get_paragraph(paragraph_hash)
-            if paragraph is None:
-                done_hashes.append(paragraph_hash)
-                continue
-            content = str(paragraph.get("content", "") or "").strip()
-            if not content:
-                done_hashes.append(paragraph_hash)
-                continue
-            try:
-                embedding = await self.embedding_manager.encode(content)
-                if getattr(embedding, "ndim", 1) == 1:
-                    embedding = embedding.reshape(1, -1)
-                self.vector_store.add(vectors=embedding, ids=[paragraph_hash])
-                done_hashes.append(paragraph_hash)
-            except Exception as exc:
-                failed_count += 1
-                self.metadata_store.mark_paragraph_vector_backfill_failed(paragraph_hash, str(exc))
-                if self._embedding_fallback_enabled():
-                    self._set_embedding_degraded(active=True, reason=str(exc)[:500], checked_at=time.time())
+        try:
+            paragraph_map = await self._run_queue_storage_io(claim)
+            pending_hashes = [row["paragraph_hash"] for row in claimed_rows]
+            if not pending_hashes:
+                return {"success": True, "processed": 0, "done": 0, "failed": 0, "trigger": trigger}
 
-        if done_hashes:
-            self.metadata_store.mark_paragraph_vector_backfill_done(done_hashes)
-            self._persist()
+            done_hashes: List[str] = []
+            failures: Dict[str, str] = {}
+            for paragraph_hash in pending_hashes:
+                paragraph = paragraph_map.get(paragraph_hash)
+                content = str((paragraph or {}).get("content", "") or "").strip()
+                if paragraph_hash in self.vector_store or not content:
+                    done_hashes.append(paragraph_hash)
+                    continue
+                try:
+                    embedding = await self.embedding_manager.encode(content)
+                    if getattr(embedding, "ndim", 1) == 1:
+                        embedding = embedding.reshape(1, -1)
+                    self.vector_store.add(vectors=embedding, ids=[paragraph_hash])
+                    done_hashes.append(paragraph_hash)
+                except Exception as exc:
+                    failures[paragraph_hash] = str(exc)
+                    if self._embedding_fallback_enabled():
+                        self._set_embedding_degraded(active=True, reason=str(exc)[:500], checked_at=time.time())
 
+            # SQLite 向量需要先落盘，取消后才可安全提交队列完成状态。
+            if done_hashes:
+                self._persist()
+            finalized = await self._run_queue_storage_io(
+                lambda store: store.finalize_paragraph_vector_backfill_batch(claimed_rows, done_hashes, failures),
+            )
+        except (Exception, asyncio.CancelledError):
+            if claimed_rows:
+                await self._release_queue_claim(
+                    lambda store: store.release_paragraph_vector_backfill_batch(claimed_rows),
+                )
+            raise
+
+        failed_count = len(finalized & failures.keys())
         return {
             "success": failed_count == 0,
-            "processed": len(done_hashes) + failed_count,
-            "done": len(done_hashes),
+            "processed": len(finalized),
+            "done": len(finalized) - failed_count,
             "failed": failed_count,
             "trigger": trigger,
         }
@@ -1018,12 +1087,15 @@ class SDKMemoryKernel:
             source_type=source_type,
             metadata={"chat_id": chat_id, "person_ids": person_tokens},
         )
-        self.metadata_store.enqueue_episode_pending(paragraph_hash, source=source)
-        self._persist()
-        await self.process_episode_pending_batch(
-            limit=max(1, int(self._cfg("episode.pending_batch_size", 12))),
-            max_retry=max(1, int(self._cfg("episode.pending_max_retry", 3))),
-        )
+        try:
+            await self._enqueue_episode_pending(paragraph_hash, source, wake=False)
+            self._persist()
+            await self.process_episode_pending_batch(
+                limit=max(1, int(self._cfg("episode.pending_batch_size", 12))),
+                max_retry=max(1, int(self._cfg("episode.pending_max_retry", 3))),
+            )
+        finally:
+            self._signal_queue_wakeup("episode_pending")
         for person_id in person_tokens:
             self._mark_person_active(person_id)
             await self.refresh_person_profile(person_id)
@@ -1035,63 +1107,80 @@ class SDKMemoryKernel:
 
     async def process_episode_pending_batch(self, *, limit: int = 20, max_retry: int = 3) -> Dict[str, Any]:
         await self.initialize()
-        assert self.metadata_store is not None
+        async with self._episode_batch_lock:
+            return await self._process_episode_pending_batch(limit=limit, max_retry=max_retry)
+
+    async def _process_episode_pending_batch(self, *, limit: int, max_retry: int) -> Dict[str, Any]:
         assert self.episode_service is not None
 
-        pending_rows = self.metadata_store.fetch_episode_pending_batch(limit=max(1, int(limit)), max_retry=max(1, int(max_retry)))
-        if not pending_rows:
-            return {"processed": 0, "episode_count": 0, "fallback_count": 0, "failed": 0}
+        claimed_rows: List[Dict[str, Any]] = []
 
-        source_to_hashes: Dict[str, List[str]] = {}
-        pending_hashes = [str(row.get("paragraph_hash", "") or "").strip() for row in pending_rows if str(row.get("paragraph_hash", "") or "").strip()]
-        for row in pending_rows:
-            paragraph_hash = str(row.get("paragraph_hash", "") or "").strip()
-            source = str(row.get("source", "") or "").strip()
-            if not paragraph_hash or not source:
-                continue
-            source_to_hashes.setdefault(source, []).append(paragraph_hash)
+        def claim(store: MetadataStore) -> None:
+            claimed_rows.extend(store.claim_episode_pending_batch(
+                limit=max(1, int(limit)), max_retry=max(1, int(max_retry)),
+            ))
 
-        if pending_hashes:
-            self.metadata_store.mark_episode_pending_running(pending_hashes)
+        try:
+            await self._run_queue_storage_io(claim)
+            if not claimed_rows:
+                return {"processed": 0, "episode_count": 0, "fallback_count": 0, "failed": 0}
 
-        result = await self.episode_service.process_pending_rows(pending_rows)
-        done_hashes = [str(item or "").strip() for item in result.get("done_hashes", []) if str(item or "").strip()]
-        failed_hashes = {
-            str(hash_value or "").strip(): str(error or "").strip()
-            for hash_value, error in (result.get("failed_hashes", {}) or {}).items()
-            if str(hash_value or "").strip()
-        }
+            source_to_hashes: Dict[str, List[str]] = {}
+            pending_hashes = [row["paragraph_hash"] for row in claimed_rows]
+            for row in claimed_rows:
+                source = str(row.get("source", "") or "").strip()
+                if source:
+                    source_to_hashes.setdefault(source, []).append(row["paragraph_hash"])
 
-        if done_hashes:
-            self.metadata_store.mark_episode_pending_done(done_hashes)
-        for hash_value, error in failed_hashes.items():
-            self.metadata_store.mark_episode_pending_failed(hash_value, error)
+            result = await self.episode_service.process_pending_rows(
+                claimed_rows, storage_io=self._run_queue_storage_io,
+            )
+            done_hashes = [str(item or "").strip() for item in result.get("done_hashes", []) if str(item or "").strip()]
+            failed_hashes = {
+                str(hash_value or "").strip(): str(error or "").strip()
+                for hash_value, error in (result.get("failed_hashes", {}) or {}).items()
+                if str(hash_value or "").strip()
+            }
+            resolved_hashes = set(done_hashes) | failed_hashes.keys()
+            untouched = [hash_value for hash_value in pending_hashes if hash_value not in resolved_hashes]
+            failures = {
+                **failed_hashes,
+                **dict.fromkeys(untouched, "episode processing finished without explicit status"),
+            }
 
-        untouched = [hash_value for hash_value in pending_hashes if hash_value not in set(done_hashes) and hash_value not in failed_hashes]
-        for hash_value in untouched:
-            self.metadata_store.mark_episode_pending_failed(hash_value, "episode processing finished without explicit status")
+            def finish(store: MetadataStore) -> set[str]:
+                with store._queue_transaction():
+                    finalized = store.finalize_episode_pending_batch(claimed_rows, done_hashes, failures)
+                    for source, paragraph_hashes in source_to_hashes.items():
+                        if finalized.isdisjoint(paragraph_hashes):
+                            continue
+                        counts = store.get_episode_pending_status_counts(source)
+                        if counts.get("failed", 0) > 0:
+                            source_error = next(
+                                (
+                                    failed_hashes[hash_value]
+                                    for hash_value in paragraph_hashes
+                                    if hash_value in finalized and failed_hashes.get(hash_value)
+                                ),
+                                "episode pending source contains failed rows",
+                            )
+                            store.mark_episode_source_failed(source, source_error, commit=False)
+                        elif counts.get("pending", 0) == 0 and counts.get("running", 0) == 0:
+                            store.mark_episode_source_done(source, commit=False)
+                    return finalized
 
-        for source, paragraph_hashes in source_to_hashes.items():
-            counts = self.metadata_store.get_episode_pending_status_counts(source)
-            if counts.get("failed", 0) > 0:
-                source_error = next(
-                    (
-                        failed_hashes.get(hash_value)
-                        for hash_value in paragraph_hashes
-                        if failed_hashes.get(hash_value)
-                    ),
-                    "episode pending source contains failed rows",
-                )
-                self.metadata_store.mark_episode_source_failed(source, str(source_error or "episode pending source contains failed rows"))
-            elif counts.get("pending", 0) == 0 and counts.get("running", 0) == 0:
-                self.metadata_store.mark_episode_source_done(source)
+            finalized = await self._run_queue_storage_io(finish)
+        except (Exception, asyncio.CancelledError):
+            if claimed_rows:
+                await self._release_queue_claim(lambda store: store.release_episode_pending_batch(claimed_rows))
+            raise
 
         self._persist()
         return {
-            "processed": len(done_hashes) + len(failed_hashes),
+            "processed": len(finalized & resolved_hashes),
             "episode_count": int(result.get("episode_count") or 0),
             "fallback_count": int(result.get("fallback_count") or 0),
-            "failed": len(failed_hashes) + len(untouched),
+            "failed": len(finalized & failures.keys()),
             "group_count": int(result.get("group_count") or 0),
             "missing_count": int(result.get("missing_count") or 0),
         }
@@ -2173,6 +2262,11 @@ class SDKMemoryKernel:
     async def _start_background_tasks(self) -> None:
         async with self._background_lock:
             self._background_stopping = False
+            loop = asyncio.get_running_loop()
+            if self._queue_loop is not loop:
+                self._queue_loop = loop
+                if self.metadata_store is not None:
+                    self.metadata_store.set_queue_wakeup(self._signal_queue_wakeup)
             self._ensure_background_task("auto_save", self._auto_save_loop)
             self._ensure_background_task("episode_pending", self._episode_pending_loop)
             self._ensure_background_task("embedding_probe", self._embedding_probe_loop)
@@ -2195,6 +2289,9 @@ class SDKMemoryKernel:
     async def _stop_background_tasks(self) -> None:
         async with self._background_lock:
             self._background_stopping = True
+            self._queue_loop = None
+            if self.metadata_store is not None:
+                self.metadata_store.set_queue_wakeup(None)
             tasks = [task for task in self._background_tasks.values() if task is not None and not task.done()]
             for task in tasks:
                 task.cancel()
@@ -2221,24 +2318,53 @@ class SDKMemoryKernel:
         except Exception as exc:
             logger.warning(f"auto_save loop 异常: {exc}")
 
+    async def _run_queue_loop(
+        self,
+        name: str,
+        *,
+        interval: Callable[[], float],
+        enabled: Callable[[], bool],
+        poll: Callable[[], Coroutine[Any, Any, Dict[str, Any]]],
+    ) -> None:
+        wakeup = self._queue_wakeups[name]
+        delay = interval()
+        while not self._background_stopping:
+            try:
+                await asyncio.wait_for(wakeup.wait(), timeout=delay)
+            except asyncio.TimeoutError:
+                pass
+            # 先清除唤醒再扫描；扫描期间的新入队会保留到下一轮。
+            wakeup.clear()
+            if self._background_stopping:
+                return
+
+            base_delay = interval()
+            if not enabled():
+                delay = base_delay
+                continue
+            try:
+                result = await poll()
+            except Exception as exc:
+                logger.warning(f"{name} 队列处理失败: {exc}")
+                delay = base_delay
+                continue
+            if result.get("processed") or result.get("failed"):
+                delay = base_delay
+            else:
+                delay = min(max(base_delay, _QUEUE_IDLE_MAX_SECONDS), max(base_delay, delay * 2))
+
     async def _episode_pending_loop(self) -> None:
-        try:
-            while not self._background_stopping:
-                await asyncio.sleep(60.0)
-                if self._background_stopping:
-                    break
-                if not bool(self._cfg("episode.enabled", True)):
-                    continue
-                if not bool(self._cfg("episode.generation_enabled", True)):
-                    continue
-                await self.process_episode_pending_batch(
-                    limit=max(1, int(self._cfg("episode.pending_batch_size", 20) or 20)),
-                    max_retry=max(1, int(self._cfg("episode.pending_max_retry", 3) or 3)),
-                )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.warning(f"episode_pending loop 异常: {exc}")
+        await self._run_queue_loop(
+            "episode_pending",
+            interval=lambda: 60.0,
+            enabled=lambda: bool(self._cfg("episode.enabled", True)) and bool(
+                self._cfg("episode.generation_enabled", True),
+            ),
+            poll=lambda: self.process_episode_pending_batch(
+                limit=max(1, int(self._cfg("episode.pending_batch_size", 20) or 20)),
+                max_retry=max(1, int(self._cfg("episode.pending_max_retry", 3) or 3)),
+            ),
+        )
 
     async def _embedding_probe_loop(self) -> None:
         try:
@@ -2260,24 +2386,16 @@ class SDKMemoryKernel:
             logger.warning(f"embedding_probe loop 异常: {exc}")
 
     async def _paragraph_vector_backfill_loop(self) -> None:
-        try:
-            while not self._background_stopping:
-                await asyncio.sleep(self._paragraph_vector_backfill_interval_seconds())
-                if self._background_stopping:
-                    break
-                if not self._paragraph_vector_backfill_enabled():
-                    continue
-                if self._is_embedding_degraded():
-                    continue
-                await self._run_paragraph_backfill_once(
-                    limit=self._paragraph_vector_backfill_batch_size(),
-                    max_retry=self._paragraph_vector_backfill_max_retry(),
-                    trigger="loop",
-                )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.warning(f"paragraph_vector_backfill loop 异常: {exc}")
+        await self._run_queue_loop(
+            "paragraph_vector_backfill",
+            interval=self._paragraph_vector_backfill_interval_seconds,
+            enabled=lambda: self._paragraph_vector_backfill_enabled() and not self._is_embedding_degraded(),
+            poll=lambda: self._run_paragraph_backfill_once(
+                limit=self._paragraph_vector_backfill_batch_size(),
+                max_retry=self._paragraph_vector_backfill_max_retry(),
+                trigger="loop",
+            ),
+        )
 
     async def _person_profile_refresh_loop(self) -> None:
         try:

@@ -15,7 +15,7 @@ import json
 import re
 from collections import Counter
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from src.common.logger import get_logger
 from src.config.config import global_config
@@ -24,6 +24,7 @@ from .episode_segmentation_service import EpisodeSegmentationService
 from .hash import compute_hash
 
 logger = get_logger("A_Memorix.EpisodeService")
+_StorageIO = Callable[[Callable[[Any], Any]], Awaitable[Any]]
 
 
 class EpisodeService:
@@ -102,6 +103,8 @@ class EpisodeService:
     def load_pending_paragraphs(
         self,
         pending_rows: List[Dict[str, Any]],
+        *,
+        metadata_store: Any = None,
     ) -> Tuple[List[Dict[str, Any]], List[str]]:
         """
         将 pending 行展开为段落上下文。
@@ -111,12 +114,18 @@ class EpisodeService:
         """
         loaded: List[Dict[str, Any]] = []
         missing: List[str] = []
-        for row in pending_rows or []:
+        rows = pending_rows or []
+        paragraphs = None
+        if metadata_store is not None:
+            paragraphs = metadata_store.get_paragraphs_by_hashes(
+                [str(row.get("paragraph_hash") or "").strip() for row in rows],
+            )
+        for row in rows:
             p_hash = str(row.get("paragraph_hash", "") or "").strip()
             if not p_hash:
                 continue
 
-            paragraph = self.metadata_store.get_paragraph(p_hash)
+            paragraph = self.metadata_store.get_paragraph(p_hash) if paragraphs is None else paragraphs.get(p_hash)
             if not paragraph:
                 missing.append(p_hash)
                 continue
@@ -247,12 +256,15 @@ class EpisodeService:
         time_conf = sum(conf_values) / len(conf_values) if conf_values else 1.0
         return time_start, time_end, granularity, self._clamp_score(time_conf, default=1.0)
 
-    def _collect_participants(self, paragraph_hashes: List[str], limit: int = 16) -> List[str]:
+    def _collect_participants(
+        self, paragraph_hashes: List[str], limit: int = 16, *, metadata_store: Any = None,
+    ) -> List[str]:
+        store = self.metadata_store if metadata_store is None else metadata_store
         seen = set()
         participants: List[str] = []
         for p_hash in paragraph_hashes:
             try:
-                entities = self.metadata_store.get_paragraph_entities(p_hash)
+                entities = store.get_paragraph_entities(p_hash)
             except Exception:
                 entities = []
             for item in entities:
@@ -304,7 +316,9 @@ class EpisodeService:
 
         return [token for token, _ in token_counter.most_common(limit)]
 
-    def _build_fallback_episode(self, group: Dict[str, Any]) -> Dict[str, Any]:
+    def _build_fallback_episode(
+        self, group: Dict[str, Any], *, participants: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
         paragraphs = group.get("paragraphs", []) or []
         source = str(group.get("source", "") or "").strip()
         hashes = [str(p.get("hash", "") or "").strip() for p in paragraphs if str(p.get("hash", "") or "").strip()]
@@ -316,7 +330,8 @@ class EpisodeService:
         summary = "；".join(snippets)[:500] if snippets else "自动回退生成的情景记忆。"
 
         time_start, time_end, granularity, time_conf = self._compute_time_meta(paragraphs)
-        participants = self._collect_participants(hashes, limit=12)
+        if participants is None:
+            participants = self._collect_participants(hashes, limit=12)
         keywords = self._derive_keywords(paragraphs, limit=10)
 
         if time_start is not None:
@@ -353,7 +368,9 @@ class EpisodeService:
             dedup.append(token)
         return dedup
 
-    async def _build_episode_payloads_for_group(self, group: Dict[str, Any]) -> Dict[str, Any]:
+    async def _build_episode_payloads_for_group(
+        self, group: Dict[str, Any], *, storage_io: Optional[_StorageIO] = None,
+    ) -> Dict[str, Any]:
         paragraphs = group.get("paragraphs", []) or []
         if not paragraphs:
             return {
@@ -390,7 +407,14 @@ class EpisodeService:
                 f"size={len(group_hashes)} "
                 f"err={e}"
             )
-            episodes = [self._build_fallback_episode(group)]
+            if storage_io is None:
+                fallback = self._build_fallback_episode(group)
+            else:
+                participants = await storage_io(
+                    lambda store: self._collect_participants(group_hashes, limit=12, metadata_store=store),
+                )
+                fallback = self._build_fallback_episode(group, participants=participants)
+            episodes = [fallback]
             fallback_used = True
 
         stored_payloads: List[Dict[str, Any]] = []
@@ -408,7 +432,12 @@ class EpisodeService:
             participants = [str(x).strip() for x in (episode.get("participants", []) or []) if str(x).strip()]
             keywords = [str(x).strip() for x in (episode.get("keywords", []) or []) if str(x).strip()]
             if not participants:
-                participants = self._collect_participants(ordered_hashes, limit=16)
+                if storage_io is None:
+                    participants = self._collect_participants(ordered_hashes, limit=16)
+                else:
+                    participants = await storage_io(
+                        lambda store, hashes=ordered_hashes: self._collect_participants(hashes, metadata_store=store),
+                    )
             if not keywords:
                 keywords = self._derive_keywords(sub_paragraphs, limit=12)
 
@@ -466,28 +495,40 @@ class EpisodeService:
             "fallback_count": 1 if fallback_used else 0,
         }
 
-    async def process_group(self, group: Dict[str, Any]) -> Dict[str, Any]:
-        result = await self._build_episode_payloads_for_group(group)
-        stored_count = 0
-        for payload in result.get("payloads") or []:
-            stored = self.metadata_store.upsert_episode(payload)
-            final_id = str(stored.get("episode_id") or payload.get("episode_id") or "")
-            if final_id:
-                self.metadata_store.bind_episode_paragraphs(
-                    final_id,
-                    list(payload.get("evidence_ids") or []),
-                )
-                stored_count += 1
+    async def process_group(
+        self, group: Dict[str, Any], *, storage_io: Optional[_StorageIO] = None,
+    ) -> Dict[str, Any]:
+        if storage_io is None:
+            result = await self._build_episode_payloads_for_group(group)
+        else:
+            result = await self._build_episode_payloads_for_group(group, storage_io=storage_io)
 
-        result["episode_count"] = stored_count
+        def store_payloads(store: Any) -> int:
+            count = 0
+            for payload in result.get("payloads") or []:
+                stored = store.upsert_episode(payload)
+                final_id = str(stored.get("episode_id") or payload.get("episode_id") or "")
+                if final_id:
+                    store.bind_episode_paragraphs(final_id, list(payload.get("evidence_ids") or []))
+                    count += 1
+            return count
+
+        stored_count = store_payloads(self.metadata_store) if storage_io is None else await storage_io(store_payloads)
         return {
             "done_hashes": list(result.get("done_hashes") or []),
             "episode_count": stored_count,
             "fallback_count": int(result.get("fallback_count") or 0),
         }
 
-    async def process_pending_rows(self, pending_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-        loaded, missing_hashes = self.load_pending_paragraphs(pending_rows)
+    async def process_pending_rows(
+        self, pending_rows: List[Dict[str, Any]], *, storage_io: Optional[_StorageIO] = None,
+    ) -> Dict[str, Any]:
+        if storage_io is None:
+            loaded, missing_hashes = self.load_pending_paragraphs(pending_rows)
+        else:
+            loaded, missing_hashes = await storage_io(
+                lambda store: self.load_pending_paragraphs(pending_rows, metadata_store=store),
+            )
         groups = self.group_paragraphs(loaded)
 
         done_hashes: List[str] = list(missing_hashes)
@@ -498,7 +539,10 @@ class EpisodeService:
         for group in groups:
             group_hashes = [str(p.get("hash", "") or "").strip() for p in (group.get("paragraphs") or [])]
             try:
-                result = await self.process_group(group)
+                if storage_io is None:
+                    result = await self.process_group(group)
+                else:
+                    result = await self.process_group(group, storage_io=storage_io)
                 done_hashes.extend(result.get("done_hashes") or [])
                 episode_count += int(result.get("episode_count") or 0)
                 fallback_count += int(result.get("fallback_count") or 0)

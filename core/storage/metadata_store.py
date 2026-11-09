@@ -9,9 +9,11 @@ import pickle
 import json
 import uuid
 import re
+from contextlib import contextmanager
+from copy import copy
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Union, List, Dict, Any, Tuple, Sequence
+from typing import Optional, Union, List, Dict, Any, Tuple, Sequence, Callable, Iterable, Iterator, Mapping
 
 from src.common.logger import get_logger
 from ..utils.hash import compute_hash, normalize_text
@@ -71,6 +73,7 @@ class MetadataStore:
         self._conn: Optional[sqlite3.Connection] = None
         self._is_initialized = False
         self._db_path: Optional[Path] = None
+        self._queue_wakeup: Optional[Callable[[str], None]] = None
 
         logger.debug(f"元数据存储初始化: db={db_name}")
 
@@ -129,6 +132,36 @@ class MetadataStore:
             self.ensure_fts_schema()
         except Exception as e:
             logger.warning(f"初始化 FTS schema 失败，将跳过 BM25 检索: {e}")
+
+    @contextmanager
+    def queue_worker(self) -> Iterator["MetadataStore"]:
+        """在当前线程借用已初始化的队列库，不执行建表或迁移。"""
+        if self._conn is None:
+            raise RuntimeError("元数据存储尚未连接")
+        worker = copy(self)
+        worker._queue_wakeup = None
+        worker._conn = sqlite3.connect(f"{self.get_db_path().resolve().as_uri()}?mode=rw", uri=True, timeout=30.0)
+        try:
+            worker._conn.row_factory = sqlite3.Row
+            worker._conn.execute("PRAGMA synchronous=NORMAL")
+            worker._conn.execute("PRAGMA foreign_keys=ON")
+            yield worker
+        finally:
+            worker._conn.close()
+            worker._conn = None
+
+    def set_queue_wakeup(self, callback: Optional[Callable[[str], None]]) -> None:
+        self._queue_wakeup = callback
+
+    def _queue_enqueued(self, queue_name: str) -> None:
+        callback = self._queue_wakeup
+        if callback is None:
+            return
+
+        try:
+            callback(queue_name)
+        except Exception:
+            logger.warning("队列入队唤醒失败", queue_name=queue_name, exc_info=True)
 
     def _assert_schema_compatible(self, db_existed: bool) -> None:
         """运行时执行 post-1.0 自动迁移；legacy/vNext 仍要求离线迁移。"""
@@ -2252,6 +2285,21 @@ class MetadataStore:
         if row:
             return self._row_to_dict(row, "paragraph")
         return None
+
+    def get_paragraphs_by_hashes(self, hash_values: Sequence[str]) -> Dict[str, Dict[str, Any]]:
+        """批量获取段落，按输入 hash 去重后返回 hash -> paragraph。"""
+        hashes = list(dict.fromkeys(str(value or "").strip() for value in hash_values))
+        normalized = [value for value in hashes if value]
+        result: Dict[str, Dict[str, Any]] = {}
+        cursor = self._conn.cursor()
+        batch_size = 900
+        for start in range(0, len(normalized), batch_size):
+            batch = normalized[start:start + batch_size]
+            placeholders = ", ".join("?" for _ in batch)
+            cursor.execute(f"SELECT * FROM paragraphs WHERE hash IN ({placeholders})", batch)
+            for row in cursor.fetchall():
+                result[str(row["hash"])] = self._row_to_dict(row, "paragraph")
+        return result
 
     def update_paragraph_time_meta(
         self,
@@ -5089,6 +5137,7 @@ class MetadataStore:
         source: str,
         *,
         requested_at: Optional[float] = None,
+        commit: bool = True,
     ) -> bool:
         """将 source 标记为 done；若运行期间发生新写入，则保持 pending。"""
         token = self._normalize_episode_source(source)
@@ -5123,7 +5172,8 @@ class MetadataStore:
                 """,
                 (req_ts, now, token),
             )
-        self._conn.commit()
+        if commit:
+            self._conn.commit()
         return cursor.rowcount > 0
 
     def mark_episode_source_failed(
@@ -5132,6 +5182,7 @@ class MetadataStore:
         error: str = "",
         *,
         requested_at: Optional[float] = None,
+        commit: bool = True,
     ) -> bool:
         """标记 source 失败；若运行期间发生新写入，则重新回到 pending。"""
         token = self._normalize_episode_source(source)
@@ -5175,7 +5226,8 @@ class MetadataStore:
                 """,
                 (req_ts, req_ts, req_ts, err_text, now, token),
             )
-        self._conn.commit()
+        if commit:
+            self._conn.commit()
         return cursor.rowcount > 0
 
     def list_episode_source_rebuilds(
@@ -5470,6 +5522,100 @@ class MetadataStore:
             self._conn.rollback()
             raise
 
+    @contextmanager
+    def _queue_transaction(self) -> Iterator[None]:
+        if self._conn.in_transaction:
+            yield
+            return
+        self._conn.execute("BEGIN IMMEDIATE")
+        with self._conn:
+            yield
+
+    def _claim_queue_batch(
+        self,
+        table: str,
+        fetch_batch: Callable[[int, int], List[Dict[str, Any]]],
+        limit: int,
+        max_retry: int,
+    ) -> List[Dict[str, Any]]:
+        safe_retry = max(0, int(max_retry))
+        if not fetch_batch(1, safe_retry):
+            return []
+
+        # 空队列只读。进入写事务后重新读取，以免领走其他执行者已领取的任务。
+        with self._queue_transaction():
+            rows = fetch_batch(limit, safe_retry)
+            claimed_at = datetime.now().timestamp()
+            cursor = self._conn.cursor()
+            chunk_size = 500
+            for start in range(0, len(rows), chunk_size):
+                batch = rows[start:start + chunk_size]
+                placeholders = ", ".join("?" for _ in batch)
+                cursor.execute(
+                    f"""
+                    UPDATE {table}
+                    SET status = 'running', updated_at = ?
+                    WHERE paragraph_hash IN ({placeholders})
+                      AND (status = 'pending' OR (status = 'failed' AND retry_count < ?))
+                    """,
+                    [claimed_at, *(row["paragraph_hash"] for row in batch), safe_retry],
+                )
+                if cursor.rowcount != len(batch):
+                    raise RuntimeError("队列领取期间状态变化")
+            return [dict(row, claimed_at=claimed_at) for row in rows]
+
+    def _release_queue_batch(self, table: str, rows: Sequence[Dict[str, Any]]) -> None:
+        if not rows:
+            return
+        with self._queue_transaction():
+            cursor = self._conn.cursor()
+            cursor.executemany(
+                f"""
+                UPDATE {table}
+                SET status = ?, updated_at = ?
+                WHERE paragraph_hash = ? AND status = 'running' AND updated_at = ?
+                """,
+                (
+                    (row["status"], row["updated_at"], row["paragraph_hash"], row["claimed_at"])
+                    for row in rows
+                ),
+            )
+
+    def _finalize_queue_batch(
+        self,
+        table: str,
+        rows: Sequence[Dict[str, Any]],
+        done_hashes: Iterable[str],
+        failures: Mapping[str, str],
+    ) -> set[str]:
+        if not rows:
+            return set()
+        done = set(done_hashes)
+        finalized: set[str] = set()
+        finished_at = datetime.now().timestamp()
+        with self._queue_transaction():
+            cursor = self._conn.cursor()
+            for row in rows:
+                paragraph_hash = row["paragraph_hash"]
+                if paragraph_hash in done:
+                    status, error = "done", None
+                elif paragraph_hash in failures:
+                    status, error = "failed", str(failures[paragraph_hash] or "")
+                else:
+                    continue
+                cursor.execute(
+                    f"""
+                    UPDATE {table}
+                    SET status = ?, last_error = ?, updated_at = ?,
+                        retry_count = CASE WHEN ? = 'failed' THEN COALESCE(retry_count, 0) + 1 ELSE retry_count END
+                    WHERE paragraph_hash = ? AND status = 'running' AND updated_at = ?
+                    """,
+                    (status, error, finished_at, status, paragraph_hash, row["claimed_at"]),
+                )
+                if cursor.rowcount > 0:
+                    finalized.add(paragraph_hash)
+        return finalized
+
     def enqueue_episode_pending(
         self,
         paragraph_hash: str,
@@ -5506,6 +5652,8 @@ class MetadataStore:
             (token, src, created_ts, now),
         )
         self._conn.commit()
+        if cursor.rowcount > 0:
+            self._queue_enqueued("episode_pending")
 
     def fetch_episode_pending_batch(self, limit: int = 20, max_retry: int = 3) -> List[Dict[str, Any]]:
         """获取待处理 episode 队列批次。"""
@@ -5524,6 +5672,23 @@ class MetadataStore:
             (safe_retry, safe_limit),
         )
         return [dict(row) for row in cursor.fetchall()]
+
+    def claim_episode_pending_batch(self, limit: int = 20, max_retry: int = 3) -> List[Dict[str, Any]]:
+        """领取 episode 任务，返回原状态和本次领取时间。"""
+        return self._claim_queue_batch("episode_pending_paragraphs", self.fetch_episode_pending_batch, limit, max_retry)
+
+    def release_episode_pending_batch(self, rows: Sequence[Dict[str, Any]]) -> None:
+        """释放仍属于本次领取的任务，保留重试次数和原顺序。"""
+        self._release_queue_batch("episode_pending_paragraphs", rows)
+
+    def finalize_episode_pending_batch(
+        self,
+        rows: Sequence[Dict[str, Any]],
+        done_hashes: Iterable[str],
+        failures: Mapping[str, str],
+    ) -> set[str]:
+        """结算仍属于本次领取的任务，并返回实际结算的哈希。"""
+        return self._finalize_queue_batch("episode_pending_paragraphs", rows, done_hashes, failures)
 
     def mark_episode_pending_running(self, hashes: List[str]) -> None:
         """批量标记队列项为 running。"""
@@ -5650,6 +5815,8 @@ class MetadataStore:
             (token, error_text, created_ts, now),
         )
         self._conn.commit()
+        if cursor.rowcount > 0:
+            self._queue_enqueued("paragraph_vector_backfill")
 
     def fetch_paragraph_vector_backfill_batch(
         self,
@@ -5672,6 +5839,25 @@ class MetadataStore:
             (safe_retry, safe_limit),
         )
         return [dict(row) for row in cursor.fetchall()]
+
+    def claim_paragraph_vector_backfill_batch(
+        self, limit: int = 64, max_retry: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """领取段落向量回填任务，返回原状态和本次领取时间。"""
+        return self._claim_queue_batch("paragraph_vector_backfill", self.fetch_paragraph_vector_backfill_batch, limit, max_retry)
+
+    def release_paragraph_vector_backfill_batch(self, rows: Sequence[Dict[str, Any]]) -> None:
+        """释放仍属于本次领取的任务，保留重试次数和原顺序。"""
+        self._release_queue_batch("paragraph_vector_backfill", rows)
+
+    def finalize_paragraph_vector_backfill_batch(
+        self,
+        rows: Sequence[Dict[str, Any]],
+        done_hashes: Iterable[str],
+        failures: Mapping[str, str],
+    ) -> set[str]:
+        """结算仍属于本次领取的任务，并返回实际结算的哈希。"""
+        return self._finalize_queue_batch("paragraph_vector_backfill", rows, done_hashes, failures)
 
     def mark_paragraph_vector_backfill_running(self, hashes: List[str]) -> None:
         """批量标记段落回填任务为 running。"""
